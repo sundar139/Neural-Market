@@ -1,0 +1,46 @@
+{
+  "approved_datasets": [
+    {
+      "dataset": "ARCX.PILLAR",
+      "schemas": [
+        "definition",
+        "ohlcv-1d",
+        "statistics"
+      ]
+    },
+    {
+      "dataset": "OPRA.PILLAR",
+      "schemas": [
+        "definition",
+        "cbbo-1m"
+      ]
+    }
+  ],
+  "budget_ceiling_usd": "95.00",
+  "calendar_sampling_rule": "deterministic quarterly sample: first Wednesday of the middle month, third Friday of the middle month (or preceding session), and the final session of the quarter; development sessions only",
+  "candidate_strategy_ids": [
+    "A",
+    "B",
+    "C",
+    "D"
+  ],
+  "config_hash": "0fc9d31477eaf34123e7db48a945bd74e272c4a649fefd92d181d930967047db",
+  "download_guard_enabled": true,
+  "generated_at": "2026-07-12T18:46:32.247208+00:00",
+  "git_commit": "81064f9ca189fe378e464131ff9a2d7962990f6d",
+  "manifest_hash": "affce36b4e5da07f60c578e3743b320a6c5ce63e559433b473148423fbb4e9b6",
+  "manifest_version": "1.0",
+  "maximum_pilot_spend_usd": "5.00",
+  "minimum_final_test_quote_reserve_usd": "25.00",
+  "minimum_unspent_reserve_usd": "30.00",
+  "purchase_authorized": false,
+  "quote_window_rule": "final 10 minutes before the scheduled session close (regular or early), timezone-aware UTC, half-open [window_start, window_end)",
+  "ranking_rule": "feasible strategies ranked by highest inception-session frequency, then by lowest projected cost; infeasible or cost-pending strategies (including D) are unranked",
+  "recommendation_status": "recommended_not_authorized",
+  "recommended_cost_range_usd": "15-20",
+  "recommended_strategy_id": "B",
+  "source_manifest_hash": "3d31e373defbe43aa8eb30c453c1e65c1913d3103e336e02b26757fecd710604",
+  "split_manifest_hash": "877caee3f7bb471a491c299a8673fdf1b386b12b9ba7f4d17bd52d2954bdcabe",
+  "symbol_batch_limit": 2000,
+  "test_projection_method": "sealed_development_projection"
+}

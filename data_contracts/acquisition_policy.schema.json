@@ -1,0 +1,181 @@
+{
+  "$defs": {
+    "ApprovedDataset": {
+      "additionalProperties": false,
+      "description": "One dataset/schema pairing approved for acquisition planning.",
+      "properties": {
+        "dataset": {
+          "title": "Dataset",
+          "type": "string"
+        },
+        "schemas": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Schemas",
+          "type": "array"
+        }
+      },
+      "required": [
+        "dataset",
+        "schemas"
+      ],
+      "title": "ApprovedDataset",
+      "type": "object"
+    }
+  },
+  "$id": "neuralmarket:contract:AcquisitionPolicyManifest:1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Tracked, account-neutral acquisition governance manifest.",
+  "properties": {
+    "approved_datasets": {
+      "items": {
+        "$ref": "#/$defs/ApprovedDataset"
+      },
+      "title": "Approved Datasets",
+      "type": "array"
+    },
+    "budget_ceiling_usd": {
+      "title": "Budget Ceiling Usd",
+      "type": "string"
+    },
+    "calendar_sampling_rule": {
+      "title": "Calendar Sampling Rule",
+      "type": "string"
+    },
+    "candidate_strategy_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Candidate Strategy Ids",
+      "type": "array"
+    },
+    "config_hash": {
+      "title": "Config Hash",
+      "type": "string"
+    },
+    "download_guard_enabled": {
+      "title": "Download Guard Enabled",
+      "type": "boolean"
+    },
+    "generated_at": {
+      "title": "Generated At",
+      "type": "string"
+    },
+    "git_commit": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Git Commit"
+    },
+    "manifest_hash": {
+      "title": "Manifest Hash",
+      "type": "string"
+    },
+    "manifest_version": {
+      "default": "1.0",
+      "title": "Manifest Version",
+      "type": "string"
+    },
+    "maximum_pilot_spend_usd": {
+      "title": "Maximum Pilot Spend Usd",
+      "type": "string"
+    },
+    "minimum_final_test_quote_reserve_usd": {
+      "title": "Minimum Final Test Quote Reserve Usd",
+      "type": "string"
+    },
+    "minimum_unspent_reserve_usd": {
+      "title": "Minimum Unspent Reserve Usd",
+      "type": "string"
+    },
+    "purchase_authorized": {
+      "title": "Purchase Authorized",
+      "type": "boolean"
+    },
+    "quote_window_rule": {
+      "title": "Quote Window Rule",
+      "type": "string"
+    },
+    "ranking_rule": {
+      "title": "Ranking Rule",
+      "type": "string"
+    },
+    "recommendation_status": {
+      "title": "Recommendation Status",
+      "type": "string"
+    },
+    "recommended_cost_range_usd": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Recommended Cost Range Usd"
+    },
+    "recommended_strategy_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Recommended Strategy Id"
+    },
+    "source_manifest_hash": {
+      "title": "Source Manifest Hash",
+      "type": "string"
+    },
+    "split_manifest_hash": {
+      "title": "Split Manifest Hash",
+      "type": "string"
+    },
+    "symbol_batch_limit": {
+      "minimum": 1,
+      "title": "Symbol Batch Limit",
+      "type": "integer"
+    },
+    "test_projection_method": {
+      "title": "Test Projection Method",
+      "type": "string"
+    }
+  },
+  "required": [
+    "budget_ceiling_usd",
+    "minimum_unspent_reserve_usd",
+    "minimum_final_test_quote_reserve_usd",
+    "maximum_pilot_spend_usd",
+    "approved_datasets",
+    "quote_window_rule",
+    "calendar_sampling_rule",
+    "candidate_strategy_ids",
+    "ranking_rule",
+    "recommended_strategy_id",
+    "recommendation_status",
+    "recommended_cost_range_usd",
+    "test_projection_method",
+    "symbol_batch_limit",
+    "purchase_authorized",
+    "download_guard_enabled",
+    "source_manifest_hash",
+    "split_manifest_hash",
+    "config_hash",
+    "generated_at",
+    "git_commit",
+    "manifest_hash"
+  ],
+  "title": "AcquisitionPolicyManifest",
+  "type": "object",
+  "x-schema-version": "1.0"
+}

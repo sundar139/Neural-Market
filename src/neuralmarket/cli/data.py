@@ -17,6 +17,24 @@ from pydantic import BaseModel
 from neuralmarket.core.configuration import ConfigurationError, config_sha256
 from neuralmarket.core.environment import _git_commit, _git_dirty, find_repository_root
 from neuralmarket.core.logging import configure_logging, get_logger
+from neuralmarket.data.acquisition.configuration import load_acquisition_config
+from neuralmarket.data.acquisition.contracts import (
+    AcquisitionPlanReport,
+    AcquisitionPolicyManifest,
+    acquisition_report_to_json,
+)
+from neuralmarket.data.acquisition.manifests import (
+    finalize_policy_manifest,
+    parse_policy_manifest,
+    verify_plan_and_policy,
+)
+from neuralmarket.data.acquisition.manifests import (
+    load_json as load_acquisition_json,
+)
+from neuralmarket.data.acquisition.manifests import (
+    write_json as write_acquisition_json,
+)
+from neuralmarket.data.acquisition.planner import plan_acquisition
 from neuralmarket.data.calendar import compute_splits, session_dates
 from neuralmarket.data.configuration import DataConfig, load_data_config
 from neuralmarket.data.contracts import CONTRACT_MODELS, json_schema_for
@@ -25,6 +43,7 @@ from neuralmarket.data.errors import (
     CredentialMissingError,
     ManifestValidationError,
     MarketDataError,
+    PlanValidationError,
 )
 from neuralmarket.data.manifests import (
     DateRange,
@@ -48,6 +67,8 @@ from neuralmarket.data.sources.databento import DatabentoSource
 _logger = get_logger(__name__)
 
 app = typer.Typer(help="Market-data contracts, splits, and source qualification.")
+acquisition_app = typer.Typer(help="Budget-constrained, metadata-only OPRA acquisition planning.")
+app.add_typer(acquisition_app, name="acquisition")
 
 _CONTRACT_DIR = "data_contracts"
 
@@ -152,7 +173,30 @@ def _all_models() -> dict[str, type[BaseModel]]:
     models: dict[str, type[BaseModel]] = dict(CONTRACT_MODELS)
     models["source_manifest"] = SourceManifest
     models["split_manifest"] = SplitManifest
+    models["acquisition_policy"] = AcquisitionPolicyManifest
+    models["acquisition_plan"] = AcquisitionPlanReport
     return models
+
+
+def _raw_databento_client() -> Any:
+    """Build an unwrapped Databento client from ``DATABENTO_API_KEY``.
+
+    The acquisition planner applies its own metadata-only guard, so this
+    returns the raw provider client rather than a :class:`DatabentoSource`.
+
+    Raises:
+        CredentialMissingError: If the API key is not set.
+    """
+    import os
+
+    key = os.environ.get("DATABENTO_API_KEY")
+    if not key:
+        raise CredentialMissingError(
+            "DATABENTO_API_KEY is not set; add it to a local .env to plan acquisition."
+        )
+    import databento
+
+    return databento.Historical(key)
 
 
 @app.callback()
@@ -658,5 +702,94 @@ def manifests(
         verify_manifests(load_manifest(source), load_manifest(split_path))
     except ManifestValidationError as exc:
         _logger.error("Manifest verification failed: %s", exc)
+        raise typer.Exit(code=1) from exc
+    typer.echo(json.dumps({"status": "ok"}))
+
+
+@acquisition_app.command("plan")
+def acquisition_plan(
+    config: Path = typer.Option(
+        ..., "--config", help="Path to the acquisition-planning configuration YAML."
+    ),
+    source_manifest: Path = typer.Option(
+        ..., "--source-manifest", help="Path to the accepted source manifest JSON."
+    ),
+    split_manifest: Path = typer.Option(
+        ..., "--split-manifest", help="Path to the accepted split manifest JSON."
+    ),
+    output: Path = typer.Option(
+        ..., "--output", help="Path to write the local acquisition plan report."
+    ),
+    policy_manifest: Path = typer.Option(
+        ..., "--policy-manifest", help="Path to write the tracked acquisition policy manifest."
+    ),
+) -> None:
+    """Plan budget-constrained OPRA acquisition using metadata-only requests.
+
+    Never downloads, batches, or streams market records, and never authorizes
+    a purchase.
+    """
+    configure_logging("INFO")
+    try:
+        acq_config = load_acquisition_config(config)
+    except ConfigurationError as exc:
+        _logger.error("Configuration error: %s", exc)
+        raise typer.Exit(code=2) from exc
+
+    root = find_repository_root()
+    _load_dotenv(root)
+    try:
+        client = _raw_databento_client()
+    except CredentialMissingError as exc:
+        _logger.error("%s", redact(str(exc)))
+        raise typer.Exit(code=2) from exc
+
+    try:
+        report, policy_raw = plan_acquisition(
+            client=client,
+            config=acq_config,
+            source_manifest_path=source_manifest,
+            split_manifest_path=split_manifest,
+            config_path=config,
+            repo_root=root,
+        )
+    except (PlanValidationError, MarketDataError) as exc:
+        _logger.error("Acquisition planning failed: %s", redact(str(exc)))
+        raise typer.Exit(code=1) from exc
+
+    policy_payload = finalize_policy_manifest(policy_raw)
+    parse_policy_manifest(policy_payload)
+    write_acquisition_json(output, acquisition_report_to_json(report))
+    write_acquisition_json(policy_manifest, policy_payload)
+
+    typer.echo(
+        json.dumps(
+            {
+                "recommendation_status": report.recommendation_status,
+                "recommended_strategy_id": report.recommended_strategy_id,
+                "report": str(output),
+                "policy_manifest": str(policy_manifest),
+            }
+        )
+    )
+    if report.recommendation_status != "recommended_not_authorized":
+        raise typer.Exit(code=1)
+
+
+@acquisition_app.command("verify")
+def acquisition_verify(
+    plan: Path = typer.Option(..., "--plan", help="Path to the local acquisition plan report."),
+    policy_manifest: Path = typer.Option(
+        ..., "--policy-manifest", help="Path to the tracked acquisition policy manifest."
+    ),
+) -> None:
+    """Verify an acquisition plan and policy manifest offline: hashes, budget, agreement."""
+    configure_logging("INFO")
+    try:
+        plan_payload = load_acquisition_json(plan)
+        policy_payload = load_acquisition_json(policy_manifest)
+        verify_plan_and_policy(plan_payload, policy_payload)
+    except PlanValidationError as exc:
+        _logger.error("Acquisition verification failed: %s", exc)
         raise typer.Exit(code=1) from exc
     typer.echo(json.dumps({"status": "ok"}))

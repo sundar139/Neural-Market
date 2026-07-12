@@ -9,16 +9,23 @@ enum values appear in them. A later vendor adapter can be added under
 `src/neuralmarket/data/sources/` without changing the canonical models, the split
 logic, or any downstream consumer.
 
-## Why Databento and OPRA
+## Why Databento, ARCX, and OPRA
 
-The first source qualified is Databento:
+The qualified source is Databento:
 
-- `EQUS.SUMMARY` / `ohlcv-1d` for daily SPY underlying bars;
+- `ARCX.PILLAR` / `definition`, `ohlcv-1d`, `bbo-1m` for the SPY underlying,
+  covering the full 2018-05-01 study inception on this account;
 - `OPRA.PILLAR` / `definition` for point-in-time SPY option definitions;
 - `OPRA.PILLAR` / `cbbo-1m` for consolidated (OPRA) option quotes.
 
-OPRA-derived consolidated quotes give exchange-official best bid/offer across
-venues, which suits end-of-day snapshot construction for the hedging study.
+On this account, every Databento consolidated-equities feed (`EQUS.SUMMARY`,
+`EQUS.MINI`, `DBEQ.BASIC`) begins in 2023 or later, so none can reach the
+2018-05-01 study start. `ARCX.PILLAR` is the only Databento feed with SPY
+history back to that date; SPY is primary-listed on NYSE Arca, so this
+single-venue feed is used as a documented primary-listing-venue reference
+path (not official NBBO, not full-market volume — see the source manifest's
+`limitations`). OPRA-derived consolidated quotes still give exchange-official
+best bid/offer across venues for the option leg.
 
 ## What is and is not downloaded
 

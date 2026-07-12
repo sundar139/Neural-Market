@@ -69,3 +69,19 @@ class ContractValidationError(MarketDataError):
 
 class DownloadProhibitedError(MarketDataError):
     """Raised when qualification code attempts a prohibited data download."""
+
+
+class AcquisitionNotAuthorizedError(MarketDataError):
+    """Raised when acquisition-planning code attempts a download-capable operation.
+
+    This milestone permits metadata-only acquisition planning; it never acquires,
+    previews, or downloads market records.
+    """
+
+
+class BudgetPolicyError(MarketDataError):
+    """Raised when a budget policy is internally inconsistent or unsafe."""
+
+
+class PlanValidationError(MarketDataError):
+    """Raised when an acquisition plan or policy manifest fails validation."""

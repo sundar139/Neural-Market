@@ -1,0 +1,33 @@
+# Budget-constrained OPRA acquisition-planning configuration.
+# Contains no API key and no local absolute paths. Money amounts are quoted
+# strings so they are parsed as Decimal, never binary float.
+underlying:
+  dataset: ARCX.PILLAR
+  symbol: SPY
+  symbol_type: raw_symbol
+  definition_schema: definition
+  daily_schema: ohlcv-1d
+  statistics_schema: statistics
+
+options:
+  dataset: OPRA.PILLAR
+  definition_schema: definition
+  quote_schema: cbbo-1m
+  parent_symbol: SPY.OPT
+  symbol_type: parent
+
+pilot_candidate_year: 2019
+
+budget:
+  available_credit_usd: "125.00"
+  maximum_project_spend_usd: "95.00"
+  minimum_unspent_reserve_usd: "30.00"
+
+  maximum_pilot_spend_usd: "5.00"
+  maximum_single_future_request_usd: "10.00"
+
+  maximum_development_quote_spend_usd: "45.00"
+  minimum_final_test_quote_reserve_usd: "25.00"
+
+  require_manual_purchase_approval: true
+  purchase_authorized: false

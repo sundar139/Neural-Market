@@ -1,0 +1,19 @@
+# Data Reports
+
+Generated, account-specific data reports are written here and are **ignored by
+Git**:
+
+- `source_qualification.local.json` — the full qualification report, including
+  cost estimates and dataset ranges for your account.
+- `acquisition_plan.local.json` — the full budget-constrained acquisition plan:
+  per-window metadata estimates, sampled cost statistics, candidate strategy
+  projections, the pilot plan, and the final-test reserve projection.
+- `split_manifest_repeat.local.json` — a scratch split manifest used to check
+  determinism against the tracked one.
+
+Only this README is tracked. These reports never contain the API key, account
+or billing identifiers, payment information, raw exceptions, or market values
+— but because they carry account-specific cost and entitlement details, they
+stay local. Account-neutral metadata belongs in `data/manifests/` instead
+(`source_manifest_v1.json`, `split_manifest_v1.json`,
+`acquisition_policy_v1.json`).

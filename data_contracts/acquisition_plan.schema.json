@@ -1,0 +1,688 @@
+{
+  "$defs": {
+    "BudgetPolicySnapshot": {
+      "additionalProperties": false,
+      "description": "JSON-serializable snapshot of a validated :class:`BudgetPolicy`.",
+      "properties": {
+        "available_credit_usd": {
+          "title": "Available Credit Usd",
+          "type": "string"
+        },
+        "maximum_development_quote_spend_usd": {
+          "title": "Maximum Development Quote Spend Usd",
+          "type": "string"
+        },
+        "maximum_pilot_spend_usd": {
+          "title": "Maximum Pilot Spend Usd",
+          "type": "string"
+        },
+        "maximum_project_spend_usd": {
+          "title": "Maximum Project Spend Usd",
+          "type": "string"
+        },
+        "maximum_single_future_request_usd": {
+          "title": "Maximum Single Future Request Usd",
+          "type": "string"
+        },
+        "minimum_final_test_quote_reserve_usd": {
+          "title": "Minimum Final Test Quote Reserve Usd",
+          "type": "string"
+        },
+        "minimum_unspent_reserve_usd": {
+          "title": "Minimum Unspent Reserve Usd",
+          "type": "string"
+        },
+        "purchase_authorized": {
+          "title": "Purchase Authorized",
+          "type": "boolean"
+        },
+        "require_manual_purchase_approval": {
+          "title": "Require Manual Purchase Approval",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "available_credit_usd",
+        "maximum_project_spend_usd",
+        "minimum_unspent_reserve_usd",
+        "maximum_pilot_spend_usd",
+        "maximum_single_future_request_usd",
+        "maximum_development_quote_spend_usd",
+        "minimum_final_test_quote_reserve_usd",
+        "require_manual_purchase_approval",
+        "purchase_authorized"
+      ],
+      "title": "BudgetPolicySnapshot",
+      "type": "object"
+    },
+    "CatalogWave": {
+      "additionalProperties": false,
+      "description": "Catalog-wave estimates: ARCX definitions/daily/statistics, OPRA definitions.\n\nTraining and validation are estimated as development cost; the test period\nis estimated separately and reserved, never merged into development storage.",
+      "properties": {
+        "development_total_cost_usd": {
+          "title": "Development Total Cost Usd",
+          "type": "string"
+        },
+        "estimates": {
+          "items": {
+            "$ref": "#/$defs/CatalogWaveEstimate"
+          },
+          "title": "Estimates",
+          "type": "array"
+        },
+        "test_reserved_total_cost_usd": {
+          "title": "Test Reserved Total Cost Usd",
+          "type": "string"
+        }
+      },
+      "required": [
+        "estimates",
+        "development_total_cost_usd",
+        "test_reserved_total_cost_usd"
+      ],
+      "title": "CatalogWave",
+      "type": "object"
+    },
+    "CatalogWaveEstimate": {
+      "additionalProperties": false,
+      "description": "One full-day-range definition/daily/statistics catalog cost estimate.",
+      "properties": {
+        "dataset": {
+          "title": "Dataset",
+          "type": "string"
+        },
+        "estimated_billable_size_bytes": {
+          "minimum": 0,
+          "title": "Estimated Billable Size Bytes",
+          "type": "integer"
+        },
+        "estimated_cost_usd": {
+          "title": "Estimated Cost Usd",
+          "type": "string"
+        },
+        "estimated_record_count": {
+          "minimum": 0,
+          "title": "Estimated Record Count",
+          "type": "integer"
+        },
+        "period": {
+          "title": "Period",
+          "type": "string"
+        },
+        "schema_name": {
+          "title": "Schema Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dataset",
+        "schema_name",
+        "period",
+        "estimated_record_count",
+        "estimated_billable_size_bytes",
+        "estimated_cost_usd"
+      ],
+      "title": "CatalogWaveEstimate",
+      "type": "object"
+    },
+    "CostStatistics": {
+      "additionalProperties": false,
+      "description": "Sampled per-window cost summary statistics.",
+      "properties": {
+        "maximum_usd": {
+          "title": "Maximum Usd",
+          "type": "string"
+        },
+        "mean_usd": {
+          "title": "Mean Usd",
+          "type": "string"
+        },
+        "median_usd": {
+          "title": "Median Usd",
+          "type": "string"
+        },
+        "minimum_usd": {
+          "title": "Minimum Usd",
+          "type": "string"
+        },
+        "p75_usd": {
+          "title": "P75 Usd",
+          "type": "string"
+        },
+        "p95_usd": {
+          "title": "P95 Usd",
+          "type": "string"
+        },
+        "sample_count": {
+          "minimum": 1,
+          "title": "Sample Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sample_count",
+        "minimum_usd",
+        "median_usd",
+        "mean_usd",
+        "p75_usd",
+        "p95_usd",
+        "maximum_usd"
+      ],
+      "title": "CostStatistics",
+      "type": "object"
+    },
+    "MetadataEstimateModel": {
+      "additionalProperties": false,
+      "description": "One account-neutral metadata estimate, as recorded in the local report.",
+      "properties": {
+        "billable_size_bytes": {
+          "minimum": 0,
+          "title": "Billable Size Bytes",
+          "type": "integer"
+        },
+        "cost_usd": {
+          "title": "Cost Usd",
+          "type": "string"
+        },
+        "dataset": {
+          "title": "Dataset",
+          "type": "string"
+        },
+        "record_count": {
+          "minimum": 0,
+          "title": "Record Count",
+          "type": "integer"
+        },
+        "retries": {
+          "minimum": 0,
+          "title": "Retries",
+          "type": "integer"
+        },
+        "schema_name": {
+          "title": "Schema Name",
+          "type": "string"
+        },
+        "stype_in": {
+          "title": "Stype In",
+          "type": "string"
+        },
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        },
+        "window_end": {
+          "format": "date-time",
+          "title": "Window End",
+          "type": "string"
+        },
+        "window_start": {
+          "format": "date-time",
+          "title": "Window Start",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dataset",
+        "schema_name",
+        "symbol",
+        "stype_in",
+        "window_start",
+        "window_end",
+        "record_count",
+        "billable_size_bytes",
+        "cost_usd",
+        "retries"
+      ],
+      "title": "MetadataEstimateModel",
+      "type": "object"
+    },
+    "PilotPlan": {
+      "additionalProperties": false,
+      "description": "The bounded, training-only pilot acquisition plan.",
+      "properties": {
+        "download_command_disabled": {
+          "default": true,
+          "title": "Download Command Disabled",
+          "type": "boolean"
+        },
+        "estimated_total_cost_usd": {
+          "title": "Estimated Total Cost Usd",
+          "type": "string"
+        },
+        "manual_authorization_required": {
+          "title": "Manual Authorization Required",
+          "type": "boolean"
+        },
+        "maximum_allowed_total_usd": {
+          "title": "Maximum Allowed Total Usd",
+          "type": "string"
+        },
+        "rejection_conditions": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Rejection Conditions",
+          "type": "array"
+        },
+        "requests": {
+          "items": {
+            "$ref": "#/$defs/PilotRequestSpec"
+          },
+          "title": "Requests",
+          "type": "array"
+        },
+        "selected_month": {
+          "title": "Selected Month",
+          "type": "string"
+        },
+        "selected_sessions": {
+          "items": {
+            "format": "date",
+            "type": "string"
+          },
+          "title": "Selected Sessions",
+          "type": "array"
+        },
+        "storage_path_plan": {
+          "title": "Storage Path Plan",
+          "type": "string"
+        },
+        "within_cap": {
+          "title": "Within Cap",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "selected_month",
+        "selected_sessions",
+        "requests",
+        "estimated_total_cost_usd",
+        "maximum_allowed_total_usd",
+        "within_cap",
+        "storage_path_plan",
+        "rejection_conditions",
+        "manual_authorization_required"
+      ],
+      "title": "PilotPlan",
+      "type": "object"
+    },
+    "PilotRequestSpec": {
+      "additionalProperties": false,
+      "description": "One planned (not executed) pilot-wave metadata request.",
+      "properties": {
+        "dataset": {
+          "title": "Dataset",
+          "type": "string"
+        },
+        "estimated_billable_size_bytes": {
+          "minimum": 0,
+          "title": "Estimated Billable Size Bytes",
+          "type": "integer"
+        },
+        "estimated_cost_usd": {
+          "title": "Estimated Cost Usd",
+          "type": "string"
+        },
+        "estimated_record_count": {
+          "minimum": 0,
+          "title": "Estimated Record Count",
+          "type": "integer"
+        },
+        "schema_name": {
+          "title": "Schema Name",
+          "type": "string"
+        },
+        "stype_in": {
+          "title": "Stype In",
+          "type": "string"
+        },
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        },
+        "window_end": {
+          "format": "date-time",
+          "title": "Window End",
+          "type": "string"
+        },
+        "window_start": {
+          "format": "date-time",
+          "title": "Window Start",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dataset",
+        "schema_name",
+        "symbol",
+        "stype_in",
+        "window_start",
+        "window_end",
+        "estimated_record_count",
+        "estimated_billable_size_bytes",
+        "estimated_cost_usd"
+      ],
+      "title": "PilotRequestSpec",
+      "type": "object"
+    },
+    "StrategyProjection": {
+      "additionalProperties": false,
+      "description": "Projected development-quote acquisition cost for one candidate strategy.",
+      "properties": {
+        "cost_status": {
+          "title": "Cost Status",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "projected_quote_cost_usd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Projected Quote Cost Usd"
+        },
+        "rank": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Rank"
+        },
+        "safety_factor": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Safety Factor"
+        },
+        "satisfies_development_cap": {
+          "title": "Satisfies Development Cap",
+          "type": "boolean"
+        },
+        "satisfies_pilot_cap": {
+          "title": "Satisfies Pilot Cap",
+          "type": "boolean"
+        },
+        "satisfies_project_cap": {
+          "title": "Satisfies Project Cap",
+          "type": "boolean"
+        },
+        "satisfies_test_reserve": {
+          "title": "Satisfies Test Reserve",
+          "type": "boolean"
+        },
+        "satisfies_unspent_reserve": {
+          "title": "Satisfies Unspent Reserve",
+          "type": "boolean"
+        },
+        "scheduled_session_count": {
+          "minimum": 0,
+          "title": "Scheduled Session Count",
+          "type": "integer"
+        },
+        "strategy_id": {
+          "title": "Strategy Id",
+          "type": "string"
+        },
+        "worst_case_quote_cost_usd": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Worst Case Quote Cost Usd"
+        }
+      },
+      "required": [
+        "strategy_id",
+        "name",
+        "scheduled_session_count",
+        "cost_status",
+        "projected_quote_cost_usd",
+        "worst_case_quote_cost_usd",
+        "safety_factor",
+        "satisfies_project_cap",
+        "satisfies_unspent_reserve",
+        "satisfies_test_reserve",
+        "satisfies_development_cap",
+        "satisfies_pilot_cap",
+        "rank"
+      ],
+      "title": "StrategyProjection",
+      "type": "object"
+    },
+    "TestReserveProjection": {
+      "additionalProperties": false,
+      "description": "Final-test quote cost projection, derived only from development sampling.",
+      "properties": {
+        "projected_cost_usd": {
+          "title": "Projected Cost Usd",
+          "type": "string"
+        },
+        "safety_factor": {
+          "title": "Safety Factor",
+          "type": "string"
+        },
+        "sampled_p95_cost_usd": {
+          "title": "Sampled P95 Cost Usd",
+          "type": "string"
+        },
+        "scheduled_session_count": {
+          "minimum": 0,
+          "title": "Scheduled Session Count",
+          "type": "integer"
+        },
+        "test_estimate_method": {
+          "title": "Test Estimate Method",
+          "type": "string"
+        }
+      },
+      "required": [
+        "scheduled_session_count",
+        "sampled_p95_cost_usd",
+        "safety_factor",
+        "projected_cost_usd",
+        "test_estimate_method"
+      ],
+      "title": "TestReserveProjection",
+      "type": "object"
+    }
+  },
+  "$id": "neuralmarket:contract:AcquisitionPlanReport:1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The full, account-specific acquisition plan (ignored local report).",
+  "properties": {
+    "batch_jobs_submitted": {
+      "minimum": 0,
+      "title": "Batch Jobs Submitted",
+      "type": "integer"
+    },
+    "blocking_failures": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Blocking Failures",
+      "type": "array"
+    },
+    "budget_policy": {
+      "$ref": "#/$defs/BudgetPolicySnapshot"
+    },
+    "candidate_strategies": {
+      "items": {
+        "$ref": "#/$defs/StrategyProjection"
+      },
+      "title": "Candidate Strategies",
+      "type": "array"
+    },
+    "catalog_wave": {
+      "$ref": "#/$defs/CatalogWave"
+    },
+    "config_hash": {
+      "title": "Config Hash",
+      "type": "string"
+    },
+    "databento_client_version": {
+      "title": "Databento Client Version",
+      "type": "string"
+    },
+    "development_cost_statistics": {
+      "$ref": "#/$defs/CostStatistics"
+    },
+    "download_attempts": {
+      "minimum": 0,
+      "title": "Download Attempts",
+      "type": "integer"
+    },
+    "downloaded_records": {
+      "minimum": 0,
+      "title": "Downloaded Records",
+      "type": "integer"
+    },
+    "generated_at": {
+      "title": "Generated At",
+      "type": "string"
+    },
+    "git_commit": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Git Commit"
+    },
+    "git_dirty": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Git Dirty"
+    },
+    "live_connections_opened": {
+      "minimum": 0,
+      "title": "Live Connections Opened",
+      "type": "integer"
+    },
+    "metadata_call_count": {
+      "minimum": 0,
+      "title": "Metadata Call Count",
+      "type": "integer"
+    },
+    "pilot_plan": {
+      "$ref": "#/$defs/PilotPlan"
+    },
+    "raw_estimates": {
+      "items": {
+        "$ref": "#/$defs/MetadataEstimateModel"
+      },
+      "title": "Raw Estimates",
+      "type": "array"
+    },
+    "recommendation_status": {
+      "title": "Recommendation Status",
+      "type": "string"
+    },
+    "recommended_strategy_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Recommended Strategy Id"
+    },
+    "retry_count": {
+      "minimum": 0,
+      "title": "Retry Count",
+      "type": "integer"
+    },
+    "sampling_sessions": {
+      "items": {
+        "format": "date",
+        "type": "string"
+      },
+      "title": "Sampling Sessions",
+      "type": "array"
+    },
+    "schema_version": {
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source_manifest_hash": {
+      "title": "Source Manifest Hash",
+      "type": "string"
+    },
+    "split_manifest_hash": {
+      "title": "Split Manifest Hash",
+      "type": "string"
+    },
+    "test_reserve_projection": {
+      "$ref": "#/$defs/TestReserveProjection"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Warnings",
+      "type": "array"
+    }
+  },
+  "required": [
+    "generated_at",
+    "git_commit",
+    "git_dirty",
+    "source_manifest_hash",
+    "split_manifest_hash",
+    "config_hash",
+    "databento_client_version",
+    "budget_policy",
+    "catalog_wave",
+    "sampling_sessions",
+    "raw_estimates",
+    "development_cost_statistics",
+    "candidate_strategies",
+    "test_reserve_projection",
+    "recommended_strategy_id",
+    "recommendation_status",
+    "pilot_plan",
+    "metadata_call_count",
+    "retry_count",
+    "download_attempts",
+    "downloaded_records",
+    "batch_jobs_submitted",
+    "live_connections_opened",
+    "warnings",
+    "blocking_failures"
+  ],
+  "title": "AcquisitionPlanReport",
+  "type": "object",
+  "x-schema-version": "1.0"
+}
