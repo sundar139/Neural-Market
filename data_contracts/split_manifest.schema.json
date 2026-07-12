@@ -1,0 +1,210 @@
+{
+  "$defs": {
+    "BoundaryRange": {
+      "additionalProperties": false,
+      "description": "An excluded boundary block recorded in a split manifest.",
+      "properties": {
+        "end_date": {
+          "format": "date",
+          "title": "End Date",
+          "type": "string"
+        },
+        "session_count": {
+          "title": "Session Count",
+          "type": "integer"
+        },
+        "session_hash": {
+          "title": "Session Hash",
+          "type": "string"
+        },
+        "start_date": {
+          "format": "date",
+          "title": "Start Date",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start_date",
+        "end_date",
+        "session_count",
+        "session_hash"
+      ],
+      "title": "BoundaryRange",
+      "type": "object"
+    }
+  },
+  "$id": "neuralmarket:contract:SplitManifest:1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Frozen chronological split manifest.",
+  "properties": {
+    "calendar_hash": {
+      "title": "Calendar Hash",
+      "type": "string"
+    },
+    "calendar_library_version": {
+      "title": "Calendar Library Version",
+      "type": "string"
+    },
+    "calendar_name": {
+      "title": "Calendar Name",
+      "type": "string"
+    },
+    "calendar_timezone": {
+      "title": "Calendar Timezone",
+      "type": "string"
+    },
+    "config_hash": {
+      "title": "Config Hash",
+      "type": "string"
+    },
+    "embargo_sessions": {
+      "title": "Embargo Sessions",
+      "type": "integer"
+    },
+    "excluded_boundary_ranges": {
+      "items": {
+        "$ref": "#/$defs/BoundaryRange"
+      },
+      "title": "Excluded Boundary Ranges",
+      "type": "array"
+    },
+    "final_test_access_status": {
+      "title": "Final Test Access Status",
+      "type": "string"
+    },
+    "generated_at": {
+      "title": "Generated At",
+      "type": "string"
+    },
+    "git_commit": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Git Commit"
+    },
+    "lookback_sessions": {
+      "title": "Lookback Sessions",
+      "type": "integer"
+    },
+    "manifest_hash": {
+      "title": "Manifest Hash",
+      "type": "string"
+    },
+    "manifest_version": {
+      "title": "Manifest Version",
+      "type": "string"
+    },
+    "maximum_maturity_sessions": {
+      "title": "Maximum Maturity Sessions",
+      "type": "integer"
+    },
+    "purge_sessions": {
+      "title": "Purge Sessions",
+      "type": "integer"
+    },
+    "study_end": {
+      "format": "date",
+      "title": "Study End",
+      "type": "string"
+    },
+    "study_start": {
+      "format": "date",
+      "title": "Study Start",
+      "type": "string"
+    },
+    "test_end": {
+      "format": "date",
+      "title": "Test End",
+      "type": "string"
+    },
+    "test_hash": {
+      "title": "Test Hash",
+      "type": "string"
+    },
+    "test_sessions": {
+      "title": "Test Sessions",
+      "type": "integer"
+    },
+    "test_start": {
+      "format": "date",
+      "title": "Test Start",
+      "type": "string"
+    },
+    "training_end": {
+      "format": "date",
+      "title": "Training End",
+      "type": "string"
+    },
+    "training_hash": {
+      "title": "Training Hash",
+      "type": "string"
+    },
+    "training_sessions": {
+      "title": "Training Sessions",
+      "type": "integer"
+    },
+    "training_start": {
+      "format": "date",
+      "title": "Training Start",
+      "type": "string"
+    },
+    "validation_end": {
+      "format": "date",
+      "title": "Validation End",
+      "type": "string"
+    },
+    "validation_hash": {
+      "title": "Validation Hash",
+      "type": "string"
+    },
+    "validation_sessions": {
+      "title": "Validation Sessions",
+      "type": "integer"
+    },
+    "validation_start": {
+      "format": "date",
+      "title": "Validation Start",
+      "type": "string"
+    }
+  },
+  "required": [
+    "manifest_version",
+    "calendar_name",
+    "calendar_library_version",
+    "calendar_timezone",
+    "study_start",
+    "study_end",
+    "lookback_sessions",
+    "maximum_maturity_sessions",
+    "purge_sessions",
+    "embargo_sessions",
+    "training_start",
+    "training_end",
+    "validation_start",
+    "validation_end",
+    "test_start",
+    "test_end",
+    "excluded_boundary_ranges",
+    "training_sessions",
+    "validation_sessions",
+    "test_sessions",
+    "training_hash",
+    "validation_hash",
+    "test_hash",
+    "calendar_hash",
+    "config_hash",
+    "git_commit",
+    "final_test_access_status",
+    "generated_at",
+    "manifest_hash"
+  ],
+  "title": "SplitManifest",
+  "type": "object",
+  "x-schema-version": "1.0"
+}

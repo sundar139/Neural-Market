@@ -1,0 +1,62 @@
+# SPY market-data source and split configuration for Databento qualification.
+# Contains no API key and no local absolute paths.
+provider:
+  name: databento
+
+  underlying:
+    dataset: ARCX.PILLAR
+    venue: NYSE_ARCA
+    source_class: primary_listing_venue
+    definition_schema: definition
+    daily_schema: ohlcv-1d
+    quote_schema: bbo-1m
+    optional_statistics_schema: statistics
+    symbol: SPY
+    symbol_type: raw_symbol
+    price_role: underlying_reference_path
+    quote_role: venue_liquidity_proxy
+    venue_specific: true
+    consolidated_equities: false
+    sip: false
+    official_nbbo: false
+    full_market_volume: false
+    required_future_validations:
+      - arcx_vs_equs_mini_development_overlap
+
+  options:
+    dataset: OPRA.PILLAR
+    source_class: consolidated_options_feed
+    definition_schema: definition
+    quote_schema: cbbo-1m
+    parent_symbol: SPY.OPT
+    symbol_type: parent
+
+study:
+  start_date: 2018-05-01
+  end_date: 2025-12-31
+  calendar: XNYS
+  timezone: America/New_York
+  regular_session_only: true
+
+episodes:
+  minimum_maturity_sessions: 5
+  maximum_maturity_sessions: 30
+  minimum_moneyness: 0.90
+  maximum_moneyness: 1.10
+  conditioning_lookback_sessions: 60
+
+quotes:
+  target_time: "15:59:00"
+  maximum_age_minutes: 5
+  crossed_quote_policy: reject
+  locked_quote_policy: retain_and_flag
+  missing_side_policy: reject
+
+splits:
+  training_start: 2018-05-01
+  training_anchor_end: 2021-12-31
+  validation_anchor_end: 2023-06-30
+  test_anchor_end: 2025-12-31
+  purge_sessions: 90
+  embargo_sessions: 10
+  final_test_access_status: sealed

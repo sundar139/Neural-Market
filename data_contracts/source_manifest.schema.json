@@ -1,0 +1,399 @@
+{
+  "$defs": {
+    "DateRange": {
+      "additionalProperties": false,
+      "description": "An inclusive date range.",
+      "properties": {
+        "end_date": {
+          "format": "date",
+          "title": "End Date",
+          "type": "string"
+        },
+        "start_date": {
+          "format": "date",
+          "title": "Start Date",
+          "type": "string"
+        }
+      },
+      "required": [
+        "start_date",
+        "end_date"
+      ],
+      "title": "DateRange",
+      "type": "object"
+    },
+    "OptionsSelectorSummary": {
+      "additionalProperties": false,
+      "description": "Account-neutral aggregate of the chunked parent-selector validation.\n\nDetailed child mappings are never stored here; only counts and a canonical\nhash of the aggregate are preserved in the tracked manifest.",
+      "properties": {
+        "canonical_summary_hash": {
+          "title": "Canonical Summary Hash",
+          "type": "string"
+        },
+        "chunk_count": {
+          "title": "Chunk Count",
+          "type": "integer"
+        },
+        "distinct_child_symbol_count": {
+          "title": "Distinct Child Symbol Count",
+          "type": "integer"
+        },
+        "distinct_output_count": {
+          "title": "Distinct Output Count",
+          "type": "integer"
+        },
+        "empty_chunk_count": {
+          "title": "Empty Chunk Count",
+          "type": "integer"
+        },
+        "end_exclusive": {
+          "format": "date",
+          "title": "End Exclusive",
+          "type": "string"
+        },
+        "failed_chunk_count": {
+          "title": "Failed Chunk Count",
+          "type": "integer"
+        },
+        "first_valid_date": {
+          "format": "date",
+          "title": "First Valid Date",
+          "type": "string"
+        },
+        "session_gap_count": {
+          "title": "Session Gap Count",
+          "type": "integer"
+        },
+        "successful_chunk_count": {
+          "title": "Successful Chunk Count",
+          "type": "integer"
+        },
+        "total_mapping_count": {
+          "title": "Total Mapping Count",
+          "type": "integer"
+        },
+        "validation_method": {
+          "title": "Validation Method",
+          "type": "string"
+        }
+      },
+      "required": [
+        "validation_method",
+        "chunk_count",
+        "successful_chunk_count",
+        "failed_chunk_count",
+        "empty_chunk_count",
+        "total_mapping_count",
+        "distinct_output_count",
+        "distinct_child_symbol_count",
+        "session_gap_count",
+        "first_valid_date",
+        "end_exclusive",
+        "canonical_summary_hash"
+      ],
+      "title": "OptionsSelectorSummary",
+      "type": "object"
+    },
+    "OptionsSourceBlock": {
+      "additionalProperties": false,
+      "description": "Accepted options source metadata for the source manifest.",
+      "properties": {
+        "dataset": {
+          "title": "Dataset",
+          "type": "string"
+        },
+        "limitations": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Limitations",
+          "type": "array"
+        },
+        "parent_symbol": {
+          "title": "Parent Symbol",
+          "type": "string"
+        },
+        "schema_ranges": {
+          "additionalProperties": {
+            "$ref": "#/$defs/DateRange"
+          },
+          "title": "Schema Ranges",
+          "type": "object"
+        },
+        "schemas": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Schemas",
+          "type": "array"
+        },
+        "selector_summary": {
+          "$ref": "#/$defs/OptionsSelectorSummary"
+        },
+        "source_class": {
+          "title": "Source Class",
+          "type": "string"
+        },
+        "symbol_resolution": {
+          "title": "Symbol Resolution",
+          "type": "string"
+        },
+        "validation_method": {
+          "title": "Validation Method",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dataset",
+        "source_class",
+        "parent_symbol",
+        "schemas",
+        "schema_ranges",
+        "symbol_resolution",
+        "validation_method",
+        "selector_summary",
+        "limitations"
+      ],
+      "title": "OptionsSourceBlock",
+      "type": "object"
+    },
+    "Publisher": {
+      "additionalProperties": false,
+      "description": "Public publisher metadata (no account details).",
+      "properties": {
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "publisher_id": {
+          "title": "Publisher Id",
+          "type": "integer"
+        },
+        "venue": {
+          "title": "Venue",
+          "type": "string"
+        }
+      },
+      "required": [
+        "publisher_id",
+        "venue",
+        "description"
+      ],
+      "title": "Publisher",
+      "type": "object"
+    },
+    "UnderlyingSourceBlock": {
+      "additionalProperties": false,
+      "description": "Accepted underlying source metadata for the source manifest.",
+      "properties": {
+        "consolidated_equities": {
+          "title": "Consolidated Equities",
+          "type": "boolean"
+        },
+        "dataset": {
+          "title": "Dataset",
+          "type": "string"
+        },
+        "full_market_volume": {
+          "title": "Full Market Volume",
+          "type": "boolean"
+        },
+        "limitations": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Limitations",
+          "type": "array"
+        },
+        "official_nbbo": {
+          "title": "Official Nbbo",
+          "type": "boolean"
+        },
+        "optional_schemas": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Optional Schemas",
+          "type": "object"
+        },
+        "price_role": {
+          "title": "Price Role",
+          "type": "string"
+        },
+        "publisher": {
+          "$ref": "#/$defs/Publisher"
+        },
+        "quote_role": {
+          "title": "Quote Role",
+          "type": "string"
+        },
+        "required_future_validations": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Future Validations",
+          "type": "array"
+        },
+        "schema_ranges": {
+          "additionalProperties": {
+            "$ref": "#/$defs/DateRange"
+          },
+          "title": "Schema Ranges",
+          "type": "object"
+        },
+        "schemas": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Schemas",
+          "type": "array"
+        },
+        "sip": {
+          "title": "Sip",
+          "type": "boolean"
+        },
+        "source_class": {
+          "title": "Source Class",
+          "type": "string"
+        },
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        },
+        "symbol_resolution": {
+          "title": "Symbol Resolution",
+          "type": "string"
+        },
+        "venue": {
+          "title": "Venue",
+          "type": "string"
+        },
+        "venue_specific": {
+          "title": "Venue Specific",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "dataset",
+        "venue",
+        "source_class",
+        "symbol",
+        "schemas",
+        "optional_schemas",
+        "schema_ranges",
+        "publisher",
+        "symbol_resolution",
+        "price_role",
+        "quote_role",
+        "venue_specific",
+        "consolidated_equities",
+        "sip",
+        "official_nbbo",
+        "full_market_volume",
+        "limitations",
+        "required_future_validations"
+      ],
+      "title": "UnderlyingSourceBlock",
+      "type": "object"
+    }
+  },
+  "$id": "neuralmarket:contract:SourceManifest:1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Tracked, account-neutral research metadata for a qualified source.",
+  "properties": {
+    "code_commit": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Code Commit"
+    },
+    "config_hash": {
+      "title": "Config Hash",
+      "type": "string"
+    },
+    "generated_at": {
+      "title": "Generated At",
+      "type": "string"
+    },
+    "license_notice": {
+      "title": "License Notice",
+      "type": "string"
+    },
+    "manifest_hash": {
+      "title": "Manifest Hash",
+      "type": "string"
+    },
+    "manifest_version": {
+      "title": "Manifest Version",
+      "type": "string"
+    },
+    "options": {
+      "$ref": "#/$defs/OptionsSourceBlock"
+    },
+    "provider": {
+      "title": "Provider",
+      "type": "string"
+    },
+    "qualification_status": {
+      "title": "Qualification Status",
+      "type": "string"
+    },
+    "qualification_timestamp": {
+      "title": "Qualification Timestamp",
+      "type": "string"
+    },
+    "snapshot_rules": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Snapshot Rules",
+      "type": "object"
+    },
+    "study_end": {
+      "format": "date",
+      "title": "Study End",
+      "type": "string"
+    },
+    "study_start": {
+      "format": "date",
+      "title": "Study Start",
+      "type": "string"
+    },
+    "transaction_cost_source_policy": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Transaction Cost Source Policy",
+      "type": "object"
+    },
+    "underlying": {
+      "$ref": "#/$defs/UnderlyingSourceBlock"
+    }
+  },
+  "required": [
+    "manifest_version",
+    "provider",
+    "study_start",
+    "study_end",
+    "underlying",
+    "options",
+    "snapshot_rules",
+    "transaction_cost_source_policy",
+    "license_notice",
+    "qualification_status",
+    "qualification_timestamp",
+    "config_hash",
+    "code_commit",
+    "generated_at",
+    "manifest_hash"
+  ],
+  "title": "SourceManifest",
+  "type": "object",
+  "x-schema-version": "1.0"
+}

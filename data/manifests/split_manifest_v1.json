@@ -1,0 +1,44 @@
+{
+  "calendar_hash": "ef6fc72ae7e7e2be17079421e3fd443df0cba9af6ec90ab4be2df0847023cf24",
+  "calendar_library_version": "4.13.2",
+  "calendar_name": "XNYS",
+  "calendar_timezone": "America/New_York",
+  "config_hash": "883f1b79ae71c93546d49b0255366bd4e136a4777dca4b27b898510af2bbfdb2",
+  "embargo_sessions": 10,
+  "excluded_boundary_ranges": [
+    {
+      "end_date": "2022-05-25",
+      "session_count": 100,
+      "session_hash": "3220ec6ad784b9025ef27fdb4a4836c722e6e26b67432123603b6ddb5cda95d7",
+      "start_date": "2022-01-03"
+    },
+    {
+      "end_date": "2023-11-21",
+      "session_count": 100,
+      "session_hash": "4f8da61f17696281d21633c739564b81dd6e987cfc03221073cedd3468b5ed9f",
+      "start_date": "2023-07-03"
+    }
+  ],
+  "final_test_access_status": "sealed",
+  "generated_at": "2026-07-12T15:01:39.316429+00:00",
+  "git_commit": "349a5b386f8ae5df38de4d2dacf57586c21178c8",
+  "lookback_sessions": 60,
+  "manifest_hash": "877caee3f7bb471a491c299a8673fdf1b386b12b9ba7f4d17bd52d2954bdcabe",
+  "manifest_version": "1.0",
+  "maximum_maturity_sessions": 30,
+  "purge_sessions": 90,
+  "study_end": "2025-12-31",
+  "study_start": "2018-05-01",
+  "test_end": "2025-12-31",
+  "test_hash": "8c8011ebbb2583dc7b4e2342c0efc65b60caf4c5206b00e2ea8a72d61c0a2be3",
+  "test_sessions": 528,
+  "test_start": "2023-11-22",
+  "training_end": "2021-12-31",
+  "training_hash": "3702ef77224472ffb7cc951b66f7cc44d4e85407132ccb5a38939d6ebc7f8605",
+  "training_sessions": 926,
+  "training_start": "2018-05-01",
+  "validation_end": "2023-06-30",
+  "validation_hash": "a028fb18020317b54df1d07de02bed5205737ebd7d5047d8a839677a12ce7c7a",
+  "validation_sessions": 275,
+  "validation_start": "2022-05-26"
+}

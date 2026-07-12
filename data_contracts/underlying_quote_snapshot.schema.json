@@ -1,0 +1,130 @@
+{
+  "$id": "neuralmarket:contract:UnderlyingQuoteSnapshot:1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Canonical end-of-day aggregated BBO snapshot for the underlying.\n\n``midpoint`` is ``(bid + ask) / 2``. ``relative_spread`` uses the midpoint as\nits denominator, i.e. ``(ask - bid) / midpoint``; when the midpoint is zero the\nrelative spread is unavailable (``None``) rather than infinite.",
+  "properties": {
+    "ask": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        }
+      ],
+      "title": "Ask"
+    },
+    "ask_size": {
+      "minimum": 0,
+      "title": "Ask Size",
+      "type": "integer"
+    },
+    "bid": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        }
+      ],
+      "title": "Bid"
+    },
+    "bid_size": {
+      "minimum": 0,
+      "title": "Bid Size",
+      "type": "integer"
+    },
+    "currency": {
+      "pattern": "^[A-Z]{3}$",
+      "title": "Currency",
+      "type": "string"
+    },
+    "event_timestamp": {
+      "format": "date-time",
+      "title": "Event Timestamp",
+      "type": "string"
+    },
+    "midpoint": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        }
+      ],
+      "title": "Midpoint"
+    },
+    "relative_spread": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Relative Spread"
+    },
+    "schema_version": {
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "session_date": {
+      "format": "date",
+      "title": "Session Date",
+      "type": "string"
+    },
+    "source": {
+      "minLength": 1,
+      "title": "Source",
+      "type": "string"
+    },
+    "source_dataset": {
+      "minLength": 1,
+      "title": "Source Dataset",
+      "type": "string"
+    },
+    "source_symbol": {
+      "minLength": 1,
+      "title": "Source Symbol",
+      "type": "string"
+    },
+    "symbol": {
+      "minLength": 1,
+      "title": "Symbol",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_timestamp",
+    "session_date",
+    "symbol",
+    "bid",
+    "ask",
+    "bid_size",
+    "ask_size",
+    "midpoint",
+    "relative_spread",
+    "currency",
+    "source",
+    "source_dataset",
+    "source_symbol"
+  ],
+  "title": "UnderlyingQuoteSnapshot",
+  "type": "object",
+  "x-schema-version": "1.0"
+}

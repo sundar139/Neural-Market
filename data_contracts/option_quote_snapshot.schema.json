@@ -1,0 +1,141 @@
+{
+  "$defs": {
+    "OptionType": {
+      "description": "Option right.",
+      "enum": [
+        "call",
+        "put"
+      ],
+      "title": "OptionType",
+      "type": "string"
+    }
+  },
+  "$id": "neuralmarket:contract:OptionQuoteSnapshot:1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Canonical end-of-day consolidated option quote snapshot.",
+  "properties": {
+    "ask": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        }
+      ],
+      "title": "Ask"
+    },
+    "ask_size": {
+      "minimum": 0,
+      "title": "Ask Size",
+      "type": "integer"
+    },
+    "bid": {
+      "anyOf": [
+        {
+          "minimum": 0.0,
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        }
+      ],
+      "title": "Bid"
+    },
+    "bid_size": {
+      "minimum": 0,
+      "title": "Bid Size",
+      "type": "integer"
+    },
+    "currency": {
+      "pattern": "^[A-Z]{3}$",
+      "title": "Currency",
+      "type": "string"
+    },
+    "event_timestamp": {
+      "format": "date-time",
+      "title": "Event Timestamp",
+      "type": "string"
+    },
+    "expiration_date": {
+      "format": "date",
+      "title": "Expiration Date",
+      "type": "string"
+    },
+    "instrument_id": {
+      "minLength": 1,
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "option_symbol": {
+      "minLength": 1,
+      "title": "Option Symbol",
+      "type": "string"
+    },
+    "option_type": {
+      "$ref": "#/$defs/OptionType"
+    },
+    "schema_version": {
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "session_date": {
+      "format": "date",
+      "title": "Session Date",
+      "type": "string"
+    },
+    "source": {
+      "minLength": 1,
+      "title": "Source",
+      "type": "string"
+    },
+    "source_dataset": {
+      "minLength": 1,
+      "title": "Source Dataset",
+      "type": "string"
+    },
+    "strike": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0.0,
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        }
+      ],
+      "title": "Strike"
+    },
+    "underlying_symbol": {
+      "minLength": 1,
+      "title": "Underlying Symbol",
+      "type": "string"
+    }
+  },
+  "required": [
+    "event_timestamp",
+    "session_date",
+    "instrument_id",
+    "option_symbol",
+    "underlying_symbol",
+    "expiration_date",
+    "strike",
+    "option_type",
+    "bid",
+    "ask",
+    "bid_size",
+    "ask_size",
+    "currency",
+    "source",
+    "source_dataset"
+  ],
+  "title": "OptionQuoteSnapshot",
+  "type": "object",
+  "x-schema-version": "1.0"
+}

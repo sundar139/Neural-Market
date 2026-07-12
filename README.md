@@ -67,6 +67,27 @@ This runs Ruff lint and format checks, strict mypy, pytest with branch coverage
     --output "reports/environment/environment_check.json"
 ```
 
+## Market-data qualification
+
+Before any historical download, the data source is qualified and the chronological
+splits are frozen. These commands are offline and need no credentials:
+
+```powershell
+& .\.venv\Scripts\neuralmarket.exe data contracts validate
+& .\.venv\Scripts\neuralmarket.exe data split freeze --config "configs/data/spy_daily_databento.yaml" --output "data/manifests/split_manifest_v1.json"
+& .\.venv\Scripts\neuralmarket.exe data manifests verify --source "data/manifests/source_manifest_v1.json" --split "data/manifests/split_manifest_v1.json"
+```
+
+Source qualification needs a Databento key in a local `.env` and only issues
+metadata, symbology, and cost-estimation requests — no records are downloaded:
+
+```powershell
+& .\.venv\Scripts\neuralmarket.exe data qualify --config "configs/data/spy_daily_databento.yaml" --output "reports/data/source_qualification.local.json" --source-manifest "data/manifests/source_manifest_v1.json"
+```
+
+See [source selection](docs/data/source_selection.md), [canonical contracts](docs/data/canonical_contracts.md),
+[split policy](docs/data/split_policy.md), and [Protocol Amendment 001](reports/protocol/research_protocol_amendment_001.md).
+
 ## Data and secrets
 
 Raw licensed vendor data is never committed; generated data is tracked with DVC

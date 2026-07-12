@@ -1,0 +1,97 @@
+{
+  "$defs": {
+    "RejectionReason": {
+      "description": "Typed reasons a record may be rejected from a normalized table.",
+      "enum": [
+        "missing_required_field",
+        "invalid_timestamp",
+        "duplicate_record",
+        "crossed_quote",
+        "negative_price",
+        "invalid_size",
+        "stale_quote",
+        "unknown_contract",
+        "contract_mismatch",
+        "outside_regular_session",
+        "corrupted_record",
+        "split_boundary_violation"
+      ],
+      "title": "RejectionReason",
+      "type": "string"
+    }
+  },
+  "$id": "neuralmarket:contract:RejectedRecord:1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Canonical record capturing why a source row was rejected.",
+  "properties": {
+    "event_timestamp": {
+      "format": "date-time",
+      "title": "Event Timestamp",
+      "type": "string"
+    },
+    "filter_version": {
+      "minLength": 1,
+      "title": "Filter Version",
+      "type": "string"
+    },
+    "instrument_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Instrument Id"
+    },
+    "payload_hash": {
+      "minLength": 1,
+      "title": "Payload Hash",
+      "type": "string"
+    },
+    "reason_code": {
+      "$ref": "#/$defs/RejectionReason"
+    },
+    "reason_detail": {
+      "title": "Reason Detail",
+      "type": "string"
+    },
+    "record_id": {
+      "minLength": 1,
+      "title": "Record Id",
+      "type": "string"
+    },
+    "source": {
+      "minLength": 1,
+      "title": "Source",
+      "type": "string"
+    },
+    "source_dataset": {
+      "minLength": 1,
+      "title": "Source Dataset",
+      "type": "string"
+    },
+    "source_file_or_request": {
+      "minLength": 1,
+      "title": "Source File Or Request",
+      "type": "string"
+    }
+  },
+  "required": [
+    "record_id",
+    "source",
+    "source_dataset",
+    "source_file_or_request",
+    "event_timestamp",
+    "instrument_id",
+    "reason_code",
+    "reason_detail",
+    "filter_version",
+    "payload_hash"
+  ],
+  "title": "RejectedRecord",
+  "type": "object",
+  "x-schema-version": "1.0"
+}

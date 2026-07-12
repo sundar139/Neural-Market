@@ -1,0 +1,141 @@
+{
+  "$defs": {
+    "ExerciseStyle": {
+      "description": "Option exercise style.",
+      "enum": [
+        "american",
+        "european"
+      ],
+      "title": "ExerciseStyle",
+      "type": "string"
+    },
+    "OptionType": {
+      "description": "Option right.",
+      "enum": [
+        "call",
+        "put"
+      ],
+      "title": "OptionType",
+      "type": "string"
+    },
+    "SettlementStyle": {
+      "description": "Option settlement style.",
+      "enum": [
+        "physical",
+        "cash"
+      ],
+      "title": "SettlementStyle",
+      "type": "string"
+    }
+  },
+  "$id": "neuralmarket:contract:OptionDefinition:1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Canonical point-in-time option contract definition.",
+  "properties": {
+    "contract_multiplier": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0.0,
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        }
+      ],
+      "title": "Contract Multiplier"
+    },
+    "currency": {
+      "pattern": "^[A-Z]{3}$",
+      "title": "Currency",
+      "type": "string"
+    },
+    "definition_timestamp": {
+      "format": "date-time",
+      "title": "Definition Timestamp",
+      "type": "string"
+    },
+    "exercise_style": {
+      "$ref": "#/$defs/ExerciseStyle"
+    },
+    "expiration_date": {
+      "format": "date",
+      "title": "Expiration Date",
+      "type": "string"
+    },
+    "instrument_id": {
+      "minLength": 1,
+      "title": "Instrument Id",
+      "type": "string"
+    },
+    "option_symbol": {
+      "minLength": 1,
+      "title": "Option Symbol",
+      "type": "string"
+    },
+    "option_type": {
+      "$ref": "#/$defs/OptionType"
+    },
+    "raw_symbol": {
+      "minLength": 1,
+      "title": "Raw Symbol",
+      "type": "string"
+    },
+    "schema_version": {
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "settlement_style": {
+      "$ref": "#/$defs/SettlementStyle"
+    },
+    "source": {
+      "minLength": 1,
+      "title": "Source",
+      "type": "string"
+    },
+    "source_dataset": {
+      "minLength": 1,
+      "title": "Source Dataset",
+      "type": "string"
+    },
+    "strike": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0.0,
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        }
+      ],
+      "title": "Strike"
+    },
+    "underlying_symbol": {
+      "minLength": 1,
+      "title": "Underlying Symbol",
+      "type": "string"
+    }
+  },
+  "required": [
+    "definition_timestamp",
+    "instrument_id",
+    "option_symbol",
+    "raw_symbol",
+    "underlying_symbol",
+    "expiration_date",
+    "strike",
+    "option_type",
+    "exercise_style",
+    "settlement_style",
+    "contract_multiplier",
+    "currency",
+    "source",
+    "source_dataset"
+  ],
+  "title": "OptionDefinition",
+  "type": "object",
+  "x-schema-version": "1.0"
+}

@@ -1,0 +1,19 @@
+[
+  {
+    "definition_timestamp": "2020-01-02T13:30:00+00:00",
+    "instrument_id": "123456",
+    "option_symbol": "SPY   200117C00325000",
+    "raw_symbol": "SPY   200117C00325000",
+    "underlying_symbol": "SPY",
+    "expiration_date": "2020-01-17",
+    "strike": "325.00",
+    "option_type": "call",
+    "exercise_style": "american",
+    "settlement_style": "physical",
+    "contract_multiplier": "100",
+    "currency": "USD",
+    "source": "databento",
+    "source_dataset": "OPRA.PILLAR",
+    "schema_version": "1.0"
+  }
+]

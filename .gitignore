@@ -44,6 +44,11 @@ outputs/
 reports/environment/*.json
 reports/environment/*.txt
 
+# Local, account-specific data reports (qualification, repeated split checks, backups)
+reports/data/*.local.json
+reports/data/*.local.patch
+reports/data/*.json
+
 # Jupyter
 .ipynb_checkpoints/
 

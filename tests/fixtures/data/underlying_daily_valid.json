@@ -1,0 +1,34 @@
+[
+  {
+    "session_date": "2020-01-02",
+    "event_timestamp": "2020-01-02T21:00:00+00:00",
+    "symbol": "SPY",
+    "open": "323.54",
+    "high": "324.89",
+    "low": "322.53",
+    "close": "324.87",
+    "volume": 59151200,
+    "currency": "USD",
+    "adjustment_status": "unadjusted",
+    "source": "databento",
+    "source_dataset": "EQUS.SUMMARY",
+    "source_symbol": "SPY",
+    "schema_version": "1.0"
+  },
+  {
+    "session_date": "2020-01-03",
+    "event_timestamp": "2020-01-03T21:00:00+00:00",
+    "symbol": "SPY",
+    "open": "321.16",
+    "high": "323.64",
+    "low": "321.10",
+    "close": "322.41",
+    "volume": 77709700,
+    "currency": "USD",
+    "adjustment_status": "unadjusted",
+    "source": "databento",
+    "source_dataset": "EQUS.SUMMARY",
+    "source_symbol": "SPY",
+    "schema_version": "1.0"
+  }
+]

@@ -1,0 +1,38 @@
+[
+  {
+    "event_timestamp": "2020-01-02T20:59:00+00:00",
+    "session_date": "2020-01-02",
+    "instrument_id": "123456",
+    "option_symbol": "SPY   200117C00325000",
+    "underlying_symbol": "SPY",
+    "expiration_date": "2020-01-17",
+    "strike": "325.00",
+    "option_type": "call",
+    "bid": "3.10",
+    "ask": "3.20",
+    "bid_size": 50,
+    "ask_size": 40,
+    "currency": "USD",
+    "source": "databento",
+    "source_dataset": "OPRA.PILLAR",
+    "schema_version": "1.0"
+  },
+  {
+    "event_timestamp": "2020-01-02T20:59:00+00:00",
+    "session_date": "2020-01-02",
+    "instrument_id": "123457",
+    "option_symbol": "SPY   200117C00326000",
+    "underlying_symbol": "SPY",
+    "expiration_date": "2020-01-17",
+    "strike": "326.00",
+    "option_type": "call",
+    "bid": "2.50",
+    "ask": "2.50",
+    "bid_size": 10,
+    "ask_size": 12,
+    "currency": "USD",
+    "source": "databento",
+    "source_dataset": "OPRA.PILLAR",
+    "schema_version": "1.0"
+  }
+]

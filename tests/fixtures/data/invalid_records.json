@@ -1,0 +1,180 @@
+[
+  {
+    "case": "underlying_naive_timestamp",
+    "model": "underlying_daily",
+    "payload": {
+      "session_date": "2020-01-02",
+      "event_timestamp": "2020-01-02T21:00:00",
+      "symbol": "SPY",
+      "open": "323.54",
+      "high": "324.89",
+      "low": "322.53",
+      "close": "324.87",
+      "volume": 59151200,
+      "currency": "USD",
+      "adjustment_status": "unadjusted",
+      "source": "databento",
+      "source_dataset": "EQUS.SUMMARY",
+      "source_symbol": "SPY"
+    }
+  },
+  {
+    "case": "underlying_impossible_ohlc",
+    "model": "underlying_daily",
+    "payload": {
+      "session_date": "2020-01-02",
+      "event_timestamp": "2020-01-02T21:00:00+00:00",
+      "symbol": "SPY",
+      "open": "323.54",
+      "high": "320.00",
+      "low": "322.53",
+      "close": "324.87",
+      "volume": 59151200,
+      "currency": "USD",
+      "adjustment_status": "unadjusted",
+      "source": "databento",
+      "source_dataset": "EQUS.SUMMARY",
+      "source_symbol": "SPY"
+    }
+  },
+  {
+    "case": "underlying_negative_price",
+    "model": "underlying_daily",
+    "payload": {
+      "session_date": "2020-01-02",
+      "event_timestamp": "2020-01-02T21:00:00+00:00",
+      "symbol": "SPY",
+      "open": "-1.00",
+      "high": "324.89",
+      "low": "322.53",
+      "close": "324.87",
+      "volume": 59151200,
+      "currency": "USD",
+      "adjustment_status": "unadjusted",
+      "source": "databento",
+      "source_dataset": "EQUS.SUMMARY",
+      "source_symbol": "SPY"
+    }
+  },
+  {
+    "case": "underlying_lowercase_currency",
+    "model": "underlying_daily",
+    "payload": {
+      "session_date": "2020-01-02",
+      "event_timestamp": "2020-01-02T21:00:00+00:00",
+      "symbol": "SPY",
+      "open": "323.54",
+      "high": "324.89",
+      "low": "322.53",
+      "close": "324.87",
+      "volume": 59151200,
+      "currency": "usd",
+      "adjustment_status": "unadjusted",
+      "source": "databento",
+      "source_dataset": "EQUS.SUMMARY",
+      "source_symbol": "SPY"
+    }
+  },
+  {
+    "case": "option_invalid_type",
+    "model": "option_definition",
+    "payload": {
+      "definition_timestamp": "2020-01-02T13:30:00+00:00",
+      "instrument_id": "123456",
+      "option_symbol": "SPY   200117C00325000",
+      "raw_symbol": "SPY   200117C00325000",
+      "underlying_symbol": "SPY",
+      "expiration_date": "2020-01-17",
+      "strike": "325.00",
+      "option_type": "c",
+      "exercise_style": "american",
+      "settlement_style": "physical",
+      "contract_multiplier": "100",
+      "currency": "USD",
+      "source": "databento",
+      "source_dataset": "OPRA.PILLAR"
+    }
+  },
+  {
+    "case": "option_negative_strike",
+    "model": "option_definition",
+    "payload": {
+      "definition_timestamp": "2020-01-02T13:30:00+00:00",
+      "instrument_id": "123456",
+      "option_symbol": "SPY   200117C00325000",
+      "raw_symbol": "SPY   200117C00325000",
+      "underlying_symbol": "SPY",
+      "expiration_date": "2020-01-17",
+      "strike": "-325.00",
+      "option_type": "call",
+      "exercise_style": "american",
+      "settlement_style": "physical",
+      "contract_multiplier": "100",
+      "currency": "USD",
+      "source": "databento",
+      "source_dataset": "OPRA.PILLAR"
+    }
+  },
+  {
+    "case": "quote_crossed",
+    "model": "option_quote_snapshot",
+    "payload": {
+      "event_timestamp": "2020-01-02T20:59:00+00:00",
+      "session_date": "2020-01-02",
+      "instrument_id": "123456",
+      "option_symbol": "SPY   200117C00325000",
+      "underlying_symbol": "SPY",
+      "expiration_date": "2020-01-17",
+      "strike": "325.00",
+      "option_type": "call",
+      "bid": "3.30",
+      "ask": "3.20",
+      "bid_size": 50,
+      "ask_size": 40,
+      "currency": "USD",
+      "source": "databento",
+      "source_dataset": "OPRA.PILLAR"
+    }
+  },
+  {
+    "case": "quote_negative_size",
+    "model": "option_quote_snapshot",
+    "payload": {
+      "event_timestamp": "2020-01-02T20:59:00+00:00",
+      "session_date": "2020-01-02",
+      "instrument_id": "123456",
+      "option_symbol": "SPY   200117C00325000",
+      "underlying_symbol": "SPY",
+      "expiration_date": "2020-01-17",
+      "strike": "325.00",
+      "option_type": "call",
+      "bid": "3.10",
+      "ask": "3.20",
+      "bid_size": -1,
+      "ask_size": 40,
+      "currency": "USD",
+      "source": "databento",
+      "source_dataset": "OPRA.PILLAR"
+    }
+  },
+  {
+    "case": "quote_missing_side",
+    "model": "option_quote_snapshot",
+    "payload": {
+      "event_timestamp": "2020-01-02T20:59:00+00:00",
+      "session_date": "2020-01-02",
+      "instrument_id": "123456",
+      "option_symbol": "SPY   200117C00325000",
+      "underlying_symbol": "SPY",
+      "expiration_date": "2020-01-17",
+      "strike": "325.00",
+      "option_type": "call",
+      "ask": "3.20",
+      "bid_size": 50,
+      "ask_size": 40,
+      "currency": "USD",
+      "source": "databento",
+      "source_dataset": "OPRA.PILLAR"
+    }
+  }
+]

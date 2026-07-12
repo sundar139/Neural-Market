@@ -1,0 +1,137 @@
+{
+  "$defs": {
+    "AdjustmentStatus": {
+      "description": "Whether prices have been split/dividend adjusted.",
+      "enum": [
+        "unadjusted",
+        "adjusted"
+      ],
+      "title": "AdjustmentStatus",
+      "type": "string"
+    }
+  },
+  "$id": "neuralmarket:contract:UnderlyingDailyBar:1.0",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Canonical daily OHLCV bar for an underlying instrument.",
+  "properties": {
+    "adjustment_status": {
+      "$ref": "#/$defs/AdjustmentStatus"
+    },
+    "close": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0.0,
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        }
+      ],
+      "title": "Close"
+    },
+    "currency": {
+      "pattern": "^[A-Z]{3}$",
+      "title": "Currency",
+      "type": "string"
+    },
+    "event_timestamp": {
+      "format": "date-time",
+      "title": "Event Timestamp",
+      "type": "string"
+    },
+    "high": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0.0,
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        }
+      ],
+      "title": "High"
+    },
+    "low": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0.0,
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        }
+      ],
+      "title": "Low"
+    },
+    "open": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0.0,
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        }
+      ],
+      "title": "Open"
+    },
+    "schema_version": {
+      "default": "1.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "session_date": {
+      "format": "date",
+      "title": "Session Date",
+      "type": "string"
+    },
+    "source": {
+      "minLength": 1,
+      "title": "Source",
+      "type": "string"
+    },
+    "source_dataset": {
+      "minLength": 1,
+      "title": "Source Dataset",
+      "type": "string"
+    },
+    "source_symbol": {
+      "minLength": 1,
+      "title": "Source Symbol",
+      "type": "string"
+    },
+    "symbol": {
+      "minLength": 1,
+      "title": "Symbol",
+      "type": "string"
+    },
+    "volume": {
+      "minimum": 0,
+      "title": "Volume",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "session_date",
+    "event_timestamp",
+    "symbol",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "currency",
+    "adjustment_status",
+    "source",
+    "source_dataset",
+    "source_symbol"
+  ],
+  "title": "UnderlyingDailyBar",
+  "type": "object",
+  "x-schema-version": "1.0"
+}

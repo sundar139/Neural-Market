@@ -1,0 +1,109 @@
+{
+  "code_commit": "349a5b386f8ae5df38de4d2dacf57586c21178c8",
+  "config_hash": "883f1b79ae71c93546d49b0255366bd4e136a4777dca4b27b898510af2bbfdb2",
+  "generated_at": "2026-07-12T14:57:48.376951+00:00",
+  "license_notice": "Market data is licensed and commercial. Raw and normalized records must not be redistributed through Git. Users must independently comply with vendor terms.",
+  "manifest_hash": "3d31e373defbe43aa8eb30c453c1e65c1913d3103e336e02b26757fecd710604",
+  "manifest_version": "1.0",
+  "options": {
+    "dataset": "OPRA.PILLAR",
+    "limitations": [
+      "OPRA.PILLAR is limited to SPY options selected through SPY.OPT."
+    ],
+    "parent_symbol": "SPY.OPT",
+    "schema_ranges": {
+      "OPRA.PILLAR/cbbo-1m": {
+        "end_date": "2026-07-11",
+        "start_date": "2013-04-01"
+      },
+      "OPRA.PILLAR/definition": {
+        "end_date": "2026-07-11",
+        "start_date": "2013-04-01"
+      }
+    },
+    "schemas": [
+      "definition",
+      "cbbo-1m"
+    ],
+    "selector_summary": {
+      "canonical_summary_hash": "aca9fc951b0c24f08b10e3cbfb789c3d3a9774234d7518e954a42fc0131b5b5e",
+      "chunk_count": 92,
+      "distinct_child_symbol_count": 1190610,
+      "distinct_output_count": 1121356,
+      "empty_chunk_count": 0,
+      "end_exclusive": "2026-01-01",
+      "failed_chunk_count": 0,
+      "first_valid_date": "2018-05-01",
+      "session_gap_count": 0,
+      "successful_chunk_count": 92,
+      "total_mapping_count": 7165580,
+      "validation_method": "chunked_symbology_resolution"
+    },
+    "source_class": "consolidated_options_feed",
+    "symbol_resolution": "parent selector expanded to active SPY children on every market session across 92 monthly chunks",
+    "validation_method": "chunked_symbology_resolution"
+  },
+  "provider": "databento",
+  "qualification_status": "qualified",
+  "qualification_timestamp": "2026-07-12T14:57:48.373947+00:00",
+  "snapshot_rules": {
+    "option": "Use the final valid consolidated quote at or before 15:59:00 America/New_York, subject to a maximum quote age of five minutes.",
+    "underlying": "Use ARCX.PILLAR BBO only as an NYSE Arca venue-liquidity proxy; it is not official NBBO."
+  },
+  "study_end": "2025-12-31",
+  "study_start": "2018-05-01",
+  "transaction_cost_source_policy": {
+    "arcx_spread_role": "auxiliary",
+    "primary": "explicit_modeled_costs"
+  },
+  "underlying": {
+    "consolidated_equities": false,
+    "dataset": "ARCX.PILLAR",
+    "full_market_volume": false,
+    "limitations": [
+      "ARCX.PILLAR is venue-specific NYSE Arca data, not SIP or consolidated equities.",
+      "ARCX BBO is not official NBBO and ARCX volume is not full-market SPY volume.",
+      "Acceptance is conditional on later row-level quality, corporate-action, and venue-proxy validation.",
+      "The primary-listing-venue exception applies only to SPY; other underlyings require qualification."
+    ],
+    "official_nbbo": false,
+    "optional_schemas": {
+      "statistics": "available"
+    },
+    "price_role": "underlying_reference_path",
+    "publisher": {
+      "description": "NYSE Arca Integrated",
+      "publisher_id": 43,
+      "venue": "ARCX"
+    },
+    "quote_role": "venue_liquidity_proxy",
+    "required_future_validations": [
+      "arcx_vs_equs_mini_development_overlap"
+    ],
+    "schema_ranges": {
+      "ARCX.PILLAR/bbo-1m": {
+        "end_date": "2026-07-11",
+        "start_date": "2018-05-01"
+      },
+      "ARCX.PILLAR/definition": {
+        "end_date": "2026-07-11",
+        "start_date": "2018-05-01"
+      },
+      "ARCX.PILLAR/ohlcv-1d": {
+        "end_date": "2026-07-11",
+        "start_date": "2018-05-01"
+      }
+    },
+    "schemas": [
+      "definition",
+      "ohlcv-1d",
+      "bbo-1m"
+    ],
+    "sip": false,
+    "source_class": "primary_listing_venue",
+    "symbol": "SPY",
+    "symbol_resolution": "resolved throughout interval",
+    "venue": "NYSE_ARCA",
+    "venue_specific": true
+  }
+}
