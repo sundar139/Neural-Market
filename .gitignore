@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Editors
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# Data and artifacts
+data/raw/
+data/interim/
+data/processed/
+data/vendor/
+checkpoints/
+artifacts/
+mlruns/
+outputs/
+*.ckpt
+*.pt
+*.pth
+
+# Generated environment reports
+reports/environment/*.json
+reports/environment/*.txt
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code project memory
+*.memory.md
+.agent-memory/

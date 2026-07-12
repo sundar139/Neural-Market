@@ -1,0 +1,75 @@
+# NeuralMarket
+
+Research-grade foundation for conditional neural SDE market simulation and
+cost-aware hedging.
+
+## Research question
+
+Does a conditional neural stochastic differential equation trained with a
+non-adversarial signature-kernel score (1) reproduce financial path structure
+more faithfully and stably than classical and adversarial alternatives, and
+(2) improve downstream cost-aware hedging risk on held-out real-market episodes?
+
+## Core scope
+
+Initial confirmatory scope: SPY underlying; European calls and puts; maturities
+of roughly 5–30 trading days; moneyness 0.90–1.10; daily hedging; 95% CVaR of
+hedging loss as the primary risk endpoint. Signature-score and WGAN neural SDE
+generators are compared against classical baselines (bootstraps, GBM,
+GJR/EGARCH, Heston), and a GRU deep hedger against Black–Scholes delta variants.
+See the [research protocol](reports/protocol/research_protocol_v1.md).
+
+## Non-claims
+
+The simulator is a physical-measure scenario generator. It is **not** claimed to
+be risk-neutral or arbitrage-free, is not intended to price securities without
+additional assumptions, and statistical improvement does not imply production
+trading profitability.
+
+## Repository status
+
+Foundation only: reproducibility, configuration, environment diagnostics, and
+quality tooling. No data, models, hedging policies, or results exist yet. No
+empirical result is claimed. Confirmatory results must be reproducible through
+versioned CLI commands and configurations. Notebooks will never contain
+authoritative implementations.
+
+## Requirements
+
+Python 3.11 (`>=3.11,<3.12`).
+
+## Setup (PowerShell)
+
+```powershell
+Set-Location "<repository-root>"
+py -3.11 -m venv .venv
+& .\.venv\Scripts\python.exe -m pip install --upgrade pip setuptools wheel
+& .\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+& .\.venv\Scripts\pre-commit.exe install
+```
+
+Or run `scripts/bootstrap.ps1`.
+
+## Quality verification
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1
+```
+
+This runs Ruff lint and format checks, strict mypy, pytest with branch coverage
+(minimum 85%), pre-commit, a CLI smoke test, and environment-report generation.
+
+## Environment report
+
+```powershell
+& .\.venv\Scripts\neuralmarket.exe environment check `
+    --config "configs/reproducibility/default.yaml" `
+    --output "reports/environment/environment_check.json"
+```
+
+## Data and secrets
+
+Raw licensed vendor data is never committed; generated data is tracked with DVC
+later. See [data governance](data/README.md). Never commit `.env`, API keys,
+tokens, checkpoints, or `.venv`. Copy `.env.example` to a local, ignored `.env`
+for optional non-secret settings.

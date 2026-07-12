@@ -1,0 +1,10 @@
+# NeuralMarket default reproducibility configuration.
+# No local absolute paths belong in this file.
+seed: 1337
+expected_python_major: 3
+expected_python_minor: 11
+deterministic: true
+warn_on_nondeterminism: true
+log_level: INFO
+package_name: neuralmarket
+schema_version: "1.0"
