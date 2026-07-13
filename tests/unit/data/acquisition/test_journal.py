@@ -46,6 +46,20 @@ def test_illegal_state_transition_is_rejected(tmp_path: Path) -> None:
             journal.upsert(_entry(state="normalized"))
 
 
+def test_same_state_reupsert_is_idempotent_then_allows_legal_transition(tmp_path: Path) -> None:
+    with RequestJournal(tmp_path / "journal.sqlite") as journal:
+        journal.upsert(_entry(state="planned"))
+        journal.upsert(_entry(state="planned"))
+        fetched = journal.get("req-1")
+        assert fetched is not None
+        assert fetched.state == "planned"
+
+        journal.upsert(_entry(state="preflight_validated"))
+        fetched = journal.get("req-1")
+        assert fetched is not None
+        assert fetched.state == "preflight_validated"
+
+
 def test_journal_persists_across_reopen(tmp_path: Path) -> None:
     db_path = tmp_path / "journal.sqlite"
     with RequestJournal(db_path) as journal:
