@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "neuralmarket:contract:pilot_request_plan:1.0",
+  "type": "object",
+  "required": [
+    "plan_hash",
+    "generated_at",
+    "waves",
+    "requests",
+    "estimated_total_cost_usd",
+    "maximum_allowed_total_usd",
+    "purchase_authorized"
+  ],
+  "properties": {
+    "plan_hash": {
+      "type": "string"
+    },
+    "generated_at": {
+      "type": "string"
+    },
+    "waves": {
+      "type": "array"
+    },
+    "requests": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "request_id",
+          "wave",
+          "dataset",
+          "schema",
+          "symbols",
+          "stype_in",
+          "stype_out",
+          "start",
+          "end_exclusive",
+          "encoding",
+          "compression",
+          "expected_split",
+          "estimated_cost_usd",
+          "request_hash"
+        ],
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "wave": {},
+          "dataset": {
+            "type": "string"
+          },
+          "schema": {
+            "type": "string"
+          },
+          "symbols": {
+            "type": "array"
+          },
+          "stype_in": {
+            "type": "string"
+          },
+          "stype_out": {
+            "type": "string"
+          },
+          "start": {
+            "type": "string"
+          },
+          "end_exclusive": {
+            "type": "string"
+          },
+          "encoding": {
+            "type": "string"
+          },
+          "compression": {
+            "type": "string"
+          },
+          "expected_split": {
+            "type": "string"
+          },
+          "estimated_cost_usd": {
+            "type": "string"
+          },
+          "request_hash": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "estimated_total_cost_usd": {
+      "type": "string"
+    },
+    "maximum_allowed_total_usd": {
+      "type": "string"
+    },
+    "purchase_authorized": {
+      "const": false
+    }
+  }
+}

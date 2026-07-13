@@ -1,0 +1,15 @@
+{
+  "authorization_version": "1.0",
+  "pilot_plan_hash": "REPLACE_WITH_EXACT_PLAN_HASH",
+  "source_manifest_hash": "REPLACE_WITH_EXACT_SOURCE_MANIFEST_HASH",
+  "split_manifest_hash": "REPLACE_WITH_EXACT_SPLIT_MANIFEST_HASH",
+  "acquisition_policy_hash": "REPLACE_WITH_EXACT_ACQUISITION_POLICY_HASH",
+  "maximum_spend_usd": "5.00",
+  "authorized_currency": "USD",
+  "authorized_at": "1970-01-01T00:00:00Z",
+  "expires_at": "1970-01-01T00:00:00Z",
+  "authorized_by": "REPLACE_WITH_NAME",
+  "confirmation_phrase": "REPLACE_ME",
+  "purchase_authorized": false,
+  "authorization_hash": "REPLACE_WITH_EXACT_HASH"
+}

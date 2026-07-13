@@ -1,0 +1,27 @@
+pilot_execution:
+  pilot_month: "2019-01"
+  calendar_name: "XNYS"
+  quote_window_minutes: 10
+  maximum_spend_usd: "5.00"
+  maximum_single_request_usd: "1.00"
+  estimate_increase_tolerance_fraction: "0.20"
+  require_exact_plan_hash: true
+  require_authorization_file: true
+  purchase_authorized: false
+underlying:
+  dataset: "ARCX.PILLAR"
+  symbol: "SPY"
+  stype_in: "raw_symbol"
+  schemas: ["definition", "ohlcv-1d", "statistics"]
+options:
+  dataset: "OPRA.PILLAR"
+  symbol: "SPY.OPT"
+  stype_in: "parent"
+  definition_schema: "definition"
+  quote_schema: "cbbo-1m"
+retry:
+  maximum_attempts: 3
+  initial_delay_seconds: 2
+  multiplier: 2
+  maximum_delay_seconds: 10
+  jitter: "deterministic_seeded"

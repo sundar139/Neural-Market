@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "neuralmarket:contract:pilot_quality_report:1.0",
+  "type": "object",
+  "required": [
+    "arcx_daily",
+    "arcx_statistics",
+    "opra_definitions",
+    "opra_quotes",
+    "generated_at"
+  ],
+  "properties": {
+    "arcx_daily": {
+      "type": "object"
+    },
+    "arcx_statistics": {
+      "type": "object"
+    },
+    "opra_definitions": {
+      "type": "object"
+    },
+    "opra_quotes": {
+      "type": "object"
+    },
+    "generated_at": {
+      "type": "string"
+    }
+  }
+}
