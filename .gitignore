@@ -32,6 +32,7 @@ data/raw/
 data/interim/
 data/processed/
 data/vendor/
+data/state/
 checkpoints/
 artifacts/
 mlruns/
