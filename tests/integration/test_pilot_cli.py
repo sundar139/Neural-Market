@@ -11,7 +11,6 @@ from neuralmarket.cli.main import app
 runner = CliRunner()
 
 _PILOT_CONFIG = "configs/data/acquisition/pilot_january_2019.yaml"
-_REQUEST_MANIFEST = "data/manifests/pilot_request_plan_v1.json"
 _AUTH_TEMPLATE = "configs/data/acquisition/pilot_authorization.template.json"
 
 
@@ -40,6 +39,37 @@ class _Client:
         self.timeseries = object()
         self.batch = object()
         self.live = object()
+
+
+@pytest.fixture
+def pilot_manifest_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
+    """Build a fresh, unauthorized pilot request-plan manifest for tests to consume.
+
+    Task 10's tracked ``data/manifests/pilot_request_plan_v1.json`` was removed as
+    out-of-scope (Task 11 owns generating that file for real); tests that need a
+    manifest on disk now build their own throwaway copy via the same CLI path
+    exercised by ``test_pilot_prepare_generates_manifest_and_stays_unauthorized``.
+    """
+    monkeypatch.setattr(data_module, "_load_dotenv", lambda root: None)
+    monkeypatch.setattr(data_module, "_raw_databento_client", lambda: _Client())
+
+    request_manifest_path = tmp_path / "pilot_request_plan_v1.json"
+    result = runner.invoke(
+        app,
+        [
+            "data",
+            "pilot",
+            "prepare",
+            "--config",
+            _PILOT_CONFIG,
+            "--output",
+            str(tmp_path / "pilot_preflight.local.json"),
+            "--request-manifest",
+            str(request_manifest_path),
+        ],
+    )
+    assert result.exit_code == 0, result.stdout
+    return request_manifest_path
 
 
 @pytest.mark.integration
@@ -123,7 +153,9 @@ def test_pilot_prepare_without_key_exit_two(
 
 
 @pytest.mark.integration
-def test_pilot_verify_is_fully_offline_and_rejects_template() -> None:
+def test_pilot_verify_is_fully_offline_and_rejects_template(
+    pilot_manifest_path: Path,
+) -> None:
     result = runner.invoke(
         app,
         [
@@ -131,7 +163,7 @@ def test_pilot_verify_is_fully_offline_and_rejects_template() -> None:
             "pilot",
             "verify",
             "--request-manifest",
-            _REQUEST_MANIFEST,
+            str(pilot_manifest_path),
             "--authorization-template",
             _AUTH_TEMPLATE,
         ],
@@ -142,7 +174,9 @@ def test_pilot_verify_is_fully_offline_and_rejects_template() -> None:
 
 
 @pytest.mark.integration
-def test_pilot_execute_fails_with_invalid_confirm_hash() -> None:
+def test_pilot_execute_fails_with_invalid_confirm_hash(
+    pilot_manifest_path: Path,
+) -> None:
     result = runner.invoke(
         app,
         [
@@ -150,7 +184,7 @@ def test_pilot_execute_fails_with_invalid_confirm_hash() -> None:
             "pilot",
             "execute",
             "--plan",
-            _REQUEST_MANIFEST,
+            str(pilot_manifest_path),
             "--authorization",
             _AUTH_TEMPLATE,
             "--confirm-plan-hash",
@@ -162,7 +196,9 @@ def test_pilot_execute_fails_with_invalid_confirm_hash() -> None:
 
 
 @pytest.mark.integration
-def test_pilot_recover_reports_no_downloads(tmp_path: Path) -> None:
+def test_pilot_recover_reports_no_downloads(
+    pilot_manifest_path: Path, tmp_path: Path
+) -> None:
     output_path = tmp_path / "pilot_recovery.local.json"
     result = runner.invoke(
         app,
@@ -171,7 +207,7 @@ def test_pilot_recover_reports_no_downloads(tmp_path: Path) -> None:
             "pilot",
             "recover",
             "--plan",
-            _REQUEST_MANIFEST,
+            str(pilot_manifest_path),
             "--output",
             str(output_path),
         ],
