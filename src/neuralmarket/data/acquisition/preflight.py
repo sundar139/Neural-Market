@@ -17,14 +17,22 @@ type is imported into this module.
 
 from __future__ import annotations
 
+import time
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
 from neuralmarket.data.acquisition.budget import round_usd, to_decimal
-from neuralmarket.data.acquisition.estimation import MetadataEstimator
-from neuralmarket.data.acquisition.requests import AcquisitionRequest, PilotExecutionConfig
+from neuralmarket.data.acquisition.estimation import MetadataEstimate, MetadataEstimator
+from neuralmarket.data.acquisition.requests import (
+    AcquisitionRequest,
+    PilotExecutionConfig,
+    finalize_request,
+)
 
 
 class PilotPreflightConfig(BaseModel):
@@ -52,9 +60,7 @@ class PreflightRejection(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     request_id: str
-    reason: Literal[
-        "single_request_cap_exceeded", "total_cap_exceeded", "unexplained_increase"
-    ]
+    reason: Literal["single_request_cap_exceeded", "total_cap_exceeded", "unexplained_increase"]
     detail: str
 
 
@@ -73,7 +79,12 @@ class PreflightResult(BaseModel):
     rejections: list[PreflightRejection]
     passed: bool
     metadata_call_count: int
+    metadata_endpoint_call_count: int
     retry_count: int
+    estimated_requests: list[AcquisitionRequest]
+    started_at: str
+    completed_at: str
+    elapsed_seconds: float
 
 
 def run_preflight(
@@ -81,6 +92,9 @@ def run_preflight(
     estimator: MetadataEstimator,
     requests: list[AcquisitionRequest],
     config: PilotPreflightConfig | PilotExecutionConfig,
+    maximum_workers: int = 1,
+    progress_callback: Callable[[int, int, AcquisitionRequest, MetadataEstimate], None]
+    | None = None,
 ) -> PreflightResult:
     """Refresh cost estimates for every request and enforce spend caps.
 
@@ -91,23 +105,43 @@ def run_preflight(
     if not isinstance(config, PilotPreflightConfig):
         config = PilotPreflightConfig.from_pilot_execution_config(config)
 
+    started_at = datetime.now(UTC).isoformat()
+    started_monotonic = time.monotonic()
     rejections: list[PreflightRejection] = []
     fresh_estimates: dict[str, str] = {}
     fresh_total = Decimal("0")
     planned_total = Decimal("0")
+    estimated_requests: list[AcquisitionRequest] = []
     tolerance_multiplier = Decimal("1") + config.estimate_increase_tolerance_fraction
 
-    for request in requests:
-        estimate = estimator.estimate(
+    def estimate_one(request: AcquisitionRequest) -> MetadataEstimate:
+        return estimator.estimate(
             dataset=request.dataset,
             schema=request.schema_name,
             symbol=request.symbols[0],
             stype_in=request.stype_in,
             start=request.start,
             end=request.end_exclusive,
+            request_id=request.request_id,
         )
+
+    worker_count = min(maximum_workers, 4)
+    if worker_count > 1:
+        with ThreadPoolExecutor(max_workers=worker_count) as pool:
+            estimates = list(pool.map(estimate_one, requests))
+    else:
+        estimates = [estimate_one(request) for request in requests]
+
+    for index, (request, estimate) in enumerate(zip(requests, estimates, strict=True), start=1):
         fresh_cost = to_decimal(estimate.cost_usd)
-        planned_cost = to_decimal(request.estimated_cost)
+        planned_cost = (
+            to_decimal(request.estimated_cost)
+            if request.estimated_cost is not None
+            else Decimal("0")
+        )
+        estimated_requests.append(finalize_request(request, estimate, datetime.now(UTC)))
+        if progress_callback is not None:
+            progress_callback(index, len(requests), request, estimate)
 
         fresh_estimates[request.request_id] = str(fresh_cost)
         fresh_total += fresh_cost
@@ -126,7 +160,7 @@ def run_preflight(
             )
 
         allowed_cost = planned_cost * tolerance_multiplier
-        if fresh_cost > allowed_cost:
+        if planned_cost > 0 and fresh_cost > allowed_cost:
             rejections.append(
                 PreflightRejection(
                     request_id=request.request_id,
@@ -150,8 +184,7 @@ def run_preflight(
                 request_id="__total__",
                 reason="total_cap_exceeded",
                 detail=(
-                    f"fresh total {fresh_total} exceeds total spend cap "
-                    f"{config.maximum_spend_usd}"
+                    f"fresh total {fresh_total} exceeds total spend cap {config.maximum_spend_usd}"
                 ),
             )
         )
@@ -160,10 +193,11 @@ def run_preflight(
         (fresh_total - planned_total) / planned_total if planned_total != 0 else Decimal("0")
     )
 
+    completed_at = datetime.now(UTC).isoformat()
     return PreflightResult(
         fresh_estimates=fresh_estimates,
         planned_total_usd=str(round_usd(planned_total)),
-        fresh_total_usd=str(round_usd(fresh_total)),
+        fresh_total_usd=str(fresh_total),
         increase_fraction=str(increase_fraction),
         within_single_request_cap=within_single_request_cap,
         within_total_cap=within_total_cap,
@@ -171,5 +205,12 @@ def run_preflight(
         rejections=rejections,
         passed=not rejections,
         metadata_call_count=estimator.metadata_call_count,
+        metadata_endpoint_call_count=getattr(
+            estimator, "endpoint_call_count", estimator.metadata_call_count * 3
+        ),
         retry_count=estimator.retry_count,
+        estimated_requests=estimated_requests,
+        started_at=started_at,
+        completed_at=completed_at,
+        elapsed_seconds=time.monotonic() - started_monotonic,
     )

@@ -6,6 +6,8 @@ import pytest
 from neuralmarket.data.raw.dbn import DbnValidationError, validate_dbn_file
 from neuralmarket.data.raw.integrity import sha256_of_file, verify_checksum
 
+pytestmark = pytest.mark.unit
+
 
 def _fake_store(request, **overrides):
     fields = {
@@ -16,14 +18,26 @@ def _fake_store(request, **overrides):
         "end": request.end_exclusive,
     }
     fields.update(overrides)
-    return Mock(**fields)
+    store = Mock(**fields)
+    store.to_df.return_value = [
+        {
+            "ts_event": request.start,
+            "instrument_id": 1,
+            "raw_symbol": request.symbols[0],
+        }
+    ] * 10
+    return store
 
 
 def test_sha256_of_file_matches_known_value(tmp_path: Path) -> None:
     file_path = tmp_path / "sample.dbn"
     file_path.write_bytes(b"hello")
     digest = sha256_of_file(file_path)
-    assert digest == "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+    expected = (
+        "2cf24dba5fb0a30e26e83b2ac5b9e29e"  # pragma: allowlist secret
+        "1b161e5c1fa7425e73043362938b9824"  # pragma: allowlist secret
+    )
+    assert digest == expected
 
 
 def test_verify_checksum_true_and_false(tmp_path: Path) -> None:
@@ -87,6 +101,21 @@ def test_validate_dbn_file_factory_raises_is_unreadable(tmp_path, arcx_request) 
     assert report.passed is False
 
 
+def test_validate_dbn_file_to_df_failure_is_unreadable(tmp_path, arcx_request) -> None:
+    file_path = tmp_path / "sample.dbn"
+    file_path.write_bytes(b"data")
+    fake_store = _fake_store(arcx_request)
+    fake_store.to_df.side_effect = ValueError("malformed frame")
+    report = validate_dbn_file(
+        file_path,
+        expected_request=arcx_request,
+        expected_sha256=sha256_of_file(file_path),
+        dbn_store_factory=lambda _: fake_store,
+    )
+    assert report.opens_ok is False
+    assert report.passed is False
+
+
 def test_validate_dbn_file_passes_with_matching_fake_store(tmp_path, arcx_request) -> None:
     file_path = tmp_path / "sample.dbn"
     file_path.write_bytes(b"data")
@@ -100,6 +129,28 @@ def test_validate_dbn_file_passes_with_matching_fake_store(tmp_path, arcx_reques
     )
     assert report.passed is True
     assert report.errors == []
+
+
+def test_validate_dbn_file_rejects_non_mapping_records(tmp_path, arcx_request) -> None:
+    file_path = tmp_path / "sample.dbn"
+    file_path.write_bytes(b"data")
+    fake_store = _fake_store(arcx_request)
+    fake_store.to_df.return_value = [
+        {
+            "ts_event": arcx_request.start,
+            "instrument_id": 1,
+            "raw_symbol": arcx_request.symbols[0],
+        },
+        object(),
+    ]
+    report = validate_dbn_file(
+        file_path,
+        expected_request=arcx_request,
+        expected_sha256=sha256_of_file(file_path),
+        dbn_store_factory=lambda _path: fake_store,
+    )
+    assert report.opens_ok is False
+    assert report.passed is False
 
 
 def test_validate_dbn_file_dataset_mismatch(tmp_path, arcx_request) -> None:
@@ -169,7 +220,16 @@ def test_validate_dbn_file_implausible_record_count_is_nonfatal(tmp_path, arcx_r
     file_path.write_bytes(b"data")
     digest = sha256_of_file(file_path)
     fake_store = _fake_store(arcx_request)
-    fake_store.to_df = Mock(return_value=[object()] * 10_000)  # wildly over 10x estimate of 10
+    fake_store.to_df = Mock(
+        return_value=[
+            {
+                "ts_event": arcx_request.start,
+                "instrument_id": 1,
+                "raw_symbol": arcx_request.symbols[0],
+            }
+        ]
+        * 10_000
+    )  # wildly over 10x estimate of 10
     report = validate_dbn_file(
         file_path,
         expected_request=arcx_request,
@@ -185,3 +245,64 @@ def test_dbn_validation_error_has_code() -> None:
     assert err.code == "missing"
     with pytest.raises(DbnValidationError):
         raise err
+
+
+def test_validate_dbn_file_rejects_out_of_window_record(tmp_path, arcx_request) -> None:
+    from datetime import timedelta
+
+    file_path = tmp_path / "sample.dbn"
+    file_path.write_bytes(b"data")
+    fake_store = _fake_store(arcx_request)
+    fake_store.to_df.return_value = [
+        {
+            "ts_event": arcx_request.end_exclusive + timedelta(seconds=1),
+            "instrument_id": 1,
+            "raw_symbol": arcx_request.symbols[0],
+        }
+    ]
+    report = validate_dbn_file(
+        file_path,
+        expected_request=arcx_request,
+        expected_sha256=sha256_of_file(file_path),
+        dbn_store_factory=lambda _path: fake_store,
+    )
+    assert not report.timestamps_within_interval
+    assert not report.passed
+
+
+def test_validate_dbn_file_rejects_naive_record_timestamp(tmp_path, arcx_request) -> None:
+    from datetime import datetime
+
+    file_path = tmp_path / "sample.dbn"
+    file_path.write_bytes(b"data")
+    fake_store = _fake_store(arcx_request)
+    fake_store.to_df.return_value = [
+        {
+            "ts_event": datetime(2019, 1, 2),
+            "instrument_id": 1,
+            "raw_symbol": arcx_request.symbols[0],
+        }
+    ]
+    report = validate_dbn_file(
+        file_path,
+        expected_request=arcx_request,
+        expected_sha256=sha256_of_file(file_path),
+        dbn_store_factory=lambda _path: fake_store,
+    )
+    assert not report.timestamps_within_interval
+    assert not report.passed
+
+
+def test_validate_dbn_file_rejects_missing_symbology(tmp_path, arcx_request) -> None:
+    file_path = tmp_path / "sample.dbn"
+    file_path.write_bytes(b"data")
+    fake_store = _fake_store(arcx_request)
+    fake_store.to_df.return_value = [{"ts_event": arcx_request.start}]
+    report = validate_dbn_file(
+        file_path,
+        expected_request=arcx_request,
+        expected_sha256=sha256_of_file(file_path),
+        dbn_store_factory=lambda _path: fake_store,
+    )
+    assert not report.symbology_present
+    assert not report.passed

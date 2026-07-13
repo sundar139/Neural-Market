@@ -98,6 +98,13 @@ def test_to_decimal_rejects_unparseable_string() -> None:
 
 
 @pytest.mark.unit
+def test_to_decimal_rejects_nonfinite_values() -> None:
+    for value in ("NaN", "Infinity", Decimal("-Infinity")):
+        with pytest.raises(ValueError):
+            to_decimal(value)
+
+
+@pytest.mark.unit
 def test_round_usd_half_up() -> None:
     assert round_usd(Decimal("1.005")) == Decimal("1.01")
     assert round_usd(Decimal("1.004")) == Decimal("1.00")

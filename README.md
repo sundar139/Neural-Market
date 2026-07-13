@@ -28,11 +28,12 @@ trading profitability.
 
 ## Repository status
 
-Foundation only: reproducibility, configuration, environment diagnostics, and
-quality tooling. No data, models, hedging policies, or results exist yet. No
-empirical result is claimed. Confirmatory results must be reproducible through
-versioned CLI commands and configurations. Notebooks will never contain
-authoritative implementations.
+Foundation and guarded acquisition tooling only: reproducibility, configuration,
+environment diagnostics, data contracts, and a metadata-only January 2019 pilot.
+No market records, models, hedging policies, or results exist yet. No empirical
+result is claimed. Confirmatory results must be reproducible through versioned
+CLI commands and configurations. Notebooks will never contain authoritative
+implementations.
 
 ## Requirements
 
@@ -87,6 +88,16 @@ metadata, symbology, and cost-estimation requests — no records are downloaded:
 
 See [source selection](docs/data/source_selection.md), [canonical contracts](docs/data/canonical_contracts.md),
 [split policy](docs/data/split_policy.md), and [Protocol Amendment 001](reports/protocol/research_protocol_amendment_001.md).
+
+## Guarded acquisition pilot
+
+The January 2019 SPY pilot plans 25 training-only requests using metadata
+endpoints; it does not download records. Preparation, offline verification,
+single-use authorization, read-only recovery, spend caps, storage, and lineage
+are documented in [pilot acquisition](docs/data/pilot_acquisition.md) and
+[data lineage](docs/data/data_lineage.md). A paid-provider adapter exists behind
+the durable guards, but this milestone never constructs it and execution fails
+closed with the false authorization template.
 
 ## Data and secrets
 

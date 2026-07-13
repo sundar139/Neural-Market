@@ -1,18 +1,17 @@
-"""Tests for pilot cost preflight (Task 6).
+"""Tests for pilot cost preflight (Task 6)."""
 
-Note: ``MetadataEstimator.estimate()`` does not accept a ``request_id``
-keyword argument (see ``estimation.py``), so the fake estimator here tracks
-which estimate belongs to which request by call order, not by a nonexistent
-kwarg. ``run_preflight`` must call ``estimator.estimate(...)`` once per
-request, in request order, and zip results back onto ``request_id`` itself.
-"""
-
-from datetime import UTC, datetime
+import time
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from threading import Lock
+
+import pytest
 
 from neuralmarket.data.acquisition.estimation import MetadataEstimate
 from neuralmarket.data.acquisition.preflight import PilotPreflightConfig, run_preflight
 from neuralmarket.data.acquisition.requests import AcquisitionRequest
+
+pytestmark = pytest.mark.unit
 
 
 class FakeEstimator:
@@ -44,7 +43,7 @@ class FakeEstimator:
         )
 
 
-def _request(request_id: str, estimated_cost: str) -> AcquisitionRequest:
+def _request(request_id: str, estimated_cost: str | None) -> AcquisitionRequest:
     now = datetime(2019, 1, 2, tzinfo=UTC)
     return AcquisitionRequest(
         request_id=request_id,
@@ -55,7 +54,7 @@ def _request(request_id: str, estimated_cost: str) -> AcquisitionRequest:
         stype_in="raw_symbol",
         stype_out="instrument_id",
         start=now,
-        end_exclusive=now,
+        end_exclusive=now + timedelta(days=1),
         encoding="dbn",
         compression="zstd",
         expected_split="training",
@@ -105,9 +104,7 @@ def test_preflight_rejects_total_over_cap() -> None:
         estimate_increase_tolerance_fraction=Decimal("0.20"),
     )
     result = run_preflight(
-        estimator=FakeEstimator(
-            {"r1": Decimal("3.00"), "r2": Decimal("2.50")}, ["r1", "r2"]
-        ),
+        estimator=FakeEstimator({"r1": Decimal("3.00"), "r2": Decimal("2.50")}, ["r1", "r2"]),
         requests=reqs,
         config=config,
     )
@@ -157,9 +154,7 @@ def test_preflight_does_not_hide_one_spike_in_another_underrun() -> None:
     )
     # r1 spikes far above tolerance, r2 drops -- planned total (2.00) == fresh total (2.00).
     result = run_preflight(
-        estimator=FakeEstimator(
-            {"r1": Decimal("1.90"), "r2": Decimal("0.10")}, ["r1", "r2"]
-        ),
+        estimator=FakeEstimator({"r1": Decimal("1.90"), "r2": Decimal("0.10")}, ["r1", "r2"]),
         requests=reqs,
         config=config,
     )
@@ -217,3 +212,72 @@ def test_preflight_config_from_pilot_execution_config() -> None:
         config=full_config,
     )
     assert result.passed is True
+
+
+def test_preflight_finalizes_unestimated_draft_without_false_increase() -> None:
+    result = run_preflight(
+        estimator=FakeEstimator({"r1": Decimal("0.04")}, ["r1"]),
+        requests=[_request("r1", None)],
+        config=PilotPreflightConfig(
+            maximum_spend_usd=Decimal("5.00"),
+            maximum_single_request_usd=Decimal("1.00"),
+            estimate_increase_tolerance_fraction=Decimal("0.20"),
+        ),
+    )
+
+    assert result.passed is True
+    assert result.planned_total_usd == "0.00"
+    assert result.estimated_requests[0].estimated_cost == "0.04"
+    assert result.estimated_requests[0].estimated_record_count == 10
+
+
+def test_preflight_bounds_concurrency_and_preserves_request_order() -> None:
+    class ConcurrentEstimator:
+        metadata_call_count = 0
+        retry_count = 0
+        endpoint_call_count = 0
+
+        def __init__(self) -> None:
+            self.active = 0
+            self.maximum_active = 0
+            self.lock = Lock()
+
+        def estimate(self, **kwargs: object) -> MetadataEstimate:
+            with self.lock:
+                self.active += 1
+                self.maximum_active = max(self.maximum_active, self.active)
+                self.metadata_call_count += 1
+                self.endpoint_call_count += 3
+            time.sleep(0.01)
+            with self.lock:
+                self.active -= 1
+            return MetadataEstimate(
+                dataset=str(kwargs["dataset"]),
+                schema=str(kwargs["schema"]),
+                symbol=str(kwargs["symbol"]),
+                stype_in=str(kwargs["stype_in"]),
+                window_start=kwargs["start"],  # type: ignore[arg-type]
+                window_end=kwargs["end"],  # type: ignore[arg-type]
+                record_count=1,
+                billable_size_bytes=1,
+                cost_usd=Decimal("0.01"),
+                retries=0,
+            )
+
+    estimator = ConcurrentEstimator()
+    requests = [_request(f"r{index}", None) for index in range(6)]
+    result = run_preflight(
+        estimator=estimator,  # type: ignore[arg-type]
+        requests=requests,
+        config=PilotPreflightConfig(
+            maximum_spend_usd=Decimal("5.00"),
+            maximum_single_request_usd=Decimal("1.00"),
+            estimate_increase_tolerance_fraction=Decimal("0.20"),
+        ),
+        maximum_workers=10,
+    )
+
+    assert 1 < estimator.maximum_active <= 4
+    assert [request.request_id for request in result.estimated_requests] == [
+        request.request_id for request in requests
+    ]

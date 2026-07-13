@@ -29,6 +29,7 @@ venv/
 
 # Data and artifacts
 data/raw/
+data/normalized/
 data/interim/
 data/processed/
 data/vendor/
@@ -60,3 +61,13 @@ Thumbs.db
 # Claude Code project memory
 *.memory.md
 .agent-memory/
+
+# Pilot acquisition local state
+*.partial
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# DVC local state
+/.dvc/cache/
+/.dvc/tmp/

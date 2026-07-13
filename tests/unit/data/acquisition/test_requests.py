@@ -1,14 +1,18 @@
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 import yaml
 
 from neuralmarket.core.configuration import ConfigurationError
+from neuralmarket.data.acquisition.estimation import MetadataEstimate
 from neuralmarket.data.acquisition.requests import (
     build_pilot_request_plan,
+    finalize_request,
     load_pilot_config,
     plan_hash,
+    verify_final_request,
 )
 
 CONFIG_PATH = "configs/data/acquisition/pilot_january_2019.yaml"
@@ -109,3 +113,82 @@ def test_closing_quote_sessions_match_january_2019_xnys_sessions() -> None:
     assert sessions[0] == date(2019, 1, 2)
     assert sessions[-1] == date(2019, 1, 31)
     assert len(set(sessions)) == 21
+
+
+@pytest.mark.unit
+def test_finalize_request_binds_estimate_without_timestamp_nondeterminism() -> None:
+    draft = build_pilot_request_plan(load_pilot_config(CONFIG_PATH))[0]
+    estimate = MetadataEstimate(
+        dataset=draft.dataset,
+        schema=draft.schema_name,
+        symbol=draft.symbols[0],
+        stype_in=draft.stype_in,
+        window_start=draft.start,
+        window_end=draft.end_exclusive,
+        record_count=12,
+        billable_size_bytes=345,
+        cost_usd=Decimal("0.04"),
+        retries=0,
+    )
+    first = finalize_request(draft, estimate, datetime(2026, 1, 1, tzinfo=UTC))
+    second = finalize_request(
+        draft, estimate, datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=1)
+    )
+
+    assert draft.estimated_cost is None
+    assert first.estimated_record_count == 12
+    assert first.estimated_billable_size == 345
+    assert first.estimated_cost == "0.04"
+    assert first.estimate_method == "metadata:get_record_count+get_billable_size+get_cost"
+    assert first.request_hash == second.request_hash
+    assert first.request_hash != draft.request_hash
+
+
+@pytest.mark.unit
+def test_finalize_request_rejects_estimate_for_different_window() -> None:
+    draft = build_pilot_request_plan(load_pilot_config(CONFIG_PATH))[0]
+    estimate = MetadataEstimate(
+        dataset=draft.dataset,
+        schema=draft.schema_name,
+        symbol=draft.symbols[0],
+        stype_in=draft.stype_in,
+        window_start=draft.start + timedelta(days=1),
+        window_end=draft.end_exclusive + timedelta(days=1),
+        record_count=12,
+        billable_size_bytes=345,
+        cost_usd=Decimal("0.04"),
+        retries=0,
+    )
+
+    with pytest.raises(ValueError, match="does not match request"):
+        finalize_request(draft, estimate, datetime(2026, 1, 1, tzinfo=UTC))
+
+
+@pytest.mark.unit
+def test_verify_final_request_rejects_negative_cost() -> None:
+    draft = build_pilot_request_plan(load_pilot_config(CONFIG_PATH))[0]
+    estimate = MetadataEstimate(
+        dataset=draft.dataset,
+        schema=draft.schema_name,
+        symbol=draft.symbols[0],
+        stype_in=draft.stype_in,
+        window_start=draft.start,
+        window_end=draft.end_exclusive,
+        record_count=12,
+        billable_size_bytes=345,
+        cost_usd=Decimal("-0.04"),
+        retries=0,
+    )
+    request = finalize_request(draft, estimate, datetime(2026, 1, 1, tzinfo=UTC))
+
+    with pytest.raises(ValueError, match="cost estimate is negative"):
+        verify_final_request(request)
+
+
+@pytest.mark.unit
+def test_plan_hash_binds_dependency_metadata() -> None:
+    requests = build_pilot_request_plan(load_pilot_config(CONFIG_PATH))
+    bindings = {"source_manifest_hash": "a" * 64, "split_manifest_hash": "b" * 64}
+    assert plan_hash(requests, bindings) != plan_hash(
+        requests, {**bindings, "source_manifest_hash": "c" * 64}
+    )

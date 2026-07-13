@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-import hashlib
+import hmac
+import importlib.metadata
 import json
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -48,11 +49,12 @@ from neuralmarket.data.acquisition.manifests import (
 )
 from neuralmarket.data.acquisition.planner import plan_acquisition
 from neuralmarket.data.acquisition.preflight import run_preflight
-from neuralmarket.data.acquisition.recovery import run_recovery
+from neuralmarket.data.acquisition.recovery import RecoveryReport, run_recovery
 from neuralmarket.data.acquisition.requests import (
     AcquisitionRequest,
     build_pilot_request_plan,
     load_pilot_config,
+    verify_final_request,
 )
 from neuralmarket.data.acquisition.requests import (
     plan_hash as compute_plan_hash,
@@ -71,7 +73,6 @@ from neuralmarket.data.manifests import (
     DateRange,
     build_source_manifest,
     build_split_manifest,
-    canonical_dumps,
     canonical_summary_hash,
     load_manifest,
     parse_source_manifest,
@@ -99,9 +100,12 @@ _DEFAULT_REQUEST_MANIFEST = Path("data/manifests/pilot_request_plan_v1.json")
 _DEFAULT_SOURCE_MANIFEST = Path("data/manifests/source_manifest_v1.json")
 _DEFAULT_SPLIT_MANIFEST = Path("data/manifests/split_manifest_v1.json")
 _DEFAULT_POLICY_MANIFEST = Path("data/manifests/acquisition_policy_v1.json")
+_DEFAULT_PILOT_CONFIG = Path("configs/data/acquisition/pilot_january_2019.yaml")
 _DEFAULT_JOURNAL_PATH = Path("data/state/pilot_acquisition_journal.sqlite")
 _PILOT_REQUEST_PLAN_SCHEMA = "data_contracts/pilot_request_plan.schema.json"
 _HARD_PILOT_SPEND_CAP_USD = Decimal("5.00")
+_ACCEPTED_PILOT_PLANNER_ESTIMATE_USD = Decimal("0.46")
+_METADATA_TIMEOUT_SECONDS = 30
 
 _CONTRACT_DIR = "data_contracts"
 
@@ -229,7 +233,9 @@ def _raw_databento_client() -> Any:
         )
     import databento
 
-    return databento.Historical(key)
+    client = databento.Historical(key)
+    client.metadata.TIMEOUT = _METADATA_TIMEOUT_SECONDS
+    return client
 
 
 @app.callback()
@@ -838,19 +844,8 @@ def _ordered_waves(requests: list[AcquisitionRequest]) -> list[str]:
 
 
 def _pilot_request_manifest_json(request: AcquisitionRequest) -> dict[str, Any]:
-    """Render one request for the tracked manifest.
-
-    The contract schema requires the key ``estimated_cost_usd``; the model
-    field is ``estimated_cost`` (no alias), so it is renamed here rather than
-    in the frozen model itself. The value is left as the request's own
-    (placeholder) ``estimated_cost`` -- the same value ``plan_hash`` was
-    computed over -- so the manifest can always re-verify its own plan_hash.
-    Freshly preflighted per-request costs live in the local preflight report;
-    the refreshed aggregate is surfaced here via ``estimated_total_cost_usd``.
-    """
-    payload = request.model_dump(mode="json", by_alias=True)
-    payload["estimated_cost_usd"] = payload.pop("estimated_cost")
-    return payload
+    """Render one finalized request without changing its canonical field names."""
+    return request.model_dump(mode="json", by_alias=True)
 
 
 def _validate_pilot_request_plan_schema(root: Path, payload: dict[str, Any]) -> None:
@@ -874,33 +869,201 @@ def _pilot_manifest_sort_key(request_json: dict[str, Any]) -> tuple[Any, ...]:
 
 
 def _recompute_pilot_plan_hash(manifest_payload: dict[str, Any]) -> str:
-    """Recompute the pilot ``plan_hash`` directly from a written manifest's contents.
-
-    Mirrors ``requests.plan_hash()``'s canonicalization exactly, but operates on
-    the manifest's own stored request dicts (which use the schema's
-    ``estimated_cost_usd`` key) instead of reconstructing ``AcquisitionRequest``
-    objects, so a manifest can verify itself without a lossy round-trip.
-    """
-    ordered = sorted(manifest_payload.get("requests", []), key=_pilot_manifest_sort_key)
-    reconstructed = []
-    for item in ordered:
-        reduced = dict(item)
-        reduced["estimated_cost"] = reduced.pop("estimated_cost_usd")
-        reconstructed.append(reduced)
-    canonical = canonical_dumps({"requests": reconstructed})
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    """Recompute the canonical pilot hash and validate every finalized request."""
+    requests = [AcquisitionRequest.model_validate(item) for item in manifest_payload["requests"]]
+    for request in requests:
+        verify_final_request(request)
+    return compute_plan_hash(
+        requests,
+        manifest_payload.get("bindings", {}),
+        _pilot_plan_hash_metadata(manifest_payload),
+    )
 
 
 def _resolve_under_root(root: Path, path: Path) -> Path:
     return path if path.is_absolute() else root / path
 
 
-def _manifest_hash_or_empty(path: Path) -> str:
+def _pilot_plan_hash_metadata(manifest_payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "estimated_total_cost_usd": manifest_payload["estimated_total_cost_usd"],
+        "estimated_maximum_single_request_usd": manifest_payload[
+            "estimated_maximum_single_request_usd"
+        ],
+        "maximum_allowed_total_usd": manifest_payload["maximum_allowed_total_usd"],
+        "maximum_allowed_single_request_usd": manifest_payload[
+            "maximum_allowed_single_request_usd"
+        ],
+        "authorization": manifest_payload["authorization"],
+        "purchase_authorized": manifest_payload["purchase_authorized"],
+    }
+
+
+def _required_manifest_hash(payload: dict[str, Any], label: str) -> str:
+    value = payload.get("manifest_hash")
+    if not isinstance(value, str) or len(value) != 64:
+        raise PlanValidationError(f"{label} is missing a SHA-256 manifest_hash.")
+    return value
+
+
+def _validate_pilot_plan_artifacts(
+    *,
+    root: Path,
+    request_manifest: Path,
+    config: Path,
+    source_manifest: Path,
+    split_manifest: Path,
+    policy_manifest: Path,
+) -> tuple[dict[str, Any], list[AcquisitionRequest], dict[str, str]]:
+    """Validate a finalized plan against its canonical local dependencies."""
+    plan_payload = load_acquisition_json(request_manifest)
+    _validate_pilot_request_plan_schema(root, plan_payload)
+    pilot_config = load_pilot_config(config)
+    source_payload = load_manifest(source_manifest)
+    split_payload = load_manifest(split_manifest)
+    verify_manifests(source_payload, split_payload)
+    source = parse_source_manifest(source_payload)
+    split = parse_split_manifest(split_payload)
+    policy_payload = load_acquisition_json(policy_manifest)
+    verify_policy_hash(policy_payload)
+    policy = parse_policy_manifest(policy_payload)
+    if policy.purchase_authorized or not policy.download_guard_enabled:
+        raise PlanValidationError(
+            "Acquisition policy must remain unauthorized with download guard enabled."
+        )
+    expected_bindings = {
+        "source_manifest_hash": _required_manifest_hash(source_payload, "source manifest"),
+        "split_manifest_hash": _required_manifest_hash(split_payload, "split manifest"),
+        "acquisition_policy_hash": _required_manifest_hash(policy_payload, "acquisition policy"),
+        "pilot_config_hash": config_sha256(config),
+    }
+    bindings = plan_payload["bindings"]
+    if any(bindings[key] != value for key, value in expected_bindings.items()):
+        raise PlanValidationError("Pilot plan dependency hash mismatch.")
+    if (
+        policy.source_manifest_hash != expected_bindings["source_manifest_hash"]
+        or policy.split_manifest_hash != expected_bindings["split_manifest_hash"]
+    ):
+        raise PlanValidationError("Acquisition policy dependency hash mismatch.")
+    if plan_payload["plan_hash"] != _recompute_pilot_plan_hash(plan_payload):
+        raise PlanValidationError(
+            "Pilot request-plan plan_hash does not match its canonical contents."
+        )
+
+    if source.qualification_status != "qualified":
+        raise PlanValidationError("Source manifest is not qualified for pilot execution.")
+    if source.underlying.dataset != pilot_config.underlying.dataset:
+        raise PlanValidationError("Source manifest underlying dataset does not match pilot config.")
+    if source.underlying.symbol != pilot_config.underlying.symbol:
+        raise PlanValidationError("Source manifest underlying symbol does not match pilot config.")
+    if source.options.dataset != pilot_config.options.dataset:
+        raise PlanValidationError("Source manifest options dataset does not match pilot config.")
+    if source.options.parent_symbol != pilot_config.options.symbol:
+        raise PlanValidationError("Source manifest options symbol does not match pilot config.")
+    underlying_available = set(source.underlying.schemas) | {
+        schema
+        for schema, status in source.underlying.optional_schemas.items()
+        if status == "available"
+    }
+    if any(schema not in underlying_available for schema in pilot_config.underlying.schemas):
+        raise PlanValidationError("Pilot underlying schema is unavailable in source manifest.")
+    if pilot_config.options.definition_schema not in source.options.schemas:
+        raise PlanValidationError(
+            "Pilot options definition schema is unavailable in source manifest."
+        )
+    if pilot_config.options.quote_schema not in source.options.schemas:
+        raise PlanValidationError("Pilot options quote schema is unavailable in source manifest.")
+    approved = {
+        (item.dataset, schema) for item in policy.approved_datasets for schema in item.schemas
+    }
+    for dataset, schemas in (
+        (pilot_config.underlying.dataset, pilot_config.underlying.schemas),
+        (
+            pilot_config.options.dataset,
+            [pilot_config.options.definition_schema, pilot_config.options.quote_schema],
+        ),
+    ):
+        for schema in schemas:
+            if (dataset, schema) not in approved:
+                raise PlanValidationError(
+                    "Pilot config uses a dataset/schema outside the policy approval."
+                )
+    if to_decimal(policy.budget_ceiling_usd) < to_decimal(
+        plan_payload["maximum_allowed_total_usd"]
+    ):
+        raise PlanValidationError("Acquisition policy budget ceiling is below the pilot plan cap.")
+    if policy.maximum_pilot_spend_usd != plan_payload["maximum_allowed_total_usd"]:
+        raise PlanValidationError("Acquisition policy pilot cap does not match the pilot plan cap.")
+
+    requests = [AcquisitionRequest.model_validate(item) for item in plan_payload["requests"]]
+    expected_requests = build_pilot_request_plan(pilot_config)
+    if [request.specification_hash for request in requests] != [
+        request.specification_hash for request in expected_requests
+    ]:
+        raise PlanValidationError("Pilot request identities do not match the configured pilot.")
+    if plan_payload["request_count"] != len(requests):
+        raise PlanValidationError("Pilot request_count does not match the request list.")
+    if any(
+        request.start.date() < split.training_start
+        or request.end_exclusive.date() > split.training_end
+        for request in requests
+    ):
+        raise PlanValidationError("Pilot request window is outside the training split.")
+
+    costs = [to_decimal(request.estimated_cost or "0") for request in requests]
+    computed_total = sum(costs, Decimal("0"))
+    computed_maximum = max(costs, default=Decimal("0"))
+    if computed_total != to_decimal(plan_payload["estimated_total_cost_usd"]):
+        raise PlanValidationError("Pilot request costs do not sum to the manifest total.")
+    if computed_maximum != to_decimal(plan_payload["estimated_maximum_single_request_usd"]):
+        raise PlanValidationError("Pilot maximum request cost does not match the manifest.")
+    if to_decimal(plan_payload["maximum_allowed_total_usd"]) != pilot_config.maximum_spend_usd:
+        raise PlanValidationError("Pilot total spend cap does not match the configuration.")
+    if (
+        to_decimal(plan_payload["maximum_allowed_single_request_usd"])
+        != pilot_config.maximum_single_request_usd
+    ):
+        raise PlanValidationError("Pilot per-request spend cap does not match the configuration.")
+    if computed_total > pilot_config.maximum_spend_usd:
+        raise PlanValidationError("Pilot request plan exceeds its total spend cap.")
+    if any(cost > pilot_config.maximum_single_request_usd for cost in costs):
+        raise PlanValidationError("Pilot request plan exceeds its per-request spend cap.")
+    comparison = plan_payload.get("estimate_comparison")
+    if not isinstance(comparison, dict):
+        raise PlanValidationError("Pilot estimate_comparison is missing.")
+    accepted = to_decimal(comparison.get("accepted_planner_estimate_usd"))
+    fresh = to_decimal(comparison.get("fresh_metadata_estimate_usd"))
+    difference = to_decimal(comparison.get("difference_usd"))
+    tolerance = to_decimal(comparison.get("tolerance_usd"))
+    expected_tolerance = (
+        _ACCEPTED_PILOT_PLANNER_ESTIMATE_USD * pilot_config.estimate_increase_tolerance_fraction
+    )
+    if accepted != _ACCEPTED_PILOT_PLANNER_ESTIMATE_USD or fresh != computed_total:
+        raise PlanValidationError("Pilot estimate comparison does not match manifest costs.")
+    if fresh - accepted != difference:
+        raise PlanValidationError("Pilot estimate comparison difference is not exact.")
+    if expected_tolerance != tolerance:
+        raise PlanValidationError("Pilot estimate comparison tolerance is not exact.")
+    if (difference <= tolerance) is not comparison.get("within_tolerance"):
+        raise PlanValidationError("Pilot estimate comparison tolerance flag is not exact.")
+    if (
+        sum(request.estimated_record_count or 0 for request in requests)
+        != plan_payload["estimated_record_count"]
+    ):
+        raise PlanValidationError("Pilot estimated record count does not match its requests.")
+    if (
+        sum(request.estimated_billable_size or 0 for request in requests)
+        != plan_payload["estimated_billable_size_bytes"]
+    ):
+        raise PlanValidationError("Pilot estimated byte count does not match its requests.")
+    return plan_payload, requests, expected_bindings
+
+
+def _distribution_version(name: str) -> str:
     try:
-        value = load_manifest(path).get("manifest_hash")
-    except ManifestValidationError:
-        return ""
-    return value if isinstance(value, str) else ""
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return "not-installed"
 
 
 @pilot_app.command("prepare")
@@ -912,23 +1075,53 @@ def pilot_prepare(
     request_manifest: Path = typer.Option(
         _DEFAULT_REQUEST_MANIFEST,
         "--request-manifest",
-        help="Path to write the tracked pilot request-plan manifest.",
+        help="Path to atomically write the authorization-ready request-plan manifest.",
+    ),
+    source_manifest: Path = typer.Option(
+        _DEFAULT_SOURCE_MANIFEST, "--source-manifest", help="Path to the accepted source manifest."
+    ),
+    split_manifest: Path = typer.Option(
+        _DEFAULT_SPLIT_MANIFEST, "--split-manifest", help="Path to the sealed split manifest."
+    ),
+    policy_manifest: Path = typer.Option(
+        _DEFAULT_POLICY_MANIFEST,
+        "--policy-manifest",
+        help="Path to the accepted acquisition policy manifest.",
     ),
 ) -> None:
-    """Build the deterministic pilot request plan and cost-preflight it.
-
-    Never downloads, batches, or streams market records, and never authorizes
-    a purchase: the written manifest and report always report
-    ``purchase_authorized: false`` with zero download/batch/live attempts.
-    """
+    """Build and metadata-preflight an authorization-ready January 2019 plan."""
     configure_logging("INFO")
+    root = find_repository_root()
+    config = _resolve_under_root(root, config)
+    source_manifest = _resolve_under_root(root, source_manifest)
+    split_manifest = _resolve_under_root(root, split_manifest)
+    policy_manifest = _resolve_under_root(root, policy_manifest)
+    request_manifest = _resolve_under_root(root, request_manifest)
+    output = _resolve_under_root(root, output)
+
     try:
         pilot_config = load_pilot_config(config)
+        source_payload = load_manifest(source_manifest)
+        split_payload = load_manifest(split_manifest)
+        verify_manifests(source_payload, split_payload)
+        policy_payload = load_acquisition_json(policy_manifest)
+        verify_policy_hash(policy_payload)
+        policy = parse_policy_manifest(policy_payload)
+        source_hash = _required_manifest_hash(source_payload, "source manifest")
+        split_hash = _required_manifest_hash(split_payload, "split manifest")
+        policy_hash = _required_manifest_hash(policy_payload, "acquisition policy")
+        if policy.source_manifest_hash != source_hash or policy.split_manifest_hash != split_hash:
+            raise PlanValidationError(
+                "Acquisition policy dependency hashes do not match the source and split manifests."
+            )
+        requests = build_pilot_request_plan(pilot_config)
     except ConfigurationError as exc:
         _logger.error("Configuration error: %s", exc)
         raise typer.Exit(code=2) from exc
+    except (ManifestValidationError, PlanValidationError, ValueError) as exc:
+        _logger.error("Pilot dependency or plan validation failed: %s", exc)
+        raise typer.Exit(code=1) from exc
 
-    root = find_repository_root()
     _load_dotenv(root)
     try:
         client = _raw_databento_client()
@@ -936,43 +1129,124 @@ def pilot_prepare(
         _logger.error("%s", redact(str(exc)))
         raise typer.Exit(code=2) from exc
 
-    try:
-        requests = build_pilot_request_plan(pilot_config)
-    except ValueError as exc:
-        _logger.error("Pilot request-plan generation failed: %s", exc)
-        raise typer.Exit(code=1) from exc
+    retry = pilot_config.retry
 
-    phash = compute_plan_hash(requests)
-    estimator = MetadataEstimator(client)
+    def _progress(index: int, total: int, request: AcquisitionRequest, estimate: Any) -> None:
+        typer.echo(
+            f"metadata preflight {index}/{total}: {request.request_id} "
+            f"{request.dataset}/{request.schema_name} cost={estimate.cost_usd}"
+        )
+
+    estimator = MetadataEstimator(
+        client,
+        maximum_attempts=retry.maximum_attempts,
+        initial_delay_seconds=float(retry.initial_delay_seconds),
+        multiplier=float(retry.multiplier),
+        maximum_delay_seconds=float(retry.maximum_delay_seconds),
+        deterministic_jitter=retry.jitter == "deterministic_seeded",
+    )
     try:
-        result = run_preflight(estimator=estimator, requests=requests, config=pilot_config)
+        result = run_preflight(
+            estimator=estimator,
+            requests=requests,
+            config=pilot_config,
+            maximum_workers=1,
+            progress_callback=_progress,
+        )
     except MarketDataError as exc:
         _logger.error("Pilot preflight failed: %s", redact(str(exc)))
         raise typer.Exit(code=1) from exc
 
     generated_at = _now()
+    bindings = {
+        "source_manifest_hash": source_hash,
+        "split_manifest_hash": split_hash,
+        "acquisition_policy_hash": policy_hash,
+        "pilot_config_hash": config_sha256(config),
+        "calendar_name": pilot_config.calendar_name,
+        "calendar_library": "exchange-calendars",
+        "calendar_library_version": _distribution_version("exchange-calendars"),
+        "provider_client": "databento",
+        "provider_client_version": _distribution_version("databento"),
+        "implementation_revision": (
+            f"neuralmarket-{_distribution_version('neuralmarket')}:pilot-request-plan-v1"
+        ),
+    }
+    finalized_requests = result.estimated_requests
+    phash = compute_plan_hash(finalized_requests, bindings)
+    fresh_total = to_decimal(result.fresh_total_usd)
+    maximum_request = max(
+        (to_decimal(request.estimated_cost) for request in finalized_requests),
+        default=Decimal("0"),
+    )
+    planner_difference = fresh_total - _ACCEPTED_PILOT_PLANNER_ESTIMATE_USD
+    planner_tolerance = (
+        _ACCEPTED_PILOT_PLANNER_ESTIMATE_USD * pilot_config.estimate_increase_tolerance_fraction
+    )
+    estimate_comparison = {
+        "accepted_planner_estimate_usd": str(_ACCEPTED_PILOT_PLANNER_ESTIMATE_USD),
+        "fresh_metadata_estimate_usd": result.fresh_total_usd,
+        "difference_usd": str(planner_difference),
+        "tolerance_usd": str(planner_tolerance),
+        "within_tolerance": planner_difference <= planner_tolerance,
+        "explanation": (
+            "Fresh get_record_count/get_billable_size/get_cost metadata replaced the "
+            "earlier aggregate planning estimate; no market records were requested."
+        ),
+    }
     manifest_payload: dict[str, Any] = {
+        "manifest_version": "1.0",
         "plan_hash": phash,
         "generated_at": generated_at,
-        "waves": _ordered_waves(requests),
-        "requests": [_pilot_request_manifest_json(r) for r in requests],
+        "bindings": bindings,
+        "waves": _ordered_waves(finalized_requests),
+        "request_count": len(finalized_requests),
+        "requests": [_pilot_request_manifest_json(r) for r in finalized_requests],
         "estimated_total_cost_usd": result.fresh_total_usd,
+        "estimated_maximum_single_request_usd": str(maximum_request),
+        "estimated_record_count": sum(
+            request.estimated_record_count or 0 for request in finalized_requests
+        ),
+        "estimated_billable_size_bytes": sum(
+            request.estimated_billable_size or 0 for request in finalized_requests
+        ),
         "maximum_allowed_total_usd": str(pilot_config.maximum_spend_usd),
+        "maximum_allowed_single_request_usd": str(pilot_config.maximum_single_request_usd),
+        "estimate_comparison": estimate_comparison,
+        "authorization": {
+            "required": True,
+            "exact_plan_hash_required": pilot_config.require_exact_plan_hash,
+            "authorization_file_required": pilot_config.require_authorization_file,
+            "operator_confirmation_required": True,
+            "coverage": [
+                "plan_hash",
+                "source_manifest_hash",
+                "split_manifest_hash",
+                "acquisition_policy_hash",
+                "maximum_total_cost_usd",
+                "maximum_single_request_cost_usd",
+            ],
+        },
         "purchase_authorized": False,
+        "download_attempts": 0,
+        "batch_jobs_submitted": 0,
+        "live_connections_opened": 0,
     }
-    try:
-        _validate_pilot_request_plan_schema(root, manifest_payload)
-    except MarketDataError as exc:
-        _logger.error("%s", exc)
-        raise typer.Exit(code=1) from exc
 
-    write_acquisition_json(request_manifest, manifest_payload)
+    phash = compute_plan_hash(
+        finalized_requests,
+        bindings,
+        _pilot_plan_hash_metadata(manifest_payload),
+    )
+    manifest_payload["plan_hash"] = phash
 
     report_payload = {
         "generated_at": generated_at,
         "plan_hash": phash,
         "config_hash": config_sha256(config),
-        "preflight": json.loads(result.model_dump_json()),
+        "bindings": bindings,
+        "preflight": result.model_dump(mode="json", exclude={"estimated_requests"}),
+        "estimate_comparison": estimate_comparison,
         "purchase_authorized": False,
         "download_attempts": 0,
         "batch_jobs_submitted": 0,
@@ -980,6 +1254,21 @@ def pilot_prepare(
         "request_manifest": str(request_manifest),
     }
     write_acquisition_json(output, report_payload)
+
+    if (
+        not result.passed
+        or fresh_total > _HARD_PILOT_SPEND_CAP_USD
+        or not estimate_comparison["within_tolerance"]
+    ):
+        _logger.error("Pilot preflight rejected the plan; request manifest was not written.")
+        raise typer.Exit(code=1)
+
+    try:
+        _validate_pilot_request_plan_schema(root, manifest_payload)
+    except MarketDataError as exc:
+        _logger.error("%s", exc)
+        raise typer.Exit(code=1) from exc
+    write_acquisition_json(request_manifest, manifest_payload)
 
     typer.echo(
         json.dumps(
@@ -997,8 +1286,6 @@ def pilot_prepare(
             sort_keys=True,
         )
     )
-    if not result.passed or to_decimal(result.fresh_total_usd) > _HARD_PILOT_SPEND_CAP_USD:
-        raise typer.Exit(code=1)
 
 
 @pilot_app.command("verify")
@@ -1010,6 +1297,9 @@ def pilot_verify(
         ...,
         "--authorization-template",
         help="Path to a pilot authorization artifact/template, confirmed to be rejected.",
+    ),
+    config: Path = typer.Option(
+        _DEFAULT_PILOT_CONFIG, "--config", help="Path to the pilot-execution YAML config."
     ),
     source_manifest: Path = typer.Option(
         _DEFAULT_SOURCE_MANIFEST, "--source-manifest", help="Path to the accepted source manifest."
@@ -1029,19 +1319,26 @@ def pilot_verify(
     command only reads and re-hashes local JSON files.
     """
     configure_logging("INFO")
+    root = find_repository_root()
+    request_manifest = _resolve_under_root(root, request_manifest)
+    authorization_template = _resolve_under_root(root, authorization_template)
+    config = _resolve_under_root(root, config)
+    source_manifest = _resolve_under_root(root, source_manifest)
+    split_manifest = _resolve_under_root(root, split_manifest)
+    policy_manifest = _resolve_under_root(root, policy_manifest)
     try:
-        plan_payload = load_acquisition_json(request_manifest)
-    except PlanValidationError as exc:
-        _logger.error("Pilot request-plan manifest could not be read: %s", exc)
-        raise typer.Exit(code=1) from exc
-
-    stored_plan_hash = plan_payload.get("plan_hash")
-    recomputed_plan_hash = _recompute_pilot_plan_hash(plan_payload)
-    if stored_plan_hash != recomputed_plan_hash:
-        _logger.error(
-            "Pilot request-plan manifest plan_hash does not match its own contents (tampered)."
+        plan_payload, _, expected_bindings = _validate_pilot_plan_artifacts(
+            root=root,
+            request_manifest=request_manifest,
+            config=config,
+            source_manifest=source_manifest,
+            split_manifest=split_manifest,
+            policy_manifest=policy_manifest,
         )
-        raise typer.Exit(code=1)
+        stored_plan_hash = str(plan_payload["plan_hash"])
+    except Exception as exc:
+        _logger.error("Pilot request-plan verification failed: %s", redact(str(exc)))
+        raise typer.Exit(code=1) from exc
 
     template_usable_for_execution = False
     authorization_rejection_reason: str | None = None
@@ -1050,9 +1347,13 @@ def pilot_verify(
         validate_authorization(
             auth,
             expected_plan_hash=str(stored_plan_hash or ""),
-            expected_source_manifest_hash=_manifest_hash_or_empty(source_manifest),
-            expected_split_manifest_hash=_manifest_hash_or_empty(split_manifest),
-            expected_acquisition_policy_hash=_manifest_hash_or_empty(policy_manifest),
+            expected_source_manifest_hash=expected_bindings["source_manifest_hash"],
+            expected_split_manifest_hash=expected_bindings["split_manifest_hash"],
+            expected_acquisition_policy_hash=expected_bindings["acquisition_policy_hash"],
+            expected_maximum_spend_usd=to_decimal(plan_payload["maximum_allowed_total_usd"]),
+            expected_maximum_single_request_usd=to_decimal(
+                plan_payload["maximum_allowed_single_request_usd"]
+            ),
             now=datetime.now(UTC),
             consumed_ids=set(),
         )
@@ -1061,15 +1362,6 @@ def pilot_verify(
         authorization_rejection_reason = exc.reason
     except Exception as exc:  # fail closed: any parse/schema/model failure rejects the template
         authorization_rejection_reason = f"unparseable: {exc}"
-
-    try:
-        verify_manifests(load_manifest(source_manifest), load_manifest(split_manifest))
-        policy_payload = load_acquisition_json(policy_manifest)
-        verify_policy_hash(policy_payload)
-        parse_policy_manifest(policy_payload)
-    except (ManifestValidationError, PlanValidationError) as exc:
-        _logger.error("Manifest verification failed: %s", exc)
-        raise typer.Exit(code=1) from exc
 
     typer.echo(
         json.dumps(
@@ -1096,6 +1388,9 @@ def pilot_execute(
         ...,
         "--confirm-plan-hash",
         help="Operator-confirmed plan hash; must exactly match the plan under review.",
+    ),
+    config: Path = typer.Option(
+        _DEFAULT_PILOT_CONFIG, "--config", help="Path to the pilot-execution YAML config."
     ),
     source_manifest: Path = typer.Option(
         _DEFAULT_SOURCE_MANIFEST, "--source-manifest", help="Path to the accepted source manifest."
@@ -1125,18 +1420,50 @@ def pilot_execute(
     this codebase yet.
     """
     configure_logging("INFO")
+    root = find_repository_root()
+    plan = _resolve_under_root(root, plan)
+    authorization = _resolve_under_root(root, authorization)
+    config = _resolve_under_root(root, config)
+    source_manifest = _resolve_under_root(root, source_manifest)
+    split_manifest = _resolve_under_root(root, split_manifest)
+    policy_manifest = _resolve_under_root(root, policy_manifest)
     try:
-        plan_payload = load_acquisition_json(plan)
-    except PlanValidationError as exc:
-        _logger.error("Pilot request-plan manifest could not be read: %s", exc)
+        plan_payload, authorized_requests, expected_bindings = _validate_pilot_plan_artifacts(
+            root=root,
+            request_manifest=plan,
+            config=config,
+            source_manifest=source_manifest,
+            split_manifest=split_manifest,
+            policy_manifest=policy_manifest,
+        )
+        plan_hash_value = str(plan_payload["plan_hash"])
+        source_hash = expected_bindings["source_manifest_hash"]
+        split_hash = expected_bindings["split_manifest_hash"]
+        policy_hash = expected_bindings["acquisition_policy_hash"]
+        auth = load_authorization(authorization)
+        validate_authorization(
+            auth,
+            expected_plan_hash=plan_hash_value,
+            expected_source_manifest_hash=source_hash,
+            expected_split_manifest_hash=split_hash,
+            expected_acquisition_policy_hash=policy_hash,
+            expected_maximum_spend_usd=to_decimal(plan_payload["maximum_allowed_total_usd"]),
+            expected_maximum_single_request_usd=to_decimal(
+                plan_payload["maximum_allowed_single_request_usd"]
+            ),
+            now=datetime.now(UTC),
+            consumed_ids=set(),
+        )
+        if not hmac.compare_digest(confirm_plan_hash, plan_hash_value):
+            raise AuthorizationError(
+                "plan_hash_confirmation_mismatch",
+                "confirm_plan_hash does not match the plan under review",
+            )
+    except Exception as exc:
+        message = f"Pilot execution blocked: authorization guard rejected: {redact(str(exc))}"
+        typer.echo(message, err=True)
         raise typer.Exit(code=1) from exc
 
-    plan_hash_value = plan_payload.get("plan_hash")
-    if not isinstance(plan_hash_value, str):
-        _logger.error("Pilot request-plan manifest is missing a string plan_hash.")
-        raise typer.Exit(code=1)
-
-    root = find_repository_root()
     journal_full_path = _resolve_under_root(root, journal_path)
     journal_full_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1152,15 +1479,26 @@ def pilot_execute(
                 plan_hash=plan_hash_value,
                 authorization_path=authorization,
                 confirm_plan_hash=confirm_plan_hash,
-                source_manifest_hash=_manifest_hash_or_empty(source_manifest),
-                split_manifest_hash=_manifest_hash_or_empty(split_manifest),
-                acquisition_policy_hash=_manifest_hash_or_empty(policy_manifest),
+                source_manifest_hash=source_hash,
+                split_manifest_hash=split_hash,
+                acquisition_policy_hash=policy_hash,
                 now=datetime.now(UTC),
                 paid_provider_factory=_unreachable_paid_provider_factory,
+                authorized_requests=authorized_requests,
+                plan_bindings=plan_payload["bindings"],
+                plan_metadata=_pilot_plan_hash_metadata(plan_payload),
+                preflight_passed=True,
+                expected_maximum_spend_usd=to_decimal(plan_payload["maximum_allowed_total_usd"]),
+                expected_maximum_single_request_usd=to_decimal(
+                    plan_payload["maximum_allowed_single_request_usd"]
+                ),
             )
         except ExecutorGuardError as exc:
             message = f"Pilot execution blocked: authorization guard rejected ({exc.reason}): {exc}"
-            _logger.error(message)
+            typer.echo(message, err=True)
+            raise typer.Exit(code=1) from exc
+        except NotImplementedError as exc:
+            message = f"Pilot execution blocked: paid provider unavailable: {exc}"
             typer.echo(message, err=True)
             raise typer.Exit(code=1) from exc
 
@@ -1195,19 +1533,29 @@ def pilot_recover(
     anything on disk, including stale ``.partial`` files.
     """
     configure_logging("INFO")
+    root = find_repository_root()
+    plan = _resolve_under_root(root, plan)
+    output = _resolve_under_root(root, output)
+    journal_full_path = _resolve_under_root(root, journal_path)
+    resolved_data_root = _resolve_under_root(root, data_root) if data_root is not None else root
     try:
         load_acquisition_json(plan)
     except PlanValidationError as exc:
         _logger.error("Pilot request-plan manifest could not be read: %s", exc)
         raise typer.Exit(code=1) from exc
 
-    root = find_repository_root()
-    journal_full_path = _resolve_under_root(root, journal_path)
-    journal_full_path.parent.mkdir(parents=True, exist_ok=True)
-    resolved_data_root = data_root if data_root is not None else root
-
-    with RequestJournal(journal_full_path) as journal:
-        report = run_recovery(journal=journal, data_root=resolved_data_root)
+    if journal_full_path.exists():
+        with RequestJournal(journal_full_path) as journal:
+            report = run_recovery(journal=journal, data_root=resolved_data_root)
+    else:
+        report = RecoveryReport(
+            generated_at=datetime.now(UTC).isoformat(),
+            findings=[],
+            quarantine_recommended=[],
+            manual_recovery_required=[],
+            retried=0,
+            deleted=0,
+        )
 
     write_acquisition_json(output, json.loads(report.model_dump_json()))
     typer.echo(

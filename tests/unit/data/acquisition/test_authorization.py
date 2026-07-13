@@ -10,6 +10,8 @@ from neuralmarket.data.acquisition.authorization import (
     validate_authorization,
 )
 
+pytestmark = pytest.mark.unit
+
 
 def _valid_payload(**overrides):
     now = datetime.now(UTC)
@@ -20,6 +22,7 @@ def _valid_payload(**overrides):
         "split_manifest_hash": "v" * 64,
         "acquisition_policy_hash": "a" * 64,
         "maximum_spend_usd": "5.00",
+        "maximum_single_request_usd": "1.00",
         "authorized_currency": "USD",
         "authorized_at": (now - timedelta(minutes=1)).isoformat(),
         "expires_at": (now + timedelta(days=1)).isoformat(),
@@ -50,6 +53,22 @@ def test_valid_authorization_passes() -> None:
     _validate(_valid_payload())
 
 
+def test_authorization_hash_canonicalizes_equivalent_utc_timestamp_forms() -> None:
+    payload = _valid_payload(
+        authorized_at="2026-07-13T09:00:00Z",
+        expires_at="2026-07-14T09:00:00Z",
+    )
+    payload["authorization_hash"] = compute_authorization_hash(payload)
+    _validate(payload, now=datetime(2026, 7, 13, 10, tzinfo=UTC))
+
+    equivalent = {
+        **payload,
+        "authorized_at": "2026-07-13T09:00:00+00:00",
+        "expires_at": "2026-07-14T09:00:00+00:00",
+    }
+    assert compute_authorization_hash(equivalent) == payload["authorization_hash"]
+
+
 def test_rejects_plan_hash_mismatch() -> None:
     with pytest.raises(AuthorizationError) as exc:
         _validate(_valid_payload(), expected_plan_hash="x" * 64)
@@ -76,10 +95,35 @@ def test_rejects_acquisition_policy_hash_mismatch() -> None:
 
 def test_rejects_expired() -> None:
     now = datetime.now(UTC)
-    payload = _valid_payload(expires_at=(now - timedelta(days=1)).isoformat())
+    payload = _valid_payload(
+        authorized_at=(now - timedelta(days=2)).isoformat(),
+        expires_at=(now - timedelta(days=1)).isoformat(),
+    )
     with pytest.raises(AuthorizationError) as exc:
         _validate(payload, now=now)
     assert exc.value.reason == "expired"
+
+
+def test_rejects_authorization_before_validity_window() -> None:
+    now = datetime.now(UTC)
+    payload = _valid_payload(
+        authorized_at=(now + timedelta(minutes=1)).isoformat(),
+        expires_at=(now + timedelta(days=1)).isoformat(),
+    )
+    with pytest.raises(AuthorizationError) as exc:
+        _validate(payload, now=now)
+    assert exc.value.reason == "not_yet_valid"
+
+
+def test_rejects_invalid_authorization_interval() -> None:
+    now = datetime.now(UTC)
+    payload = _valid_payload(
+        authorized_at=now.isoformat(),
+        expires_at=(now - timedelta(seconds=1)).isoformat(),
+    )
+    with pytest.raises(AuthorizationError) as exc:
+        _validate(payload, now=now)
+    assert exc.value.reason == "invalid_validity_interval"
 
 
 def test_rejects_already_consumed() -> None:

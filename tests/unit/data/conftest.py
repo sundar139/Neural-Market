@@ -1,6 +1,6 @@
 """Shared fixtures for data acquisition and normalization tests."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -20,7 +20,7 @@ def arcx_request() -> AcquisitionRequest:
         stype_in="raw_symbol",
         stype_out="instrument_id",
         start=now,
-        end_exclusive=now,
+        end_exclusive=now + timedelta(days=1),
         encoding="dbn",
         compression="zstd",
         expected_split="training",

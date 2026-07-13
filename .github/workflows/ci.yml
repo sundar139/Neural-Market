@@ -33,5 +33,10 @@ jobs:
       - name: Tests with branch coverage
         run: python -m pytest -m "unit or integration" --cov=neuralmarket --cov-branch --cov-report=term-missing --cov-fail-under=85
 
+      - name: Guarded pilot CLI smoke test
+        run: |
+          python -m neuralmarket data pilot --help
+          python -m neuralmarket data pilot prepare --help
+
       - name: pre-commit
         run: python -m pre_commit run --all-files

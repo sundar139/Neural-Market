@@ -1,15 +1,13 @@
-"""Pilot raw-storage path safety and atomic-write design.
-
-Pure validation and design-time helpers only: nothing here ever touches the
-filesystem beyond what a caller's ``tmp_path``-based test does. The real
-atomic writer against a live executor is out of scope for this milestone --
-:func:`atomic_write_plan` only returns a description of the intended
-8-step sequence.
-"""
+"""Pilot raw-storage path safety and atomic DBN publication."""
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from neuralmarket.data.acquisition.requests import AcquisitionRequest
@@ -135,3 +133,99 @@ def atomic_write_plan(final_path: Path) -> AtomicWritePlan:
         temp_suffix=temp_suffix,
         steps=steps,
     )
+
+
+@dataclass(frozen=True)
+class RawStorageResult:
+    """Verified identity and locations of one atomically stored raw response."""
+
+    path: Path
+    sidecar_path: Path
+    sha256: str
+    byte_count: int
+
+
+def _fsync_parent(path: Path) -> None:
+    """Best-effort directory fsync after publication; unsupported on Windows."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(descriptor)
+    except OSError:
+        pass
+    finally:
+        os.close(descriptor)
+
+
+def _atomic_publish(source: Path, destination: Path) -> None:
+    """Atomically publish a new file without replacing an existing artifact."""
+    # os.rename fails if the destination appeared after the preflight check on
+    # Windows, preserving the no-overwrite invariant.
+    os.rename(source, destination)
+
+
+def atomic_store_raw(
+    *,
+    request: AcquisitionRequest,
+    data_root: Path,
+    chunks: Iterable[bytes],
+    validator: Callable[[Path, str], bool],
+) -> RawStorageResult:
+    """Write, fsync, hash, validate, and atomically publish one raw DBN response."""
+    logical_path = request.logical_output_path or logical_raw_path(request)
+    final_path = resolve_under_data_root(logical_path, data_root)
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    partial_path = final_path.with_name(final_path.name + ".partial")
+    sidecar_path = final_path.with_suffix(final_path.suffix + ".json")
+    sidecar_partial = sidecar_path.with_name(sidecar_path.name + ".partial")
+    existing = [
+        path for path in (final_path, partial_path, sidecar_path, sidecar_partial) if path.exists()
+    ]
+    if existing:
+        raise FileExistsError(f"refusing to overwrite raw artifact: {existing[0]}")
+    digest = hashlib.sha256()
+    byte_count = 0
+    try:
+        with partial_path.open("xb") as handle:
+            for chunk in chunks:
+                if not isinstance(chunk, bytes):
+                    raise TypeError("raw response chunks must be bytes")
+                handle.write(chunk)
+                digest.update(chunk)
+                byte_count += len(chunk)
+            handle.flush()
+            os.fsync(handle.fileno())
+        checksum = digest.hexdigest()
+        if byte_count == 0 or not validator(partial_path, checksum):
+            raise ValueError("raw DBN validation failed before atomic publication")
+        sidecar = {
+            "request_id": request.request_id,
+            "request_hash": request.request_hash,
+            "logical_path": logical_path,
+            "sha256": checksum,
+            "byte_count": byte_count,
+            "stored_at": datetime.now(UTC).isoformat(),
+        }
+        with sidecar_partial.open("x", encoding="utf-8", newline="\n") as handle:
+            json.dump(sidecar, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            _atomic_publish(partial_path, final_path)
+        except Exception:
+            raise
+        try:
+            _atomic_publish(sidecar_partial, sidecar_path)
+        except Exception:
+            final_path.unlink(missing_ok=True)
+            raise
+        partial_path.unlink(missing_ok=True)
+        sidecar_partial.unlink(missing_ok=True)
+        _fsync_parent(final_path.parent)
+        return RawStorageResult(final_path, sidecar_path, checksum, byte_count)
+    finally:
+        partial_path.unlink(missing_ok=True)
+        sidecar_partial.unlink(missing_ok=True)

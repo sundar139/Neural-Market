@@ -19,8 +19,11 @@ from __future__ import annotations
 import hmac
 from collections.abc import Callable
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
-from typing import Protocol
+from threading import Lock
+from typing import Any, Protocol
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict
 
@@ -29,9 +32,16 @@ from neuralmarket.data.acquisition.authorization import (
     load_authorization,
     validate_authorization,
 )
+from neuralmarket.data.acquisition.budget import to_decimal
 from neuralmarket.data.acquisition.estimation import MetadataEstimator
 from neuralmarket.data.acquisition.journal import JournalEntry, RequestJournal
-from neuralmarket.data.acquisition.requests import AcquisitionRequest
+from neuralmarket.data.acquisition.requests import (
+    AcquisitionRequest,
+    verify_final_request,
+)
+from neuralmarket.data.acquisition.requests import (
+    plan_hash as compute_plan_hash,
+)
 from neuralmarket.data.acquisition.states import ALLOWED_TRANSITIONS
 
 
@@ -78,6 +88,44 @@ class PaidHistoricalProvider(Protocol):
         ...
 
 
+class _GuardedPaidHistoricalProvider:
+    """Runtime wrapper limiting paid acquisition to authorized request hashes."""
+
+    def __init__(
+        self,
+        inner: PaidHistoricalProvider,
+        *,
+        authorized_request_hashes: set[str],
+        maximum_single_request_usd: Decimal,
+    ) -> None:
+        self._inner = inner
+        self._authorized_request_hashes = authorized_request_hashes
+        self._maximum_single_request_usd = maximum_single_request_usd
+        self._acquired_request_hashes: set[str] = set()
+        self._lock = Lock()
+
+    def acquire_range(self, request: AcquisitionRequest) -> RawAcquisitionResult:
+        verify_final_request(request)
+        if request.request_hash not in self._authorized_request_hashes:
+            raise ExecutorGuardError(
+                "request_not_authorized",
+                f"request is not in the authorized plan: {request.request_id}",
+            )
+        if to_decimal(request.estimated_cost) > self._maximum_single_request_usd:
+            raise ExecutorGuardError(
+                "request_cap_exceeded",
+                f"request exceeds authorized cap: {request.request_id}",
+            )
+        with self._lock:
+            if request.request_hash in self._acquired_request_hashes:
+                raise ExecutorGuardError(
+                    "request_already_acquired",
+                    f"request already acquired under this authorization: {request.request_id}",
+                )
+            self._acquired_request_hashes.add(request.request_hash)
+        return self._inner.acquire_range(request)
+
+
 class ExecutorGuardError(RuntimeError):
     """Raised when a guarded paid execution is blocked. Fails closed.
 
@@ -104,15 +152,14 @@ class PilotExecutor:
         """Bind the executor to a request journal and a metadata-only estimator."""
         self._journal = journal
         self._metadata_estimator = metadata_estimator
-        # ponytail: in-memory single-use tracking only; cross-process persistence
-        # of consumed authorizations is deferred to the recovery/CLI layer
-        # (Tasks 9-10), which owns the durable consumed-id store.
-        self._consumed_ids: set[str] = set()
 
     def prepare(self, requests: list[AcquisitionRequest]) -> None:
         """Write every request to the journal in the ``planned`` state."""
+        if any(request.estimated_cost is None for request in requests):
+            raise ValueError("cannot journal an acquisition request without a fresh estimate")
         now = datetime.now(UTC).isoformat()
         for request in requests:
+            assert request.estimated_cost is not None
             self._journal.upsert(
                 JournalEntry(
                     request_id=request.request_id,
@@ -165,6 +212,12 @@ class PilotExecutor:
         acquisition_policy_hash: str,
         now: datetime,
         paid_provider_factory: Callable[[], PaidHistoricalProvider],
+        authorized_requests: list[AcquisitionRequest] | None = None,
+        plan_bindings: dict[str, object] | None = None,
+        plan_metadata: dict[str, Any] | None = None,
+        preflight_passed: bool = False,
+        expected_maximum_spend_usd: Decimal = Decimal("5.00"),
+        expected_maximum_single_request_usd: Decimal = Decimal("1.00"),
     ) -> PaidHistoricalProvider:
         """Construct a paid provider ONLY if both money guards pass.
 
@@ -184,6 +237,12 @@ class PilotExecutor:
                 validation failure, ``plan_hash_confirmation_mismatch`` if the
                 confirmation hash does not match the plan hash.
         """
+        if not preflight_passed:
+            raise ExecutorGuardError(
+                "preflight_not_passed",
+                "fresh metadata preflight has not passed for this finalized plan",
+            )
+
         # --- Guard 1: authorization artifact -----------------------------
         try:
             auth = load_authorization(authorization_path)
@@ -203,8 +262,10 @@ class PilotExecutor:
                 expected_source_manifest_hash=source_manifest_hash,
                 expected_split_manifest_hash=split_manifest_hash,
                 expected_acquisition_policy_hash=acquisition_policy_hash,
+                expected_maximum_spend_usd=expected_maximum_spend_usd,
+                expected_maximum_single_request_usd=expected_maximum_single_request_usd,
                 now=now,
-                consumed_ids=self._consumed_ids,
+                consumed_ids=self._journal.consumed_authorization_ids(),
             )
         except AuthorizationError as exc:
             raise ExecutorGuardError(
@@ -218,5 +279,81 @@ class PilotExecutor:
                 "confirm_plan_hash does not match the plan under review",
             )
 
-        # --- Both guards passed: only now may a paid provider exist ------
-        return paid_provider_factory()
+        if not authorized_requests:
+            raise ExecutorGuardError(
+                "missing_authorized_requests",
+                "finalized request list is required before paid provider construction",
+            )
+        authorized_hashes: set[str] = set()
+        authorized_total = Decimal("0")
+        authorized_maximum = Decimal("0")
+        for request in authorized_requests:
+            try:
+                verify_final_request(request)
+                cost = to_decimal(request.estimated_cost)
+            except Exception as exc:
+                raise ExecutorGuardError(
+                    "invalid_authorized_request",
+                    f"authorized request rejected: {request.request_id}",
+                ) from exc
+            authorized_hashes.add(request.request_hash)
+            authorized_total += cost
+            authorized_maximum = max(authorized_maximum, cost)
+        if authorized_total > expected_maximum_spend_usd:
+            raise ExecutorGuardError(
+                "plan_cap_exceeded", "authorized request plan exceeds total cap"
+            )
+        if authorized_maximum > expected_maximum_single_request_usd:
+            raise ExecutorGuardError(
+                "request_cap_exceeded", "authorized request plan exceeds per-request cap"
+            )
+        if plan_bindings is None:
+            raise ExecutorGuardError(
+                "missing_plan_bindings",
+                "plan dependency bindings are required before paid provider construction",
+            )
+        expected_bindings = {
+            "source_manifest_hash": source_manifest_hash,
+            "split_manifest_hash": split_manifest_hash,
+            "acquisition_policy_hash": acquisition_policy_hash,
+        }
+        if any(plan_bindings.get(key) != value for key, value in expected_bindings.items()):
+            raise ExecutorGuardError(
+                "plan_dependency_mismatch",
+                "plan dependency bindings do not match the authorized dependencies",
+            )
+        if not hmac.compare_digest(
+            compute_plan_hash(authorized_requests, plan_bindings, plan_metadata), plan_hash
+        ):
+            raise ExecutorGuardError(
+                "authorized_requests_plan_mismatch",
+                "authorized requests do not match the authorized plan hash",
+            )
+
+        for request in authorized_requests:
+            entry = self._journal.get(request.request_id)
+            if entry is None or entry.state != "preflight_validated":
+                raise ExecutorGuardError(
+                    "preflight_not_passed",
+                    f"request is not preflight validated: {request.request_id}",
+                )
+
+        execution_id = uuid4().hex
+        if not self._journal.consume_authorization_and_create_execution(
+            plan_hash=plan_hash,
+            authorization_hash=auth.authorization_hash,
+            consumed_at=now.isoformat(),
+            execution_id=execution_id,
+            maximum_authorized_spend_usd=str(expected_maximum_spend_usd),
+            currency=auth.authorized_currency,
+        ):
+            raise ExecutorGuardError(
+                "invalid_authorization", "authorization rejected: already_consumed"
+            )
+
+        # --- Both guards passed and consumption is durable: provider may exist.
+        return _GuardedPaidHistoricalProvider(
+            paid_provider_factory(),
+            authorized_request_hashes=authorized_hashes,
+            maximum_single_request_usd=expected_maximum_single_request_usd,
+        )

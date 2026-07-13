@@ -39,11 +39,15 @@ Assert-LastExitCode "pytest"
 Assert-LastExitCode "pre-commit"
 & $Py -m neuralmarket --help
 Assert-LastExitCode "neuralmarket --help"
+& $Py -m neuralmarket data pilot --help
+Assert-LastExitCode "neuralmarket data pilot --help"
+& $Py -m neuralmarket data pilot prepare --help
+Assert-LastExitCode "neuralmarket data pilot prepare --help"
 & $Py -m neuralmarket environment check --config "configs/reproducibility/default.yaml" --output "reports/environment/environment_check.json"
 Assert-LastExitCode "neuralmarket environment check"
 & $Py -m neuralmarket data contracts validate
 Assert-LastExitCode "neuralmarket data contracts validate"
-& $Py -m neuralmarket data split freeze --config "configs/data/spy_daily_databento.yaml" --output "data/manifests/split_manifest_v1.json"
-Assert-LastExitCode "neuralmarket data split freeze"
+& $Py -m neuralmarket data manifests verify --source "data/manifests/source_manifest_v1.json" --split "data/manifests/split_manifest_v1.json"
+Assert-LastExitCode "neuralmarket data manifests verify"
 
 Write-Host "Verification complete."

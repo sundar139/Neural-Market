@@ -36,12 +36,13 @@ def to_decimal(value: Any) -> Decimal:
     """
     if isinstance(value, float):
         raise ValueError("monetary amounts must be given as strings or Decimal, not float")
-    if isinstance(value, Decimal):
-        return value
     try:
-        return Decimal(str(value))
+        parsed = value if isinstance(value, Decimal) else Decimal(str(value))
     except Exception as exc:
         raise ValueError(f"not a valid decimal amount: {value!r}") from exc
+    if not parsed.is_finite():
+        raise ValueError(f"not a finite decimal amount: {value!r}")
+    return parsed
 
 
 _MONEY_FIELDS = (

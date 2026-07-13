@@ -107,6 +107,16 @@ def test_negative_cost_raises() -> None:
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("cost", ["NaN", "Infinity", "-Infinity"])
+def test_nonfinite_cost_raises(cost: str) -> None:
+    estimator = MetadataEstimator(_Client(cost=cost))
+    with pytest.raises(MarketDataError, match="nonfinite"):
+        estimator.estimate(
+            dataset="d", schema="s", symbol="x", stype_in="raw_symbol", start=_START, end=_END
+        )
+
+
+@pytest.mark.unit
 def test_malformed_cost_raises() -> None:
     estimator = MetadataEstimator(_Client(cost="not-a-number"))
     with pytest.raises(MarketDataError, match="Malformed"):

@@ -2,97 +2,189 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "neuralmarket:contract:pilot_request_plan:1.0",
   "type": "object",
+  "additionalProperties": false,
   "required": [
+    "manifest_version",
     "plan_hash",
     "generated_at",
+    "bindings",
     "waves",
+    "request_count",
     "requests",
     "estimated_total_cost_usd",
+    "estimated_maximum_single_request_usd",
+    "estimated_record_count",
+    "estimated_billable_size_bytes",
     "maximum_allowed_total_usd",
-    "purchase_authorized"
+    "maximum_allowed_single_request_usd",
+    "estimate_comparison",
+    "authorization",
+    "purchase_authorized",
+    "download_attempts",
+    "batch_jobs_submitted",
+    "live_connections_opened"
   ],
   "properties": {
-    "plan_hash": {
-      "type": "string"
-    },
-    "generated_at": {
-      "type": "string"
+    "manifest_version": {"const": "1.0"},
+    "plan_hash": {"$ref": "#/$defs/sha256"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_manifest_hash",
+        "split_manifest_hash",
+        "acquisition_policy_hash",
+        "pilot_config_hash",
+        "calendar_name",
+        "calendar_library",
+        "calendar_library_version",
+        "provider_client",
+        "provider_client_version",
+        "implementation_revision"
+      ],
+      "properties": {
+        "source_manifest_hash": {"$ref": "#/$defs/sha256"},
+        "split_manifest_hash": {"$ref": "#/$defs/sha256"},
+        "acquisition_policy_hash": {"$ref": "#/$defs/sha256"},
+        "pilot_config_hash": {"$ref": "#/$defs/sha256"},
+        "calendar_name": {"const": "XNYS"},
+        "calendar_library": {"const": "exchange-calendars"},
+        "calendar_library_version": {"type": "string", "minLength": 1},
+        "provider_client": {"const": "databento"},
+        "provider_client_version": {"type": "string", "minLength": 1},
+        "implementation_revision": {"type": "string", "minLength": 1}
+      }
     },
     "waves": {
-      "type": "array"
+      "type": "array",
+      "items": {"enum": ["arcx_catalog", "arcx_underlying", "opra_definitions", "opra_closing_quotes"]},
+      "minItems": 4,
+      "maxItems": 4,
+      "uniqueItems": true
     },
+    "request_count": {"const": 25},
     "requests": {
       "type": "array",
-      "items": {
-        "type": "object",
-        "required": [
-          "request_id",
-          "wave",
-          "dataset",
-          "schema",
-          "symbols",
-          "stype_in",
-          "stype_out",
-          "start",
-          "end_exclusive",
-          "encoding",
-          "compression",
-          "expected_split",
-          "estimated_cost_usd",
-          "request_hash"
-        ],
-        "properties": {
-          "request_id": {
-            "type": "string"
-          },
-          "wave": {},
-          "dataset": {
-            "type": "string"
-          },
-          "schema": {
-            "type": "string"
-          },
-          "symbols": {
-            "type": "array"
-          },
-          "stype_in": {
-            "type": "string"
-          },
-          "stype_out": {
-            "type": "string"
-          },
-          "start": {
-            "type": "string"
-          },
-          "end_exclusive": {
-            "type": "string"
-          },
-          "encoding": {
-            "type": "string"
-          },
-          "compression": {
-            "type": "string"
-          },
-          "expected_split": {
-            "type": "string"
-          },
-          "estimated_cost_usd": {
-            "type": "string"
-          },
-          "request_hash": {
-            "type": "string"
-          }
+      "minItems": 25,
+      "maxItems": 25,
+      "items": {"$ref": "#/$defs/request"}
+    },
+    "estimated_total_cost_usd": {"$ref": "#/$defs/money"},
+    "estimated_maximum_single_request_usd": {"$ref": "#/$defs/money"},
+    "estimated_record_count": {"type": "integer", "minimum": 0},
+    "estimated_billable_size_bytes": {"type": "integer", "minimum": 0},
+    "maximum_allowed_total_usd": {"const": "5.00"},
+    "maximum_allowed_single_request_usd": {"const": "1.00"},
+    "estimate_comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "accepted_planner_estimate_usd",
+        "fresh_metadata_estimate_usd",
+        "difference_usd",
+        "tolerance_usd",
+        "within_tolerance",
+        "explanation"
+      ],
+      "properties": {
+        "accepted_planner_estimate_usd": {"const": "0.46"},
+        "fresh_metadata_estimate_usd": {"$ref": "#/$defs/money"},
+        "difference_usd": {"type": "string", "pattern": "^-?[0-9]+(?:\\.[0-9]+)?$"},
+        "tolerance_usd": {"$ref": "#/$defs/money"},
+        "within_tolerance": {"type": "boolean"},
+        "explanation": {"type": "string", "minLength": 1}
+      }
+    },
+    "authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "exact_plan_hash_required",
+        "authorization_file_required",
+        "operator_confirmation_required",
+        "coverage"
+      ],
+      "properties": {
+        "required": {"const": true},
+        "exact_plan_hash_required": {"const": true},
+        "authorization_file_required": {"const": true},
+        "operator_confirmation_required": {"const": true},
+        "coverage": {
+          "type": "array",
+          "minItems": 6,
+          "uniqueItems": true,
+          "items": {"type": "string"}
         }
       }
     },
-    "estimated_total_cost_usd": {
-      "type": "string"
-    },
-    "maximum_allowed_total_usd": {
-      "type": "string"
-    },
-    "purchase_authorized": {
-      "const": false
+    "purchase_authorized": {"const": false},
+    "download_attempts": {"const": 0},
+    "batch_jobs_submitted": {"const": 0},
+    "live_connections_opened": {"const": 0}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "money": {"type": "string", "pattern": "^[0-9]+(?:\\.[0-9]+)?$"},
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "request_id",
+        "wave",
+        "dataset",
+        "schema",
+        "symbols",
+        "stype_in",
+        "stype_out",
+        "start",
+        "end_exclusive",
+        "encoding",
+        "compression",
+        "expected_split",
+        "currency",
+        "calendar",
+        "logical_output_path",
+        "specification_hash",
+        "estimated_record_count",
+        "estimated_billable_size",
+        "estimated_cost",
+        "estimate_timestamp",
+        "estimate_method",
+        "estimate_response_hash",
+        "request_hash"
+      ],
+      "properties": {
+        "request_id": {"type": "string", "minLength": 1},
+        "wave": {"enum": ["arcx_catalog", "arcx_underlying", "opra_definitions", "opra_closing_quotes"]},
+        "dataset": {"enum": ["ARCX.PILLAR", "OPRA.PILLAR"]},
+        "schema": {"enum": ["definition", "ohlcv-1d", "statistics", "cbbo-1m"]},
+        "symbols": {"type": "array", "minItems": 1, "maxItems": 1, "items": {"type": "string"}},
+        "stype_in": {"enum": ["raw_symbol", "parent"]},
+        "stype_out": {"const": "instrument_id"},
+        "start": {"type": "string", "format": "date-time"},
+        "end_exclusive": {"type": "string", "format": "date-time"},
+        "encoding": {"const": "dbn"},
+        "compression": {"const": "zstd"},
+        "expected_split": {"const": "training"},
+        "currency": {"const": "USD"},
+        "calendar": {"const": "XNYS"},
+        "logical_output_path": {
+          "type": "string",
+          "pattern": "^data/raw/databento/pilot_january_2019/[^\\\\]+\\.dbn$"
+        },
+        "specification_hash": {"$ref": "#/$defs/sha256"},
+        "estimated_record_count": {"type": "integer", "minimum": 0},
+        "estimated_billable_size": {"type": "integer", "minimum": 0},
+        "estimated_cost": {"$ref": "#/$defs/money"},
+        "estimate_timestamp": {"type": "string", "format": "date-time"},
+        "estimate_method": {"const": "metadata:get_record_count+get_billable_size+get_cost"},
+        "estimate_response_hash": {"$ref": "#/$defs/sha256"},
+        "request_hash": {"$ref": "#/$defs/sha256"},
+        "session_date": {"type": ["string", "null"], "format": "date"},
+        "gap_date": {"type": ["string", "null"], "format": "date"}
+      }
     }
   }
 }

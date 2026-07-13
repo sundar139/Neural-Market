@@ -17,3 +17,10 @@ or billing identifiers, payment information, raw exceptions, or market values
 stay local. Account-neutral metadata belongs in `data/manifests/` instead
 (`source_manifest_v1.json`, `split_manifest_v1.json`,
 `acquisition_policy_v1.json`).
+# Data reports and pilot evidence
+
+Local preflight, recovery, environment, and audit outputs use the `.local`
+suffix and are ignored. The tracked acquisition policy, source, split, and
+final pilot request manifest contain reproducible hashes and no credentials or
+market observations. See [the pilot acquisition protocol](../../docs/data/pilot_acquisition.md)
+and [the lineage contract](../../docs/data/data_lineage.md).

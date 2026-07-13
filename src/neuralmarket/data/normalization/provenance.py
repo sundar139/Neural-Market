@@ -1,6 +1,7 @@
-"""Provenance column generation for normalized Parquet files (Task 7b)."""
+"""Validated provenance columns for normalized Parquet files."""
 
-from datetime import datetime
+import re
+from datetime import UTC, datetime
 
 from pydantic import BaseModel, ConfigDict
 
@@ -34,11 +35,15 @@ def provenance_columns_for(
     Returns:
         ProvenanceColumns with source metadata and checksums.
     """
+    if re.fullmatch(r"[0-9a-fA-F]{64}", raw_checksum) is None:
+        raise ValueError("raw_checksum must be a 64-character SHA-256 hex digest")
+    if ingested_at.tzinfo is None or ingested_at.utcoffset() is None:
+        raise ValueError("ingested_at must be timezone-aware")
     return ProvenanceColumns(
         source_request_id=request.request_id,
         source_dataset=request.dataset,
         source_schema=request.schema_name,
-        ingestion_timestamp=ingested_at.isoformat(),
-        raw_sha256=raw_checksum,
+        ingestion_timestamp=ingested_at.astimezone(UTC).isoformat(),
+        raw_sha256=raw_checksum.lower(),
         pipeline_version=neuralmarket.__version__,
     )

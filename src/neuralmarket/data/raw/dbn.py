@@ -11,6 +11,7 @@ the caller, not to this module.
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -23,10 +24,9 @@ from neuralmarket.data.raw.integrity import sha256_of_file, verify_checksum
 class DbnValidationError(ValueError):
     """A single, categorized DBN validation failure.
 
-    ``.code`` values constructed today: "missing", "empty", "checksum_mismatch",
-    "unreadable", "dataset_mismatch", "schema_mismatch", "symbol_mismatch",
-    "window_mismatch". "symbology_missing" is reserved for Task 7c's real
-    symbology check and is not constructed anywhere yet.
+    ``.code`` values categorize file, checksum, readability, identity, and
+    request-window failures. Per-record timestamp and symbology failures are
+    recorded in the validation report's error list.
     """
 
     def __init__(self, code: str, message: str) -> None:
@@ -38,11 +38,9 @@ class DbnValidationError(ValueError):
 class DbnValidationReport(BaseModel):
     """Result of validating one downloaded DBN file against its request.
 
-    ``timestamps_within_interval`` and ``symbology_present`` are placeholder
-    ``True`` values (unverifiable, not disproved) pending Task 7c's real
-    per-record checks -- a ``passed=True`` report has NOT actually verified
-    these two conditions. See the ``# ponytail:`` comment in
-    `validate_dbn_file` for why.
+    ``timestamps_within_interval`` and ``symbology_present`` record the
+    substantive per-record checks; a ``passed=True`` report has verified
+    these two conditions.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -59,9 +57,7 @@ class DbnValidationReport(BaseModel):
     end_matches: bool
     record_count_plausible: bool
     timestamps_within_interval: bool
-    """Placeholder ``True`` until Task 7c adds a real per-record check."""
     symbology_present: bool
-    """Placeholder ``True`` until Task 7c adds a real per-record check."""
     passed: bool
     errors: list[str]
 
@@ -110,8 +106,7 @@ def validate_dbn_file(
     if not checksum_ok:
         err = DbnValidationError(
             "checksum_mismatch",
-            f"Checksum mismatch for {path}: expected {expected_sha256}, "
-            f"got {sha256_of_file(path)}",
+            f"Checksum mismatch for {path}: expected {expected_sha256}, got {sha256_of_file(path)}",
         )
         return _failed_report(path, [str(err)], exists=True, nonempty=True)
 
@@ -125,67 +120,97 @@ def validate_dbn_file(
 
     try:
         store = dbn_store_factory(path)
+        store_dataset = store.dataset
+        store_schema = store.schema
+        store_symbols = tuple(store.symbols)
+        store_start = store.start
+        store_end = store.end
     except Exception as exc:
         err = DbnValidationError("unreadable", f"Failed to open DBN store for {path}: {exc}")
         return _failed_report(path, [str(err)], exists=True, nonempty=True, checksum_ok=True)
 
     errors: list[str] = []
 
-    dataset_matches = store.dataset == expected_request.dataset
+    dataset_matches = store_dataset == expected_request.dataset
     if not dataset_matches:
         errors.append(
             str(
                 DbnValidationError(
                     "dataset_mismatch",
                     f"dataset mismatch: expected {expected_request.dataset!r}, "
-                    f"got {store.dataset!r}",
+                    f"got {store_dataset!r}",
                 )
             )
         )
 
-    schema_matches = store.schema == expected_request.schema_name
+    schema_matches = store_schema == expected_request.schema_name
     if not schema_matches:
         errors.append(
             str(
                 DbnValidationError(
                     "schema_mismatch",
                     f"schema mismatch: expected {expected_request.schema_name!r}, "
-                    f"got {store.schema!r}",
+                    f"got {store_schema!r}",
                 )
             )
         )
 
-    symbols_match = set(store.symbols) == set(expected_request.symbols)
+    if expected_request.stype_in == "parent":
+        # Parent requests resolve to child contracts. The DBNStore symbol list
+        # is evidence of provider expansion, not a literal-parent equality check.
+        parent_symbols = getattr(store, "parent_symbols", None)
+        symbols_match = bool(store_symbols) and (
+            parent_symbols is None or expected_request.symbols[0] in set(parent_symbols)
+        )
+    else:
+        symbols_match = set(store_symbols) == set(expected_request.symbols)
     if not symbols_match:
         errors.append(
             str(
                 DbnValidationError(
                     "symbol_mismatch",
                     f"symbol mismatch: expected {expected_request.symbols!r}, "
-                    f"got {tuple(store.symbols)!r}",
+                    f"got {store_symbols!r}",
                 )
             )
         )
 
-    start_matches = store.start == expected_request.start
-    end_matches = store.end == expected_request.end_exclusive
+    start_matches = store_start == expected_request.start
+    end_matches = store_end == expected_request.end_exclusive
     if not (start_matches and end_matches):
         errors.append(
             str(
                 DbnValidationError(
                     "window_mismatch",
                     f"window mismatch: expected [{expected_request.start}, "
-                    f"{expected_request.end_exclusive}), got [{store.start}, {store.end})",
+                    f"{expected_request.end_exclusive}), got [{store_start}, {store_end})",
                 )
             )
         )
 
     record_count_plausible = True
+    opens_ok = True
+    records: list[dict[str, Any]] = []
     try:
-        actual_count = len(store.to_df())
-    except Exception:
+        frame = store.to_df()
+        actual_count = len(frame)
+        if isinstance(frame, list):
+            if any(not isinstance(row, dict) for row in frame):
+                raise TypeError("DBN records must be mapping objects")
+            records = [row for row in frame if isinstance(row, dict)]
+        elif hasattr(frame, "reset_index") and hasattr(frame, "to_dict"):
+            records = frame.reset_index().to_dict(orient="records")
+            if any(not isinstance(row, dict) for row in records):
+                raise TypeError("DBN records must be mapping objects")
+    except Exception as exc:
+        opens_ok = False
         actual_count = None
-    if actual_count is not None and expected_request.estimated_record_count > 0:
+        errors.append(f"failed to read DBN records: {exc}")
+    if (
+        actual_count is not None
+        and expected_request.estimated_record_count is not None
+        and expected_request.estimated_record_count > 0
+    ):
         lower = 0.1 * expected_request.estimated_record_count
         upper = 10 * expected_request.estimated_record_count
         if not (lower <= actual_count <= upper):
@@ -195,15 +220,41 @@ def validate_dbn_file(
                 f"{expected_request.estimated_record_count}, actual {actual_count}"
             )
 
-    # ponytail: per-record timestamp/symbology-column inspection needs a real
-    # DBN dataframe shape that no synthetic fixture here exercises; both
-    # default to True (unverifiable, not disproved) until Task 7c wires real
-    # frames and can flip these to genuine checks.
-    timestamps_within_interval = True
-    symbology_present = True
+    timestamps_within_interval = bool(records) or (expected_request.estimated_record_count == 0)
+    symbology_present = bool(records) or expected_request.estimated_record_count == 0
+    for row in records:
+        raw_timestamp = row.get("ts_event") or row.get("timestamp") or row.get("ts_recv")
+        try:
+            timestamp = (
+                raw_timestamp
+                if isinstance(raw_timestamp, datetime)
+                else datetime.fromisoformat(str(raw_timestamp).replace("Z", "+00:00"))
+            )
+        except (TypeError, ValueError):
+            timestamps_within_interval = False
+        else:
+            if (
+                timestamp.tzinfo is None
+                or timestamp.utcoffset() is None
+                or not (expected_request.start <= timestamp < expected_request.end_exclusive)
+            ):
+                timestamps_within_interval = False
+
+        if row.get("instrument_id") is None:
+            symbology_present = False
+        if expected_request.schema_name == "definition" and not (
+            row.get("raw_symbol") or row.get("symbol")
+        ):
+            symbology_present = False
+
+    if not timestamps_within_interval:
+        errors.append("record timestamps are absent or outside the requested half-open interval")
+    if not symbology_present:
+        errors.append("required instrument_id/raw-symbol symbology is absent")
 
     passed = (
         checksum_ok
+        and opens_ok
         and dataset_matches
         and schema_matches
         and symbols_match
@@ -218,7 +269,7 @@ def validate_dbn_file(
         exists=True,
         nonempty=True,
         checksum_ok=True,
-        opens_ok=True,
+        opens_ok=opens_ok,
         dataset_matches=dataset_matches,
         schema_matches=schema_matches,
         symbols_match=symbols_match,

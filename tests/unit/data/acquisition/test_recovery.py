@@ -1,8 +1,14 @@
+import hashlib
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from neuralmarket.data.acquisition.journal import JournalEntry, RequestJournal
 from neuralmarket.data.acquisition.recovery import run_recovery
+
+pytestmark = pytest.mark.unit
 
 
 def _entry(
@@ -10,11 +16,20 @@ def _entry(
 ) -> JournalEntry:
     now = datetime.now(UTC).isoformat()
     return JournalEntry(
-        request_id=request_id, request_hash="a" * 64, state=state, attempt_count=1,
-        estimated_cost_usd="0.05", actual_billed_cost_usd=None,
-        raw_path=raw_path, raw_checksum=raw_checksum,
-        normalized_path=None, normalized_checksum=None,
-        failure_category=None, failure_message=None, created_at=now, updated_at=now,
+        request_id=request_id,
+        request_hash="a" * 64,
+        state=state,
+        attempt_count=1,
+        estimated_cost_usd="0.05",
+        actual_billed_cost_usd=None,
+        raw_path=raw_path,
+        raw_checksum=raw_checksum,
+        normalized_path=None,
+        normalized_checksum=None,
+        failure_category=None,
+        failure_message=None,
+        created_at=now,
+        updated_at=now,
     )
 
 
@@ -39,13 +54,65 @@ def test_recovery_flags_checksum_mismatch(tmp_path: Path) -> None:
     (raw_dir / "present.dbn").write_bytes(b"data")
     journal = RequestJournal(tmp_path / "journal.sqlite")
     states = (
-        "planned", "preflight_validated", "authorized",
-        "requesting", "downloaded", "raw_validated",
+        "planned",
+        "preflight_validated",
+        "authorized",
+        "requesting",
+        "downloaded",
+        "raw_validated",
     )
     for state in states:
         journal.upsert(_entry("r1", state, "data/raw/present.dbn", "0" * 64))
     report = run_recovery(journal=journal, data_root=tmp_path)
     assert any(f.category == "checksum_mismatch" for f in report.findings)
+
+
+def test_recovery_does_not_treat_missing_checksum_as_consistent(tmp_path: Path) -> None:
+    raw_dir = tmp_path / "data" / "raw"
+    raw_dir.mkdir(parents=True)
+    (raw_dir / "present.dbn").write_bytes(b"data")
+    journal = RequestJournal(tmp_path / "journal.sqlite")
+    for state in (
+        "planned",
+        "preflight_validated",
+        "authorized",
+        "requesting",
+        "downloaded",
+        "raw_validated",
+    ):
+        journal.upsert(_entry("r1", state, "data/raw/present.dbn", None))
+    report = run_recovery(journal=journal, data_root=tmp_path)
+    assert any(f.category == "checksum_mismatch" for f in report.findings)
+    assert not any(f.category == "consistent" for f in report.findings)
+
+
+@pytest.mark.parametrize(
+    "sidecar",
+    [
+        {"sha256": "digest-only"},
+        ["not", "a", "mapping"],
+    ],
+)
+def test_recovery_requires_raw_sidecar_identity(tmp_path: Path, sidecar: object) -> None:
+    raw_dir = tmp_path / "data" / "raw"
+    raw_dir.mkdir(parents=True)
+    raw_path = raw_dir / "present.dbn"
+    raw_path.write_bytes(b"data")
+    digest = hashlib.sha256(b"data").hexdigest()
+    raw_path.with_suffix(".dbn.json").write_text(json.dumps(sidecar), encoding="utf-8")
+    journal = RequestJournal(tmp_path / "journal.sqlite")
+    for state in (
+        "planned",
+        "preflight_validated",
+        "authorized",
+        "requesting",
+        "downloaded",
+        "raw_validated",
+    ):
+        journal.upsert(_entry("r1", state, "data/raw/present.dbn", digest))
+    report = run_recovery(journal=journal, data_root=tmp_path)
+    assert any(f.category == "sidecar_mismatch" for f in report.findings)
+    assert not any(f.category == "consistent" for f in report.findings)
 
 
 def test_recovery_flags_stale_partial_file_without_deleting(tmp_path: Path) -> None:
@@ -68,3 +135,19 @@ def test_recovery_returns_empty_findings_on_empty_journal(tmp_path: Path) -> Non
     assert report.findings == []
     assert report.retried == 0
     assert report.deleted == 0
+
+
+def test_recovery_rejects_journal_path_escape(tmp_path: Path) -> None:
+    journal = RequestJournal(tmp_path / "journal.sqlite")
+    states = (
+        "planned",
+        "preflight_validated",
+        "authorized",
+        "requesting",
+        "downloaded",
+        "raw_validated",
+    )
+    for state in states:
+        journal.upsert(_entry("r1", state, "../outside.dbn", "0" * 64))
+    report = run_recovery(journal=journal, data_root=tmp_path)
+    assert any(f.category == "unsafe_path" for f in report.findings)

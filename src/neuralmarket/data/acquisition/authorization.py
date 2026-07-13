@@ -13,7 +13,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -57,6 +57,7 @@ class PilotAuthorization(BaseModel):
     split_manifest_hash: str
     acquisition_policy_hash: str
     maximum_spend_usd: Decimal = Field(le=Decimal("5.00"))
+    maximum_single_request_usd: Decimal = Field(le=Decimal("1.00"))
     authorized_currency: str
     authorized_at: datetime
     expires_at: datetime
@@ -65,10 +66,17 @@ class PilotAuthorization(BaseModel):
     purchase_authorized: bool
     authorization_hash: str
 
-    @field_validator("maximum_spend_usd", mode="before")
+    @field_validator("maximum_spend_usd", "maximum_single_request_usd", mode="before")
     @classmethod
     def _coerce_maximum_spend(cls, value: Any) -> Decimal:
         return to_decimal(value)
+
+    @field_validator("authorized_at", "expires_at")
+    @classmethod
+    def _require_aware_datetime(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("authorization timestamps must be timezone-aware")
+        return value
 
 
 def compute_authorization_hash(auth_payload_without_hash: dict[str, Any]) -> str:
@@ -79,6 +87,20 @@ def compute_authorization_hash(auth_payload_without_hash: dict[str, Any]) -> str
     ``canonical_hash`` so the hash never depends on itself.
     """
     reduced = {k: v for k, v in auth_payload_without_hash.items() if k not in _HASH_EXCLUDED}
+    for field in ("maximum_spend_usd", "maximum_single_request_usd"):
+        if field in reduced:
+            reduced[field] = str(to_decimal(reduced[field]))
+    for field in ("authorized_at", "expires_at"):
+        value = reduced.get(field)
+        if value is not None:
+            timestamp = (
+                value
+                if isinstance(value, datetime)
+                else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            )
+            if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+                raise ValueError("authorization timestamps must be timezone-aware")
+            reduced[field] = timestamp.astimezone(UTC).isoformat()
     return hashlib.sha256(canonical_dumps(reduced).encode("utf-8")).hexdigest()
 
 
@@ -114,6 +136,8 @@ def validate_authorization(
     expected_acquisition_policy_hash: str,
     now: datetime,
     consumed_ids: set[str],
+    expected_maximum_spend_usd: Decimal = Decimal("5.00"),
+    expected_maximum_single_request_usd: Decimal = Decimal("1.00"),
 ) -> None:
     """Validate a parsed authorization against the live plan/state, or raise.
 
@@ -135,6 +159,7 @@ def validate_authorization(
         "split_manifest_hash": auth.split_manifest_hash,
         "acquisition_policy_hash": auth.acquisition_policy_hash,
         "maximum_spend_usd": str(auth.maximum_spend_usd),
+        "maximum_single_request_usd": str(auth.maximum_single_request_usd),
         "authorized_currency": auth.authorized_currency,
         "authorized_at": auth.authorized_at.isoformat(),
         "expires_at": auth.expires_at.isoformat(),
@@ -149,22 +174,32 @@ def validate_authorization(
     if not hmac.compare_digest(auth.pilot_plan_hash, expected_plan_hash):
         raise AuthorizationError("plan_hash_mismatch", "pilot_plan_hash does not match plan")
 
-    if not hmac.compare_digest(
-        auth.source_manifest_hash, expected_source_manifest_hash
-    ) or not hmac.compare_digest(
-        auth.split_manifest_hash, expected_split_manifest_hash
-    ) or not hmac.compare_digest(
-        auth.acquisition_policy_hash, expected_acquisition_policy_hash
+    if (
+        not hmac.compare_digest(auth.source_manifest_hash, expected_source_manifest_hash)
+        or not hmac.compare_digest(auth.split_manifest_hash, expected_split_manifest_hash)
+        or not hmac.compare_digest(auth.acquisition_policy_hash, expected_acquisition_policy_hash)
     ):
         raise AuthorizationError(
             "manifest_hash_mismatch", "a source/split/policy manifest hash does not match"
         )
 
-    if now > auth.expires_at:
+    if auth.expires_at <= auth.authorized_at:
+        raise AuthorizationError(
+            "invalid_validity_interval", "expires_at must be after authorized_at"
+        )
+    if now < auth.authorized_at:
+        raise AuthorizationError("not_yet_valid", "authorization is not yet valid")
+    if now >= auth.expires_at:
         raise AuthorizationError("expired", "authorization has expired")
 
     if auth.pilot_plan_hash in consumed_ids:
         raise AuthorizationError("already_consumed", "authorization already consumed")
+
+    if (
+        auth.maximum_spend_usd != expected_maximum_spend_usd
+        or auth.maximum_single_request_usd != expected_maximum_single_request_usd
+    ):
+        raise AuthorizationError("spend_cap_mismatch", "authorization spend caps do not match plan")
 
     if not hmac.compare_digest(auth.authorized_currency, "USD"):
         raise AuthorizationError("currency_mismatch", "authorized_currency must be USD")

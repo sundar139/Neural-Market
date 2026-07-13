@@ -2,7 +2,10 @@ import json
 from pathlib import Path
 
 import jsonschema
+import pytest
 import yaml
+
+pytestmark = pytest.mark.unit
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
@@ -19,7 +22,9 @@ def test_pilot_config_loads_and_matches_expected_values() -> None:
 
 def test_authorization_template_is_schema_valid_but_unusable() -> None:
     template = json.loads(
-        (REPO_ROOT / "configs/data/acquisition/pilot_authorization.template.json").read_text(encoding="utf-8")
+        (REPO_ROOT / "configs/data/acquisition/pilot_authorization.template.json").read_text(
+            encoding="utf-8"
+        )
     )
     schema = json.loads(
         (REPO_ROOT / "data_contracts/pilot_authorization.schema.json").read_text(encoding="utf-8")
@@ -36,5 +41,7 @@ def test_all_four_schemas_are_valid_json_schema() -> None:
         "pilot_execution",
         "pilot_quality_report",
     ):
-        schema = json.loads((REPO_ROOT / f"data_contracts/{name}.schema.json").read_text(encoding="utf-8"))
+        schema = json.loads(
+            (REPO_ROOT / f"data_contracts/{name}.schema.json").read_text(encoding="utf-8")
+        )
         jsonschema.Draft202012Validator.check_schema(schema)

@@ -5,11 +5,14 @@ import pytest
 from neuralmarket.data.acquisition.requests import AcquisitionRequest
 from neuralmarket.data.acquisition.storage import (
     PathSafetyError,
+    atomic_store_raw,
     atomic_write_plan,
     logical_raw_path,
     resolve_under_data_root,
     validate_logical_path,
 )
+
+pytestmark = pytest.mark.unit
 
 
 @pytest.mark.parametrize(
@@ -102,3 +105,55 @@ def test_atomic_write_plan_has_eight_ordered_steps(tmp_path) -> None:
     assert plan.steps[0].startswith("write")
     assert plan.steps[-1] == "update_journal_after_rename"
     assert plan.temp_suffix == ".partial"
+
+
+def test_atomic_store_raw_publishes_verified_file_and_sidecar(tmp_path, arcx_request) -> None:
+    result = atomic_store_raw(
+        request=arcx_request,
+        data_root=tmp_path,
+        chunks=[b"dbn-", b"payload"],
+        validator=lambda path, checksum: path.read_bytes() == b"dbn-payload"
+        and len(checksum) == 64,
+    )
+    assert result.path.read_bytes() == b"dbn-payload"
+    assert result.sidecar_path.is_file()
+    assert result.byte_count == 11
+    assert not result.path.with_name(result.path.name + ".partial").exists()
+
+
+def test_atomic_store_raw_cleans_partial_when_validation_fails(tmp_path, arcx_request) -> None:
+    with pytest.raises(ValueError, match="validation"):
+        atomic_store_raw(
+            request=arcx_request,
+            data_root=tmp_path,
+            chunks=[b"invalid"],
+            validator=lambda _path, _checksum: False,
+        )
+    final_path = resolve_under_data_root(logical_raw_path(arcx_request), tmp_path)
+    assert not final_path.exists()
+    assert not final_path.with_name(final_path.name + ".partial").exists()
+
+
+def test_atomic_store_raw_does_not_publish_primary_when_sidecar_publish_fails(
+    tmp_path, arcx_request, monkeypatch
+) -> None:
+    from neuralmarket.data.acquisition import storage
+
+    real_rename = storage.os.rename
+
+    def fail_sidecar(source, destination) -> None:
+        if str(destination).endswith(".dbn.json"):
+            raise OSError("publish failed")
+        real_rename(source, destination)
+
+    monkeypatch.setattr(storage.os, "rename", fail_sidecar)
+    with pytest.raises(OSError, match="publish failed"):
+        atomic_store_raw(
+            request=arcx_request,
+            data_root=tmp_path,
+            chunks=[b"dbn-payload"],
+            validator=lambda _path, _checksum: True,
+        )
+    final_path = resolve_under_data_root(logical_raw_path(arcx_request), tmp_path)
+    assert not final_path.exists()
+    assert not final_path.with_suffix(final_path.suffix + ".json").exists()

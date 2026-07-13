@@ -1,9 +1,12 @@
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
 from neuralmarket.data.acquisition.journal import JournalEntry, RequestJournal
+
+pytestmark = pytest.mark.unit
 
 
 def _entry(request_id: str = "req-1", state: str = "planned") -> JournalEntry:
@@ -60,6 +63,14 @@ def test_same_state_reupsert_is_idempotent_then_allows_legal_transition(tmp_path
         assert fetched.state == "preflight_validated"
 
 
+def test_request_hash_is_immutable(tmp_path: Path) -> None:
+    with RequestJournal(tmp_path / "journal.sqlite") as journal:
+        entry = _entry()
+        journal.upsert(entry)
+        with pytest.raises(ValueError, match="hash is immutable"):
+            journal.upsert(entry.model_copy(update={"request_hash": "b" * 64}))
+
+
 def test_journal_persists_across_reopen(tmp_path: Path) -> None:
     db_path = tmp_path / "journal.sqlite"
     with RequestJournal(db_path) as journal:
@@ -73,3 +84,46 @@ def test_all_returns_every_entry(tmp_path: Path) -> None:
         journal.upsert(_entry("req-1"))
         journal.upsert(_entry("req-2"))
         assert {e.request_id for e in journal.all()} == {"req-1", "req-2"}
+
+
+def test_authorization_consumption_is_atomic_and_durable(tmp_path: Path) -> None:
+    db_path = tmp_path / "journal.sqlite"
+    with RequestJournal(db_path) as journal:
+        assert journal.consume_authorization(
+            plan_hash="p" * 64,
+            authorization_hash="a" * 64,
+            consumed_at=datetime.now(UTC).isoformat(),
+        )
+        assert not journal.consume_authorization(
+            plan_hash="p" * 64,
+            authorization_hash="b" * 64,
+            consumed_at=datetime.now(UTC).isoformat(),
+        )
+    with RequestJournal(db_path) as reopened:
+        assert reopened.consumed_authorization_ids() == {"p" * 64}
+
+
+def test_journal_migrates_prior_request_columns(tmp_path: Path) -> None:
+    db_path = tmp_path / "journal.sqlite"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute("CREATE TABLE schema_meta (version INTEGER NOT NULL)")
+        connection.execute("INSERT INTO schema_meta VALUES (2)")
+        connection.execute(
+            """
+            CREATE TABLE requests (
+                request_id TEXT PRIMARY KEY, request_hash TEXT NOT NULL,
+                state TEXT NOT NULL, attempt_count INTEGER NOT NULL,
+                estimated_cost_usd TEXT NOT NULL, actual_billed_cost_usd TEXT,
+                raw_path TEXT, raw_checksum TEXT, normalized_path TEXT,
+                normalized_checksum TEXT, failure_category TEXT,
+                failure_message TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+            )
+            """
+        )
+    with RequestJournal(db_path):
+        pass
+    with sqlite3.connect(db_path) as connection:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(requests)")}
+        version = connection.execute("SELECT version FROM schema_meta").fetchone()
+    assert {"raw_byte_count", "raw_record_count", "provider_response_id"} <= columns
+    assert version == (4,)
