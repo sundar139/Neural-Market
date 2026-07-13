@@ -1,7 +1,10 @@
 from datetime import date
+from pathlib import Path
 
 import pytest
+import yaml
 
+from neuralmarket.core.configuration import ConfigurationError
 from neuralmarket.data.acquisition.requests import (
     build_pilot_request_plan,
     load_pilot_config,
@@ -78,6 +81,23 @@ def test_plan_is_sorted_deterministically() -> None:
         (r.wave, r.dataset, r.schema_name, r.session_date or date.min, r.symbols) for r in requests
     ]
     assert keys == sorted(keys)
+
+
+@pytest.mark.unit
+def test_load_pilot_config_accepts_matching_quote_window_minutes() -> None:
+    config = load_pilot_config(CONFIG_PATH)
+    assert config.quote_window_minutes == 10
+
+
+@pytest.mark.unit
+def test_load_pilot_config_rejects_mismatched_quote_window_minutes(tmp_path: Path) -> None:
+    raw = yaml.safe_load(Path(CONFIG_PATH).read_text(encoding="utf-8"))
+    raw["pilot_execution"]["quote_window_minutes"] = 15
+    bad_config_path = tmp_path / "pilot_january_2019_bad_quote_window.yaml"
+    bad_config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+
+    with pytest.raises(ConfigurationError, match="quote_window_minutes"):
+        load_pilot_config(bad_config_path)
 
 
 @pytest.mark.unit

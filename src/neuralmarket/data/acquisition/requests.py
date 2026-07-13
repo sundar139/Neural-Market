@@ -22,6 +22,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from neuralmarket.core.configuration import ConfigurationError
 from neuralmarket.data.acquisition.budget import round_usd, to_decimal
 from neuralmarket.data.acquisition.calendar import (
+    QUOTE_WINDOW_MINUTES,
     full_day_range_window,
     quote_window,
     sessions_in_month,
@@ -95,6 +96,21 @@ class PilotExecutionConfig(BaseModel):
     @classmethod
     def _coerce_decimal(cls, value: Any) -> Decimal:
         return to_decimal(value)
+
+    @field_validator("quote_window_minutes")
+    @classmethod
+    def _check_quote_window_minutes(cls, value: int) -> int:
+        # quote_window() in calendar.py ignores this field and always uses its
+        # own hardcoded QUOTE_WINDOW_MINUTES constant, so a mismatch here
+        # would silently do nothing -- fail loudly instead.
+        if value != QUOTE_WINDOW_MINUTES:
+            raise ValueError(
+                f"quote_window_minutes={value} does not match the hardcoded "
+                f"calendar.QUOTE_WINDOW_MINUTES={QUOTE_WINDOW_MINUTES}; "
+                "quote_window() is not parameterized by config, so this "
+                "value cannot currently be honored."
+            )
+        return value
 
 
 def load_pilot_config(path: Path | str) -> PilotExecutionConfig:
