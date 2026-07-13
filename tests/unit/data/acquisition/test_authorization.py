@@ -136,6 +136,19 @@ def test_template_file_is_rejected(tmp_path) -> None:
     template_path = repo_root / "configs/data/acquisition/pilot_authorization.template.json"
     template = json.loads(template_path.read_text(encoding="utf-8"))
     assert template["purchase_authorized"] is False
-    with pytest.raises((ValueError, Exception)):
-        load_authorization(template_path)
-        _validate(json.loads(template_path.read_text(encoding="utf-8")))
+
+    # The template's placeholder hash fields (e.g. "REPLACE_WITH_EXACT_HASH")
+    # are plain strings, so schema/pydantic parsing succeeds; it is
+    # validate_authorization's hash-tampered check that must reject it,
+    # since the placeholder authorization_hash never matches a freshly
+    # recomputed hash of the rest of the payload.
+    auth = load_authorization(template_path)
+    with pytest.raises(AuthorizationError) as exc:
+        _validate(
+            template,
+            expected_plan_hash=auth.pilot_plan_hash,
+            expected_source_manifest_hash=auth.source_manifest_hash,
+            expected_split_manifest_hash=auth.split_manifest_hash,
+            expected_acquisition_policy_hash=auth.acquisition_policy_hash,
+        )
+    assert exc.value.reason == "hash_tampered"
