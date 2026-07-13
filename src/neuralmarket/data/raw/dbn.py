@@ -21,7 +21,13 @@ from neuralmarket.data.raw.integrity import sha256_of_file, verify_checksum
 
 
 class DbnValidationError(ValueError):
-    """A single, categorized DBN validation failure."""
+    """A single, categorized DBN validation failure.
+
+    ``.code`` values constructed today: "missing", "empty", "checksum_mismatch",
+    "unreadable", "dataset_mismatch", "schema_mismatch", "symbol_mismatch",
+    "window_mismatch". "symbology_missing" is reserved for Task 7c's real
+    symbology check and is not constructed anywhere yet.
+    """
 
     def __init__(self, code: str, message: str) -> None:
         """Store the failure `code` alongside the standard exception `message`."""
@@ -30,7 +36,14 @@ class DbnValidationError(ValueError):
 
 
 class DbnValidationReport(BaseModel):
-    """Result of validating one downloaded DBN file against its request."""
+    """Result of validating one downloaded DBN file against its request.
+
+    ``timestamps_within_interval`` and ``symbology_present`` are placeholder
+    ``True`` values (unverifiable, not disproved) pending Task 7c's real
+    per-record checks -- a ``passed=True`` report has NOT actually verified
+    these two conditions. See the ``# ponytail:`` comment in
+    `validate_dbn_file` for why.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -46,7 +59,9 @@ class DbnValidationReport(BaseModel):
     end_matches: bool
     record_count_plausible: bool
     timestamps_within_interval: bool
+    """Placeholder ``True`` until Task 7c adds a real per-record check."""
     symbology_present: bool
+    """Placeholder ``True`` until Task 7c adds a real per-record check."""
     passed: bool
     errors: list[str]
 
