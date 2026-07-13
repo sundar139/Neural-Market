@@ -10,6 +10,7 @@ from neuralmarket.data.acquisition.calendar import (
     quarterly_sample_sessions,
     quote_window,
     select_pilot_month,
+    sessions_in_month,
     twice_weekly_schedule,
     weekly_schedule,
 )
@@ -108,6 +109,14 @@ def test_quarterly_sample_includes_quarter_end_session() -> None:
     sessions = session_dates(_CALENDAR, date(2019, 1, 1), date(2019, 3, 31))
     sampled = quarterly_sample_sessions(sessions)
     assert sessions[-1] in sampled
+
+
+@pytest.mark.unit
+def test_sessions_in_month_matches_january_2019() -> None:
+    sessions = sessions_in_month(_CALENDAR, "2019-01")
+    assert sessions == session_dates(_CALENDAR, date(2019, 1, 1), date(2019, 1, 31))
+    assert len(sessions) == 21
+    assert sessions == sorted(sessions)
 
 
 @pytest.mark.unit

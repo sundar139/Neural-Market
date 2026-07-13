@@ -197,6 +197,24 @@ def quarterly_sample_sessions(sessions: list[date]) -> list[date]:
     return sorted(sampled)
 
 
+def sessions_in_month(calendar_name: str, year_month: str) -> list[date]:
+    """Return sorted session dates for one calendar month.
+
+    Args:
+        calendar_name: Exchange calendar code, for example ``"XNYS"``.
+        year_month: Month label in ``"YYYY-MM"`` form.
+
+    Returns:
+        Sorted list of session dates within that month.
+    """
+    year_str, month_str = year_month.split("-")
+    year, month = int(year_str), int(month_str)
+    start = date(year, month, 1)
+    end = _last_day_of_month(year, month)
+    calendar = _calendar(calendar_name, start, end)
+    return [ts.date() for ts in calendar.sessions_in_range(start.isoformat(), end.isoformat())]
+
+
 def select_pilot_month(calendar_name: str, candidate_year: int) -> tuple[str, list[date]]:
     """Select the first complete calendar month with enough sessions, by calendar rule only.
 
