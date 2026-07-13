@@ -62,7 +62,14 @@ class OpraDefinitionsQualityReport(BaseModel):
 
 
 class OpraQuotesQualityReport(BaseModel):
-    """Quality report for OPRA quotes data."""
+    """Quality report for OPRA quotes data.
+
+    ``contracts_with_final_valid_quote`` and
+    ``contracts_with_no_usable_close_quote`` are placeholder ``0`` values
+    (not computed, not genuinely zero) pending a later task with real
+    per-contract chronological ordering. See the ``# ponytail:`` comment in
+    `evaluate_opra_quotes` for why.
+    """
 
     model_config = ConfigDict(frozen=True)
 
@@ -76,7 +83,9 @@ class OpraQuotesQualityReport(BaseModel):
     missing_side_count: int
     nonpositive_size_count: int
     quotes_outside_window_count: int
+    # placeholder-0 pending later task; see class docstring / ponytail comment below
     contracts_with_final_valid_quote: int
+    # placeholder-0 pending later task; see class docstring / ponytail comment below
     contracts_with_no_usable_close_quote: int
 
 
@@ -166,8 +175,9 @@ def evaluate_opra_quotes(
     """Evaluate quality of OPRA quote data.
 
     Flags:
-    - Zero bid: bid_price <= 0 counted as zero_bid_count
+    - Zero bid: bid_price == 0 counted as zero_bid_count
     - Negative price: bid_price < 0 counted as negative_price_count
+      (mutually exclusive with zero_bid_count)
     - Crossed quotes: bid_price > ask_price
     - Locked quotes: bid_price == ask_price
     - Missing side: bid_price or ask_price is None
@@ -191,6 +201,12 @@ def evaluate_opra_quotes(
     quotes_outside_window_count = 0
     unique_contracts_set: set[str] = set()
     sessions_set: set[str] = set()
+    # ponytail: "final valid quote per contract" requires true chronological
+    # ordering per contract, which these unordered synthetic rows don't
+    # carry. Left as always-empty placeholders (serialize to 0) rather than
+    # computed against row order, which would be silently wrong. Real
+    # semantics land with a later task that has genuine per-contract
+    # chronological data.
     contracts_with_final_valid_quote: set[str] = set()
     contracts_with_no_usable_close_quote: set[str] = set()
 
@@ -215,8 +231,10 @@ def evaluate_opra_quotes(
             missing_side_count += 1
             continue
 
-        # Check for zero bid (bid_price <= 0)
-        if bid_price <= 0:
+        # Check for zero bid (bid_price == 0, exclusive of negative -- see
+        # negative_price_count below) so the two counters are mutually
+        # exclusive and sum to "nonpositive bid count" without double-counting.
+        if bid_price == 0:
             zero_bid_count += 1
 
         # Check for negative price (bid_price < 0)
@@ -246,6 +264,7 @@ def evaluate_opra_quotes(
         missing_side_count=missing_side_count,
         nonpositive_size_count=nonpositive_size_count,
         quotes_outside_window_count=quotes_outside_window_count,
+        # placeholder-0, see ponytail comment above where these sets are initialized
         contracts_with_final_valid_quote=len(contracts_with_final_valid_quote),
         contracts_with_no_usable_close_quote=len(contracts_with_no_usable_close_quote),
     )

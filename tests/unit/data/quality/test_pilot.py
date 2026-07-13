@@ -86,6 +86,30 @@ def test_evaluate_opra_quotes_flags_crossed_and_locked_and_zero_bid() -> None:
     assert report.zero_bid_count == 1
 
 
+def test_evaluate_opra_quotes_zero_and_negative_bid_counters_are_mutually_exclusive() -> None:
+    rows = [
+        {
+            "session_date": "2019-01-02",
+            "contract": "A",
+            "bid_price": -1.0,
+            "ask_price": 1.0,
+            "bid_size": 1,
+            "ask_size": 1,
+        },
+        {
+            "session_date": "2019-01-02",
+            "contract": "B",
+            "bid_price": 0.0,
+            "ask_price": 1.0,
+            "bid_size": 1,
+            "ask_size": 1,
+        },
+    ]
+    report = evaluate_opra_quotes(rows, target_window_sessions=["2019-01-02"])
+    assert report.negative_price_count == 1
+    assert report.zero_bid_count == 1
+
+
 def test_evaluate_opra_quotes_flags_missing_side() -> None:
     rows = [
         {
