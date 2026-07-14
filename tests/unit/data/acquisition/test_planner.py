@@ -29,9 +29,11 @@ class _Metadata:
         return self.count
 
     def get_billable_size(self, **kwargs: Any) -> int:
+        self.calls += 1
         return self.size
 
     def get_cost(self, **kwargs: Any) -> float:
+        self.calls += 1
         return self.cost
 
 
@@ -55,6 +57,14 @@ def _run(client: _Client, generated_at: str = "2020-01-01T00:00:00+00:00"):
         config_path=_CONFIG_PATH,
         repo_root=_REPO_ROOT,
         generated_at=generated_at,
+    )
+
+
+@pytest.fixture(autouse=True)
+def _accepted_repository_lineage(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "neuralmarket.data.acquisition.planner._verify_ancestor",
+        lambda repo_root, required_commit: True,
     )
 
 
@@ -119,12 +129,24 @@ def test_test_reserve_never_queries_individual_sessions() -> None:
 
 
 @pytest.mark.unit
-def test_ancestry_check_failure_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_accepted_lineage_allows_plan_construction() -> None:
+    client = _Client()
+    report, _policy_raw = _run(client)
+    assert report.recommendation_status == "recommended_not_authorized"
+    assert client.metadata.calls > 0
+
+
+@pytest.mark.unit
+def test_ancestry_check_failure_raises_without_metadata_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import neuralmarket.data.acquisition.planner as planner_module
 
     monkeypatch.setattr(planner_module, "_verify_ancestor", lambda root, ancestor: False)
-    with pytest.raises(PlanValidationError, match="does not descend"):
-        _run(_Client())
+    client = _Client()
+    with pytest.raises(PlanValidationError, match="81064f9"):
+        _run(client)
+    assert client.metadata.calls == 0
 
 
 @pytest.mark.unit

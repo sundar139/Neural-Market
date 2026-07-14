@@ -16,13 +16,19 @@ _SPLIT_MANIFEST = "data/manifests/split_manifest_v1.json"
 
 
 class _Metadata:
+    def __init__(self) -> None:
+        self.calls = 0
+
     def get_record_count(self, **kwargs: Any) -> int:
+        self.calls += 1
         return 10
 
     def get_billable_size(self, **kwargs: Any) -> int:
+        self.calls += 1
         return 100
 
     def get_cost(self, **kwargs: Any) -> float:
+        self.calls += 1
         return 0.001
 
 
@@ -75,6 +81,10 @@ def test_acquisition_plan_without_key_exit_two(
 def test_acquisition_plan_and_verify_round_trip(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.setattr(
+        "neuralmarket.data.acquisition.planner._verify_ancestor",
+        lambda repo_root, required_commit: True,
+    )
     monkeypatch.setattr(data_module, "_load_dotenv", lambda root: None)
     monkeypatch.setattr(data_module, "_raw_databento_client", lambda: _Client())
 
@@ -124,6 +134,46 @@ def test_acquisition_plan_and_verify_round_trip(
     )
     assert verify_result.exit_code == 0
     assert json.loads(verify_result.stdout) == {"status": "ok"}
+
+
+@pytest.mark.integration
+def test_acquisition_plan_rejects_missing_ancestry_without_metadata_or_outputs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    client = _Client()
+    monkeypatch.setattr(data_module, "_load_dotenv", lambda root: None)
+    monkeypatch.setattr(data_module, "_raw_databento_client", lambda: client)
+    monkeypatch.setattr(
+        "neuralmarket.data.acquisition.planner._verify_ancestor",
+        lambda repo_root, required_commit: False,
+    )
+
+    plan_output = tmp_path / "plan.json"
+    policy_output = tmp_path / "policy.json"
+    result = runner.invoke(
+        app,
+        [
+            "data",
+            "acquisition",
+            "plan",
+            "--config",
+            _CONFIG,
+            "--source-manifest",
+            _SOURCE_MANIFEST,
+            "--split-manifest",
+            _SPLIT_MANIFEST,
+            "--output",
+            str(plan_output),
+            "--policy-manifest",
+            str(policy_output),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "81064f9" in caplog.text
+    assert client.metadata.calls == 0
+    assert not plan_output.exists()
+    assert not policy_output.exists()
 
 
 @pytest.mark.integration
