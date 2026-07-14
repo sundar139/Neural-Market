@@ -52,3 +52,14 @@ replacement fail closed. `BILLED` remains non-retriable as
 authorization and attestation before any later retry; `UNKNOWN` remains
 `uncertain_billing`. Reconciliation never contacts Databento and never changes a
 consumed authorization back to available.
+
+Offline diagnosis of the first paid-provider failure found a deterministic
+adapter-contract defect before Databento could receive a valid request: the
+production `timeseries.get_range` call supplied an `encoding` keyword, but the
+installed Databento 0.81.0 signature accepts only `dataset`, `start`, `end`,
+`symbols`, `schema`, `stype_in`, `stype_out`, `limit`, and optional `path`.
+Databento streams DBN/Zstd for this method internally. The repaired adapter
+therefore passes only supported request keywords, validates the DBNStore-like
+response shape, and classifies post-response serialization/persistence failures
+without enabling automatic retry. Any future retry still requires fresh explicit
+authorization and portal attestation.

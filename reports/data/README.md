@@ -28,6 +28,13 @@ Manual billing reconciliation evidence lives under
 hash, authorization hash, manual portal status, artifact hash, and any immediate
 superseded reconciliation hash; they must not contain portal HTML, screenshots,
 API keys, card data, or market records.
+
+Paid-failure diagnostics live under `reports/data/execution/diagnostics/` as
+ignored `.local.json`, `.local.sqlite`, and `.local.patch` files. They may record
+sanitized request parameters, local adapter source locations, Databento client
+method signatures, classification, and retry-safety state, but must not contain
+API keys, authorization headers, account identifiers, portal screenshots, raw
+market records, DBN/DBZ files, or paid-provider response bodies.
 # Data reports and pilot evidence
 
 Local preflight, recovery, environment, and audit outputs use the `.local`

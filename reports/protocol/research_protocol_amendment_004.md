@@ -157,3 +157,27 @@ authorization and attestation before any future retry. `UNKNOWN` records
 the execution attempt, append reconciliation history, preserve consumed
 authorization state, and perform zero provider constructions, metadata calls,
 downloads, retries, or deletions.
+
+## Paid-provider failure diagnosis and adapter contract repair
+
+The first paid attempt's most precise preserved sanitized exception is the
+pre-reconciliation journal row for request `2750995e515e4f1a`: category
+`provider_error`, message `paid historical provider operation failed`, after
+one guarded paid-call attempt and zero downloaded records. Local Databento 0.81.0
+introspection then proved the production adapter used an incompatible call
+contract: `TimeseriesHttpAPI.get_range` accepts `dataset`, `start`, `end`,
+`symbols`, `schema`, `stype_in`, `stype_out`, `limit`, and `path`, but not
+`encoding` or `compression`. The adapter had supplied `encoding="dbn"`; that
+raises locally before a conforming provider request can be made. Databento's
+method always requests DBN/Zstd internally and returns a `DBNStore`.
+
+The repair removes the unsupported keyword, keeps exactly one production
+`timeseries.get_range` call site, validates DBNStore-like `to_file`/`to_df`
+response handling, and distinguishes provider rejection/auth/entitlement/
+network/timeout/rate-limit, unexpected response, and local persistence failures.
+Strict fake-client tests run the real adapter against the first canonical
+`ARCX.PILLAR`/`definition` request and assert the exact arguments, one fake
+range call, no batch/live access, and zero real Databento construction or
+network activity. The confirmed `NOT_BILLED` state remains retry-eligible only
+with a new authorization and attestation; automatic retry remains disabled and
+the old authorization remains consumed.

@@ -70,18 +70,22 @@ def _classify_provider_error(exc: Exception, *, after_submission: bool) -> PaidP
         status_code = int(status) if status is not None else None
     except (TypeError, ValueError):
         status_code = None
-    if status_code == 401:
-        category = "authentication"
+    if status_code == 400:
+        category = "provider_rejected_request"
+    elif status_code == 401:
+        category = "provider_authentication_failure"
     elif status_code == 403:
-        category = "entitlement"
+        category = "provider_entitlement_failure"
+    elif status_code == 408:
+        category = "provider_timeout"
     elif status_code == 429:
-        category = "rate_limit"
-    elif status_code is not None and 500 <= status_code < 600:
-        category = "provider_server_error"
-    elif isinstance(exc, TimeoutError | ConnectionError | OSError):
-        category = "network"
+        category = "provider_rate_limit"
+    elif isinstance(exc, TimeoutError):
+        category = "provider_timeout"
+    elif isinstance(exc, ConnectionError | OSError):
+        category = "provider_network_failure"
     else:
-        category = "provider_error"
+        category = "unknown_provider_failure"
     return PaidProviderError(
         category,
         "paid historical provider operation failed",
@@ -111,6 +115,16 @@ class DatabentoPaidHistoricalProvider(PaidHistoricalProvider):
             while chunk := handle.read(self._chunk_size):
                 yield chunk
 
+    @staticmethod
+    def _validate_store(store: object) -> None:
+        for name in ("to_file", "to_df"):
+            if not callable(getattr(store, name, None)):
+                raise PaidProviderError(
+                    "unexpected_provider_response",
+                    "paid historical provider returned an unsupported response object",
+                    uncertain_completion=True,
+                )
+
     def acquire_range(self, request: AcquisitionRequest) -> RawAcquisitionResult:
         """Fetch and atomically persist one finalized request."""
         verify_final_request(request)
@@ -123,12 +137,12 @@ class DatabentoPaidHistoricalProvider(PaidHistoricalProvider):
                 schema=request.schema_name,
                 stype_in=request.stype_in,
                 stype_out=request.stype_out,
-                encoding="dbn",
             )
         except Exception as exc:
             # Invocation itself may be billable.  Without an explicit provider
             # acknowledgement that nothing was delivered, fail closed.
             raise _classify_provider_error(exc, after_submission=True) from exc
+        self._validate_store(store)
 
         self._data_root.mkdir(parents=True, exist_ok=True)
         fd, export_name = tempfile.mkstemp(
@@ -142,14 +156,27 @@ class DatabentoPaidHistoricalProvider(PaidHistoricalProvider):
             try:
                 store.to_file(export_path)
                 record_count = len(store.to_df())
+            except PaidProviderError:
+                raise
             except Exception as exc:
-                raise _classify_provider_error(exc, after_submission=True) from exc
-            stored = atomic_store_raw(
-                request=request,
-                data_root=self._data_root,
-                chunks=self._chunks(export_path),
-                validator=lambda path, checksum: self._validator(path, checksum, request),
-            )
+                raise PaidProviderError(
+                    "unexpected_provider_response",
+                    "paid historical provider response could not be serialized",
+                    uncertain_completion=True,
+                ) from exc
+            try:
+                stored = atomic_store_raw(
+                    request=request,
+                    data_root=self._data_root,
+                    chunks=self._chunks(export_path),
+                    validator=lambda path, checksum: self._validator(path, checksum, request),
+                )
+            except Exception as exc:
+                raise PaidProviderError(
+                    "local_persistence_failure",
+                    "paid historical provider response could not be persisted locally",
+                    uncertain_completion=True,
+                ) from exc
         finally:
             export_path.unlink(missing_ok=True)
 

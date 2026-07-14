@@ -1,6 +1,8 @@
 from datetime import UTC, datetime
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import Mock
 
 import pytest
@@ -52,6 +54,48 @@ class _FakeStore:
         return [{"instrument_id": 1, "raw_symbol": "SPY"}]
 
 
+class _StrictTimeseries:
+    _expected_keys: ClassVar[frozenset[str]] = frozenset(
+        {
+            "dataset",
+            "start",
+            "end",
+            "symbols",
+            "schema",
+            "stype_in",
+            "stype_out",
+        }
+    )
+
+    def __init__(self, store: object | None = None) -> None:
+        self.calls: list[dict[str, object]] = []
+        self._store = _FakeStore() if store is None else store
+
+    def get_range(self, **kwargs: object) -> object:
+        assert set(kwargs) == self._expected_keys
+        assert kwargs["dataset"] == "ARCX.PILLAR"
+        assert kwargs["schema"] == "definition"
+        assert kwargs["symbols"] == ["SPY"]
+        assert kwargs["stype_in"] == "raw_symbol"
+        assert kwargs["stype_out"] == "instrument_id"
+        assert kwargs["start"].isoformat() == "2019-01-02T00:00:00+00:00"
+        assert kwargs["end"].isoformat() == "2019-02-01T00:00:00+00:00"
+        self.calls.append(kwargs)
+        return self._store
+
+
+class _ForbiddenNamespace:
+    def __getattr__(self, name: str) -> object:
+        raise AssertionError(f"forbidden namespace accessed: {name}")
+
+
+class _StrictClient:
+    def __init__(self, store: object | None = None) -> None:
+        self.timeseries = _StrictTimeseries(store)
+        self.batch = _ForbiddenNamespace()
+        self.live = _ForbiddenNamespace()
+
+
 def test_paid_adapter_writes_fake_store_atomically(tmp_path) -> None:
     request = _finalized_request()
     store = _FakeStore()
@@ -72,13 +116,30 @@ def test_paid_adapter_writes_fake_store_atomically(tmp_path) -> None:
     assert not list(tmp_path.glob("*.provider.partial"))
 
 
+def test_paid_adapter_uses_exact_first_request_databento_contract(tmp_path: Path) -> None:
+    request = _finalized_request()
+    client = _StrictClient()
+    provider = DatabentoPaidHistoricalProvider(
+        client=client,
+        data_root=tmp_path,
+        validator=lambda _path, _checksum, _request: True,
+    )
+
+    result = provider.acquire_range(request)
+
+    assert result.request_id == "2750995e515e4f1a"
+    assert result.record_count == 1
+    assert len(client.timeseries.calls) == 1
+    assert not list(tmp_path.glob("*.provider.partial"))
+
+
 def test_paid_adapter_rejects_draft_before_client_call() -> None:
     config = load_pilot_config("configs/data/acquisition/pilot_january_2019.yaml")
     draft = build_pilot_request_plan(config)[0]
     client = SimpleNamespace(timeseries=SimpleNamespace(get_range=Mock()))
     provider = DatabentoPaidHistoricalProvider(
         client=client,
-        data_root=__import__("pathlib").Path("data"),
+        data_root=Path("data"),
         validator=lambda _path, _checksum, _request: True,
     )
 
@@ -94,8 +155,82 @@ def test_paid_provider_error_classifies_uncertain_completion() -> None:
     error = _classify_provider_error(ServerError(), after_submission=True)
 
     assert isinstance(error, PaidProviderError)
-    assert error.category == "provider_server_error"
+    assert error.category == "unknown_provider_failure"
     assert error.uncertain_completion is True
+
+
+@pytest.mark.parametrize(
+    ("status", "category"),
+    [
+        (400, "provider_rejected_request"),
+        (401, "provider_authentication_failure"),
+        (403, "provider_entitlement_failure"),
+        (408, "provider_timeout"),
+        (429, "provider_rate_limit"),
+        (503, "unknown_provider_failure"),
+    ],
+)
+def test_paid_provider_error_classifies_http_statuses(status: int, category: str) -> None:
+    class ProviderStatusError(Exception):
+        http_status = status
+
+    error = _classify_provider_error(ProviderStatusError(), after_submission=True)
+
+    assert error.category == category
+    assert error.uncertain_completion is True
+
+
+@pytest.mark.parametrize(
+    ("exc", "category"),
+    [
+        (TimeoutError("slow"), "provider_timeout"),
+        (ConnectionError("down"), "provider_network_failure"),
+        (OSError("socket"), "provider_network_failure"),
+    ],
+)
+def test_paid_provider_error_classifies_local_exception_types(
+    exc: Exception, category: str
+) -> None:
+    error = _classify_provider_error(exc, after_submission=True)
+
+    assert error.category == category
+    assert error.uncertain_completion is True
+
+
+def test_paid_adapter_rejects_unexpected_store_shape_after_provider_response(
+    tmp_path: Path,
+) -> None:
+    request = _finalized_request()
+    client = _StrictClient(store=object())
+    provider = DatabentoPaidHistoricalProvider(
+        client=client,
+        data_root=tmp_path,
+        validator=lambda _path, _checksum, _request: True,
+    )
+
+    with pytest.raises(PaidProviderError) as error:
+        provider.acquire_range(request)
+
+    assert error.value.category == "unexpected_provider_response"
+    assert error.value.uncertain_completion is True
+    assert len(client.timeseries.calls) == 1
+
+
+def test_paid_adapter_classifies_local_persistence_failure_after_response(tmp_path: Path) -> None:
+    request = _finalized_request()
+    client = _StrictClient()
+    provider = DatabentoPaidHistoricalProvider(
+        client=client,
+        data_root=tmp_path,
+        validator=lambda _path, _checksum, _request: False,
+    )
+
+    with pytest.raises(PaidProviderError) as error:
+        provider.acquire_range(request)
+
+    assert error.value.category == "local_persistence_failure"
+    assert error.value.uncertain_completion is True
+    assert len(client.timeseries.calls) == 1
 
 
 def test_metadata_facade_never_accesses_paid_namespaces() -> None:
