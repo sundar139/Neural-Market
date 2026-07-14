@@ -1,0 +1,11 @@
+{
+  "attestation_version": "1.0",
+  "portal_historical_limit_usd": "5.00",
+  "portal_limit_confirmed": false,
+  "portal_limit_confirmed_at": "1970-01-01T00:00:00Z",
+  "portal_limit_confirmed_by": "REPLACE_WITH_NON_SENSITIVE_OPERATOR_LABEL",
+  "confirmation_method": "manual_portal_review",
+  "expires_at": "1970-01-01T00:30:00Z",
+  "plan_hash": "REPLACE_WITH_EXACT_PLAN_HASH",
+  "attestation_hash": "REPLACE_WITH_EXACT_HASH"
+}

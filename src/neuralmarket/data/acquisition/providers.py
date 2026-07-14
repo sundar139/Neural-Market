@@ -18,6 +18,41 @@ from neuralmarket.data.acquisition.requests import AcquisitionRequest, verify_fi
 from neuralmarket.data.acquisition.storage import atomic_store_raw
 
 
+class DatabentoMetadataProvider:
+    """Capability-restricted metadata facade around a Databento root client.
+
+    The root client is deliberately discarded after its ``metadata`` namespace
+    is captured.  Callers cannot reach time-series, batch, or live APIs from
+    this object.
+    """
+
+    def __init__(self, client: Any) -> None:
+        """Capture the metadata capability and discard the root client."""
+        metadata = client.metadata
+        for name in ("get_record_count", "get_billable_size", "get_cost"):
+            if not callable(getattr(metadata, name, None)):
+                raise TypeError(f"Databento metadata endpoint missing: {name}")
+        self._metadata = metadata
+        self._close = getattr(client, "close", None)
+
+    def get_record_count(self, **kwargs: object) -> object:
+        """Return a metadata-only record count."""
+        return self._metadata.get_record_count(**kwargs)
+
+    def get_billable_size(self, **kwargs: object) -> object:
+        """Return a metadata-only billable-size estimate."""
+        return self._metadata.get_billable_size(**kwargs)
+
+    def get_cost(self, **kwargs: object) -> object:
+        """Return a metadata-only cost estimate."""
+        return self._metadata.get_cost(**kwargs)
+
+    def close(self) -> None:
+        """Close the discarded root client without exposing its namespaces."""
+        if callable(self._close):
+            self._close()
+
+
 class PaidProviderError(RuntimeError):
     """Classified provider failure with an explicit billing-completion state."""
 
@@ -87,9 +122,12 @@ class DatabentoPaidHistoricalProvider(PaidHistoricalProvider):
                 schema=request.schema_name,
                 stype_in=request.stype_in,
                 stype_out=request.stype_out,
+                encoding="dbn",
             )
         except Exception as exc:
-            raise _classify_provider_error(exc, after_submission=False) from exc
+            # Invocation itself may be billable.  Without an explicit provider
+            # acknowledgement that nothing was delivered, fail closed.
+            raise _classify_provider_error(exc, after_submission=True) from exc
 
         self._data_root.mkdir(parents=True, exist_ok=True)
         fd, export_name = tempfile.mkstemp(
@@ -120,3 +158,12 @@ class DatabentoPaidHistoricalProvider(PaidHistoricalProvider):
             sha256=stored.sha256,
             record_count=record_count,
         )
+
+
+def validate_paid_adapter_factory(factory: Callable[[], DatabentoPaidHistoricalProvider]) -> None:
+    """Check an injected adapter factory without invoking any provider method."""
+    adapter = factory()
+    if not isinstance(adapter, DatabentoPaidHistoricalProvider):
+        raise TypeError("paid adapter factory must return DatabentoPaidHistoricalProvider")
+    if not callable(getattr(adapter, "acquire_range", None)):
+        raise TypeError("paid adapter must expose acquire_range")

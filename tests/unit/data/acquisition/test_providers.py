@@ -7,6 +7,7 @@ import pytest
 
 from neuralmarket.data.acquisition.estimation import MetadataEstimate
 from neuralmarket.data.acquisition.providers import (
+    DatabentoMetadataProvider,
     DatabentoPaidHistoricalProvider,
     PaidProviderError,
     _classify_provider_error,
@@ -94,3 +95,35 @@ def test_paid_provider_error_classifies_uncertain_completion() -> None:
     assert isinstance(error, PaidProviderError)
     assert error.category == "provider_server_error"
     assert error.uncertain_completion is True
+
+
+def test_metadata_facade_never_accesses_paid_namespaces() -> None:
+    class Metadata:
+        def get_record_count(self, **kwargs: object) -> int:
+            return 1
+
+        def get_billable_size(self, **kwargs: object) -> int:
+            return 2
+
+        def get_cost(self, **kwargs: object) -> str:
+            return "0.01"
+
+    class HostileRoot:
+        metadata = Metadata()
+
+        @property
+        def timeseries(self) -> object:
+            raise AssertionError("timeseries namespace accessed")
+
+        @property
+        def batch(self) -> object:
+            raise AssertionError("batch namespace accessed")
+
+        @property
+        def live(self) -> object:
+            raise AssertionError("live namespace accessed")
+
+    provider = DatabentoMetadataProvider(HostileRoot())
+    assert provider.get_record_count() == 1
+    assert provider.get_billable_size() == 2
+    assert provider.get_cost() == "0.01"

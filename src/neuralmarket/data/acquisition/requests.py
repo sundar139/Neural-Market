@@ -14,7 +14,7 @@ import hashlib
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -72,6 +72,17 @@ class _RetryBlock(BaseModel):
     jitter: str
 
 
+class _MetadataExecutionBlock(BaseModel):
+    """Hard process and checkpoint bounds for metadata-only preparation."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    hard_request_timeout_seconds: int = Field(gt=0, le=300)
+    maximum_timeout_attempts: int = Field(gt=0, le=3)
+    checkpoint_max_age_minutes: int = Field(gt=0, le=120)
+    total_run_deadline_seconds: int = Field(gt=0, le=1800)
+
+
 class PilotExecutionConfig(BaseModel):
     """Parsed ``pilot_january_2019.yaml`` pilot-execution configuration."""
 
@@ -89,6 +100,7 @@ class PilotExecutionConfig(BaseModel):
     underlying: _UnderlyingBlock
     options: _OptionsBlock
     retry: _RetryBlock
+    metadata_execution: _MetadataExecutionBlock
 
     @field_validator(
         "maximum_spend_usd",
@@ -150,6 +162,7 @@ def load_pilot_config(path: Path | str) -> PilotExecutionConfig:
             "underlying": raw["underlying"],
             "options": raw["options"],
             "retry": raw["retry"],
+            "metadata_execution": raw["metadata_execution"],
         }
         return PilotExecutionConfig.model_validate(flattened)
     except (KeyError, ValidationError) as exc:
@@ -240,11 +253,11 @@ def deterministic_request_id(
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
 
 
-def _sort_key(request: AcquisitionRequest) -> tuple[str, str, str, date, tuple[str, ...]]:
+def _sort_key(request: AcquisitionRequest) -> tuple[int, date, tuple[str, ...]]:
     return (
-        request.wave,
-        request.dataset,
-        request.schema_name,
+        {"arcx_catalog": 0, "arcx_underlying": 1, "opra_definitions": 2, "opra_closing_quotes": 3}[
+            request.wave
+        ],
         request.session_date or date.min,
         request.symbols,
     )
@@ -422,6 +435,41 @@ def build_pilot_request_plan(config: PilotExecutionConfig) -> list[AcquisitionRe
         )
 
     return sorted(requests, key=_sort_key)
+
+
+def validate_canonical_pilot_plan(requests: list[AcquisitionRequest]) -> None:
+    """Reject any pilot plan that is not already the exact approved 25-request shape."""
+    if len(requests) != 25:
+        raise ValueError("request_count")
+    expected = [
+        ("ARCX.PILLAR", "definition"),
+        ("ARCX.PILLAR", "ohlcv-1d"),
+        ("ARCX.PILLAR", "statistics"),
+        ("OPRA.PILLAR", "definition"),
+        *[("OPRA.PILLAR", "cbbo-1m")] * 21,
+    ]
+    if [(request.dataset, request.schema_name) for request in requests] != expected:
+        raise ValueError("canonical_order")
+    quote_dates = [request.session_date for request in requests[4:]]
+    if any(day is None or day.year != 2019 or day.month != 1 for day in quote_dates):
+        raise ValueError("january_2019_sessions")
+    if cast(list[date], quote_dates) != sorted(cast(list[date], quote_dates)):
+        raise ValueError("canonical_order")
+    if any(request.expected_split != "training" for request in requests):
+        raise ValueError("unapproved_request")
+    if any(
+        request.schema_name == "cbbo-1m"
+        and (request.end_exclusive - request.start).total_seconds() != 600
+        for request in requests
+    ):
+        raise ValueError("quote_window")
+    for name, values in {
+        "request_ids": [request.request_id for request in requests],
+        "request_hashes": [request.request_hash for request in requests],
+        "logical_output_paths": [request.logical_output_path.lower() for request in requests],
+    }.items():
+        if len(values) != len(set(values)):
+            raise ValueError(name)
 
 
 def plan_hash(

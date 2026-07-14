@@ -7,6 +7,7 @@ from neuralmarket.core.environment import (
     EnvironmentValidationError,
     collect_snapshot,
     find_repository_root,
+    scan_production_artifacts,
     validate_python,
 )
 
@@ -25,9 +26,27 @@ def test_find_repository_root_has_pyproject() -> None:
 
 
 @pytest.mark.unit
-def test_find_repository_root_missing(tmp_path: Path) -> None:
+def test_find_repository_root_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    original = Path.is_file
+    monkeypatch.setattr(
+        Path,
+        "is_file",
+        lambda path: False if path.name == "pyproject.toml" else original(path),
+    )
     with pytest.raises(EnvironmentValidationError, match="repository root"):
         find_repository_root(tmp_path)
+
+
+@pytest.mark.unit
+def test_artifact_scan_excludes_only_explicit_test_root(tmp_path: Path) -> None:
+    root = tmp_path / "repository"
+    test_owned = root / "test-owned"
+    unauthorized = root / "data" / "raw" / "production.dbn"
+    test_owned.mkdir(parents=True)
+    unauthorized.parent.mkdir(parents=True)
+    (test_owned / "fixture.parquet").write_bytes(b"fixture")
+    unauthorized.write_bytes(b"market")
+    assert scan_production_artifacts(root, excluded_roots=(test_owned,)) == [unauthorized]
 
 
 @pytest.mark.unit

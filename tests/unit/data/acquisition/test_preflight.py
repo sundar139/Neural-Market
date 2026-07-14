@@ -197,6 +197,12 @@ def test_preflight_config_from_pilot_execution_config() -> None:
             "maximum_delay_seconds": 10,
             "jitter": "none",
         },
+        "metadata_execution": {
+            "hard_request_timeout_seconds": 120,
+            "maximum_timeout_attempts": 2,
+            "checkpoint_max_age_minutes": 30,
+            "total_run_deadline_seconds": 540,
+        },
     }
     full_config = PilotExecutionConfig.model_validate(raw)
     narrowed = PilotPreflightConfig.from_pilot_execution_config(full_config)

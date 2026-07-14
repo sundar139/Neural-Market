@@ -1,0 +1,92 @@
+# Research Protocol Amendment 004 — Operational Pilot Execution Controls
+
+## Status and unchanged scope
+
+This amendment approves implementation and offline validation of the guarded
+pilot executor. It does not authorize a purchase. The January 2019 training
+boundary, sealed final test, original hypotheses, endpoints, USD 5.00 total
+cap, and USD 1.00 per-request cap are unchanged. There is no current valid
+authorization or portal-limit attestation. No paid pilot was executed and no
+historical record or market artifact was produced.
+
+## Restricted metadata architecture and timeout diagnosis
+
+Preparation constructs `databento.Historical` only inside a spawned child and
+immediately reduces it to `DatabentoMetadataProvider`. The facade exposes only
+`metadata.get_record_count`, `metadata.get_billable_size`, and
+`metadata.get_cost`; time-series, batch, and live capabilities are prohibited.
+Only one request child and one endpoint are active at a time.
+
+The two legacy unbounded runs ended while the first canonical request was the
+narrowest durably identifiable location: `2750995e515e4f1a`,
+`ARCX.PILLAR / definition`. The legacy path did not flush per-endpoint progress,
+so the exact endpoint cannot be recovered. A sandboxed attempt separately
+failed while awaiting `get_record_count`, but that does not prove the later
+unbounded runs stalled at the same endpoint. Available evidence does not
+establish whether the delay originated in the local HTTP stack, network path,
+or remote processing.
+
+Every new request runs in a Windows `spawn` child with a 120-second hard
+deadline. The parent records the PID and flushed endpoint events, then
+terminates, joins, and if necessary kills an overdue child. Timeouts are
+`metadata_hard_timeout`, never uncertain billing. Tests identify a deliberately
+hung `cost` endpoint, terminate and join its noncooperative child, and observe
+zero remaining metadata children.
+
+## Checkpoint and resume
+
+The ignored `pilot_metadata_checkpoint.local.json` is written through a
+flushed and fsynced `.partial` followed by atomic replacement after every
+complete three-endpoint estimate. It binds source, split, policy, and config
+hashes; calendar and Databento versions; estimator semantics; and all 25
+ordered request-specification hashes. Corrupt, incomplete, negative, expired,
+reordered, version-mismatched, or dependency-mismatched checkpoints fail
+closed. Checkpoints expire after 30 minutes.
+
+The five-category probe completed five estimates. The next bounded invocation
+skipped those five, completed 17, and stopped with three pending at its run
+deadline. The final invocation skipped 22 and completed the remaining three.
+No partial invocation replaced the tracked plan.
+
+## Final canonical metadata plan
+
+- Plan hash: `9654fe1c2dfe98946560e27c6f51f110038613060461fdf75936edf1a7d0ae77`
+- Requests: 25 logical requests / 75 successful endpoint calls
+- Total estimate: USD `0.460514456033`
+- Largest request: USD `0.243695452809`
+- Metadata retries: 0
+- Metadata hard timeouts: 0
+- Total observed wall runtime across probe and resume invocations: 714.7 seconds
+- Canonical order: three ARCX requests, OPRA definition, then 21 ascending
+  January 2019 OPRA sessions
+
+| Dataset | Schema | Requests | Estimated bytes | Estimated USD |
+|---|---:|---:|---:|---:|
+| ARCX.PILLAR | definition | 1 | 7,560 | 0.000112652779 |
+| ARCX.PILLAR | ohlcv-1d | 1 | 1,176 | 0.000032857060 |
+| ARCX.PILLAR | statistics | 1 | 3,712 | 0.000055313110 |
+| OPRA.PILLAR | definition | 1 | 52,333,200 | 0.243695452809 |
+| OPRA.PILLAR | cbbo-1m | 21 | 116,296,000 | 0.216618180275 |
+
+The old hash `e86c20cc4e46db4fd6a8b9b3725aba3e58c16c78398bd8cd4e2aa179c34ad128`
+is invalid after canonical-order and implementation-provenance changes.
+
+## Paid execution and recovery controls
+
+A valid short-lived portal-limit attestation and separately valid, hash-bound
+authorization remain mandatory. After validation, fresh metadata preflight,
+storage validation, and recovery inspection, authorization is reserved
+transactionally. Provider-construction failure releases it. Consumption occurs
+immediately before the first paid invocation.
+
+The coordinator executes all requests sequentially. Each response is atomically
+persisted and validated as raw DBN, reopened from disk for Parquet
+normalization, reconciled, and evaluated by schema-specific quality checks.
+Validated raw resumes normalization without redownload; validated normalized
+resumes quality only; complete requests are skipped. Uncertain completion
+blocks automatic retry. Missing, corrupt, or partial state is quarantined or
+requires manual recovery.
+
+Synthetic evidence completes 25 raw, normalized, and quality lifecycles. An
+identical second run skips all 25 and performs zero provider calls. Actual
+billed cost remains unavailable pending portal reconciliation.

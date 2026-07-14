@@ -12,6 +12,7 @@ from neuralmarket.data.acquisition.requests import (
     finalize_request,
     load_pilot_config,
     plan_hash,
+    validate_canonical_pilot_plan,
     verify_final_request,
 )
 
@@ -81,10 +82,9 @@ def test_expected_split_is_always_training() -> None:
 def test_plan_is_sorted_deterministically() -> None:
     config = load_pilot_config(CONFIG_PATH)
     requests = build_pilot_request_plan(config)
-    keys = [
-        (r.wave, r.dataset, r.schema_name, r.session_date or date.min, r.symbols) for r in requests
-    ]
-    assert keys == sorted(keys)
+    assert requests[3].wave == "opra_definitions"
+    quote_dates = [request.session_date for request in requests[4:]]
+    assert quote_dates == sorted(quote_dates)
 
 
 @pytest.mark.unit
@@ -192,3 +192,21 @@ def test_plan_hash_binds_dependency_metadata() -> None:
     assert plan_hash(requests, bindings) != plan_hash(
         requests, {**bindings, "source_manifest_hash": "c" * 64}
     )
+
+
+@pytest.mark.unit
+def test_canonical_plan_rejects_reordered_requests() -> None:
+    requests = build_pilot_request_plan(load_pilot_config(CONFIG_PATH))
+    with pytest.raises(ValueError, match="canonical_order"):
+        validate_canonical_pilot_plan([requests[1], requests[0], *requests[2:]])
+
+
+@pytest.mark.unit
+def test_canonical_plan_rejects_duplicate_output_path() -> None:
+    requests = build_pilot_request_plan(load_pilot_config(CONFIG_PATH))
+    malformed = requests.copy()
+    malformed[1] = malformed[1].model_copy(
+        update={"logical_output_path": malformed[0].logical_output_path}
+    )
+    with pytest.raises(ValueError, match="logical_output_paths"):
+        validate_canonical_pilot_plan(malformed)

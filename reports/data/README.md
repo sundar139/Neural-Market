@@ -17,6 +17,10 @@ or billing identifiers, payment information, raw exceptions, or market values
 stay local. Account-neutral metadata belongs in `data/manifests/` instead
 (`source_manifest_v1.json`, `split_manifest_v1.json`,
 `acquisition_policy_v1.json`).
+
+Pilot metadata checkpoints and endpoint diagnostics use ignored `*.local.*`
+paths. They contain dependency hashes, request identities, estimates, and safe
+timing events, but never credentials, headers, response bodies, or market data.
 # Data reports and pilot evidence
 
 Local preflight, recovery, environment, and audit outputs use the `.local`

@@ -18,8 +18,12 @@ from neuralmarket.data.acquisition.authorization import (
     compute_authorization_hash,
 )
 from neuralmarket.data.acquisition.estimation import MetadataEstimate
-from neuralmarket.data.acquisition.executor import ExecutorGuardError, PilotExecutor
-from neuralmarket.data.acquisition.journal import RequestJournal
+from neuralmarket.data.acquisition.executor import (
+    ExecutorGuardError,
+    PilotExecutor,
+    select_recovery_action,
+)
+from neuralmarket.data.acquisition.journal import JournalEntry, RequestJournal
 from neuralmarket.data.acquisition.requests import (
     build_pilot_request_plan,
     finalize_request,
@@ -251,7 +255,33 @@ def test_guard_execute_succeeds_only_with_both_valid_guards(tmp_path) -> None:
     )
     assert result.acquire_range
     factory.assert_called_once()
+    assert journal.consumed_authorization_ids() == set()
+    result.acquire_range(requests[0])
     assert journal.consumed_authorization_ids() == {plan}
+
+
+def test_provider_factory_failure_releases_authorization_reservation(tmp_path) -> None:
+    journal = RequestJournal(tmp_path / "journal.sqlite")
+    executor = PilotExecutor(journal=journal, metadata_estimator=Mock())
+    auth_path = tmp_path / "auth.json"
+    plan, requests, bindings = _authorized_plan()
+    _mark_preflight_validated(journal, requests)
+    _write_valid_auth_file(auth_path, plan_hash=plan)
+    with pytest.raises(ExecutorGuardError, match="construction"):
+        executor.guard_execute(
+            plan_hash=plan,
+            authorization_path=auth_path,
+            confirm_plan_hash=plan,
+            source_manifest_hash="s" * 64,
+            split_manifest_hash="v" * 64,
+            acquisition_policy_hash="a" * 64,
+            now=datetime.now(UTC),
+            paid_provider_factory=Mock(side_effect=RuntimeError("construction failed")),
+            authorized_requests=requests,
+            plan_bindings=bindings,
+            preflight_passed=True,
+        )
+    assert journal.consumed_authorization_ids() == set()
 
 
 def test_guarded_provider_rejects_duplicate_acquire(tmp_path) -> None:
@@ -438,3 +468,50 @@ def test_init_has_no_paid_provider_parameter() -> None:
 
     params = set(inspect.signature(PilotExecutor.__init__).parameters)
     assert not any("paid" in p or "provider" in p for p in params)
+
+
+@pytest.mark.parametrize(
+    ("state", "raw", "normalized", "quality", "partial", "expected"),
+    [
+        (None, False, False, False, False, "execute_provider"),
+        ("quality_validated", True, True, True, False, "skip"),
+        ("raw_validated", True, False, False, False, "resume_normalization"),
+        ("normalized", True, True, False, False, "resume_quality"),
+        ("request_started", False, False, False, False, "block_uncertain_billing"),
+        ("quality_validated", False, True, True, False, "quarantine"),
+        ("preflight_validated", False, False, False, True, "manual_recovery_required"),
+    ],
+)
+def test_select_recovery_action_fails_closed(
+    state, raw, normalized, quality, partial, expected
+) -> None:
+    entry = (
+        None
+        if state is None
+        else JournalEntry(
+            request_id="request",
+            request_hash="h" * 64,
+            state=state,
+            attempt_count=0,
+            estimated_cost_usd="0.01",
+            actual_billed_cost_usd=None,
+            raw_path=None,
+            raw_checksum=None,
+            normalized_path=None,
+            normalized_checksum=None,
+            failure_category=None,
+            failure_message=None,
+            created_at="2026-01-01T00:00:00+00:00",
+            updated_at="2026-01-01T00:00:00+00:00",
+        )
+    )
+    assert (
+        select_recovery_action(
+            entry,
+            raw_valid=raw,
+            normalized_valid=normalized,
+            quality_valid=quality,
+            partial_present=partial,
+        )
+        == expected
+    )

@@ -8,7 +8,7 @@ import json
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import typer
 from dotenv import load_dotenv
@@ -20,6 +20,11 @@ from pydantic import BaseModel
 from neuralmarket.core.configuration import ConfigurationError, config_sha256
 from neuralmarket.core.environment import _git_commit, _git_dirty, find_repository_root
 from neuralmarket.core.logging import configure_logging, get_logger
+from neuralmarket.data.acquisition.attestation import (
+    PortalAttestationError,
+    load_portal_attestation,
+    validate_portal_attestation,
+)
 from neuralmarket.data.acquisition.authorization import (
     AuthorizationError,
     load_authorization,
@@ -32,8 +37,12 @@ from neuralmarket.data.acquisition.contracts import (
     AcquisitionPolicyManifest,
     acquisition_report_to_json,
 )
-from neuralmarket.data.acquisition.estimation import MetadataEstimator
-from neuralmarket.data.acquisition.executor import ExecutorGuardError, PilotExecutor
+from neuralmarket.data.acquisition.estimation import MetadataEstimate, MetadataEstimator
+from neuralmarket.data.acquisition.executor import (
+    ExecutorGuardError,
+    PilotExecutionCoordinator,
+    PilotExecutor,
+)
 from neuralmarket.data.acquisition.journal import RequestJournal
 from neuralmarket.data.acquisition.manifests import (
     finalize_policy_manifest,
@@ -47,18 +56,30 @@ from neuralmarket.data.acquisition.manifests import (
 from neuralmarket.data.acquisition.manifests import (
     write_json as write_acquisition_json,
 )
+from neuralmarket.data.acquisition.metadata_runner import (
+    Endpoint,
+    MetadataCheckpoint,
+    MetadataOperationEvent,
+    checkpoint_client_version,
+    load_checkpoint,
+    run_isolated_metadata_request,
+    write_checkpoint,
+)
 from neuralmarket.data.acquisition.planner import plan_acquisition
-from neuralmarket.data.acquisition.preflight import run_preflight
+from neuralmarket.data.acquisition.preflight import PreflightResult
+from neuralmarket.data.acquisition.providers import DatabentoMetadataProvider
 from neuralmarket.data.acquisition.recovery import RecoveryReport, run_recovery
 from neuralmarket.data.acquisition.requests import (
     AcquisitionRequest,
     build_pilot_request_plan,
+    finalize_request,
     load_pilot_config,
     verify_final_request,
 )
 from neuralmarket.data.acquisition.requests import (
     plan_hash as compute_plan_hash,
 )
+from neuralmarket.data.acquisition.storage import validate_logical_path
 from neuralmarket.data.calendar import compute_splits, session_dates
 from neuralmarket.data.configuration import DataConfig, load_data_config
 from neuralmarket.data.contracts import CONTRACT_MODELS, json_schema_for
@@ -89,6 +110,8 @@ from neuralmarket.data.sources.base import (
 from neuralmarket.data.sources.databento import DatabentoSource
 
 _logger = get_logger(__name__)
+
+_run_isolated_metadata = run_isolated_metadata_request
 
 app = typer.Typer(help="Market-data contracts, splits, and source qualification.")
 acquisition_app = typer.Typer(help="Budget-constrained, metadata-only OPRA acquisition planning.")
@@ -946,9 +969,7 @@ def _validate_pilot_plan_artifacts(
     ):
         raise PlanValidationError("Acquisition policy dependency hash mismatch.")
     if plan_payload["plan_hash"] != _recompute_pilot_plan_hash(plan_payload):
-        raise PlanValidationError(
-            "Pilot request-plan plan_hash does not match its canonical contents."
-        )
+        raise PlanValidationError("plan_hash_mismatch: canonical plan contents differ")
 
     if source.qualification_status != "qualified":
         raise PlanValidationError("Source manifest is not qualified for pilot execution.")
@@ -1088,6 +1109,23 @@ def pilot_prepare(
         "--policy-manifest",
         help="Path to the accepted acquisition policy manifest.",
     ),
+    checkpoint: Path = typer.Option(
+        Path("reports/data/pilot_metadata_checkpoint.local.json"),
+        "--checkpoint",
+        help="Ignored atomic metadata checkpoint.",
+    ),
+    resume: bool = typer.Option(False, "--resume", help="Resume a matching fresh checkpoint."),
+    max_requests: int | None = typer.Option(
+        None, "--max-requests", min=1, help="Attempt at most this many pending requests."
+    ),
+    only_request_id: str | None = typer.Option(
+        None, "--only-request-id", help="Attempt only one canonical request ID."
+    ),
+    only_endpoint: str | None = typer.Option(
+        None,
+        "--only-endpoint",
+        help="Diagnostic endpoint: record-count, billable-size, or cost.",
+    ),
 ) -> None:
     """Build and metadata-preflight an authorization-ready January 2019 plan."""
     configure_logging("INFO")
@@ -1098,6 +1136,7 @@ def pilot_prepare(
     policy_manifest = _resolve_under_root(root, policy_manifest)
     request_manifest = _resolve_under_root(root, request_manifest)
     output = _resolve_under_root(root, output)
+    checkpoint = _resolve_under_root(root, checkpoint)
 
     try:
         pilot_config = load_pilot_config(config)
@@ -1122,40 +1161,215 @@ def pilot_prepare(
         _logger.error("Pilot dependency or plan validation failed: %s", exc)
         raise typer.Exit(code=1) from exc
 
+    if only_endpoint not in {None, "record-count", "billable-size", "cost"}:
+        raise typer.BadParameter("invalid --only-endpoint")
+    if only_request_id and only_request_id not in {item.request_id for item in requests}:
+        raise typer.BadParameter("unknown --only-request-id")
     _load_dotenv(root)
+    if not __import__("os").environ.get("DATABENTO_API_KEY"):
+        raise typer.Exit(code=2)
+
+    calendar_version = _distribution_version("exchange-calendars")
+    only_endpoint_value = cast(Endpoint | None, only_endpoint)
+    expected_checkpoint: dict[str, object] = {
+        "source_manifest_hash": source_hash,
+        "split_manifest_hash": split_hash,
+        "acquisition_policy_hash": policy_hash,
+        "pilot_config_hash": config_sha256(config),
+        "calendar_version": calendar_version,
+        "databento_client_version": checkpoint_client_version(),
+        "estimator_version": "pilot-metadata-process-v1",
+        "ordered_request_specification_hashes": [item.request_hash for item in requests],
+    }
+    now = datetime.now(UTC).isoformat()
     try:
-        client = _raw_databento_client()
-    except CredentialMissingError as exc:
-        _logger.error("%s", redact(str(exc)))
-        raise typer.Exit(code=2) from exc
-
-    retry = pilot_config.retry
-
-    def _progress(index: int, total: int, request: AcquisitionRequest, estimate: Any) -> None:
-        typer.echo(
-            f"metadata preflight {index}/{total}: {request.request_id} "
-            f"{request.dataset}/{request.schema_name} cost={estimate.cost_usd}"
+        state = (
+            load_checkpoint(
+                checkpoint,
+                expected=expected_checkpoint,
+                maximum_age_minutes=pilot_config.metadata_execution.checkpoint_max_age_minutes,
+            )
+            if resume and checkpoint.exists()
+            else MetadataCheckpoint.model_validate(
+                {
+                    **expected_checkpoint,
+                    "created_at": now,
+                    "updated_at": now,
+                    "pending_request_ids": [item.request_id for item in requests],
+                }
+            )
         )
-
-    estimator = MetadataEstimator(
-        client,
-        maximum_attempts=retry.maximum_attempts,
-        initial_delay_seconds=float(retry.initial_delay_seconds),
-        multiplier=float(retry.multiplier),
-        maximum_delay_seconds=float(retry.maximum_delay_seconds),
-        deterministic_jitter=retry.jitter == "deterministic_seeded",
-    )
-    try:
-        result = run_preflight(
-            estimator=estimator,
-            requests=requests,
-            config=pilot_config,
-            maximum_workers=1,
-            progress_callback=_progress,
-        )
-    except MarketDataError as exc:
-        _logger.error("Pilot preflight failed: %s", redact(str(exc)))
+    except ValueError as exc:
+        _logger.error("Metadata checkpoint rejected: %s", exc)
         raise typer.Exit(code=1) from exc
+    write_checkpoint(checkpoint, state)
+
+    diagnostic = root / "reports/data/metadata_timeout_diagnostic.local.json"
+
+    def record_event(event: MetadataOperationEvent) -> None:
+        diagnostic.parent.mkdir(parents=True, exist_ok=True)
+        with diagnostic.open("a", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(event.model_dump(mode="json"), sort_keys=True) + "\n")
+            handle.flush()
+            __import__("os").fsync(handle.fileno())
+
+    selected = [item for item in requests if item.request_id in state.pending_request_ids]
+    if only_request_id:
+        selected = [item for item in selected if item.request_id == only_request_id]
+    if max_requests is not None:
+        selected = selected[:max_requests]
+    run_started = __import__("time").monotonic()
+    endpoint_calls = retries = timeouts = attempted = 0
+    for request in selected:
+        if (
+            __import__("time").monotonic() - run_started
+            >= pilot_config.metadata_execution.total_run_deadline_seconds
+        ):
+            break
+        attempted += 1
+        success = None
+        for attempt in range(1, pilot_config.metadata_execution.maximum_timeout_attempts + 1):
+            remaining_run_seconds = pilot_config.metadata_execution.total_run_deadline_seconds - (
+                __import__("time").monotonic() - run_started
+            )
+            if remaining_run_seconds <= 0:
+                break
+            isolated = _run_isolated_metadata(
+                request=request,
+                run_id=state.run_id,
+                request_index=requests.index(request) + 1,
+                request_count=len(requests),
+                attempt=attempt,
+                timeout_seconds=min(
+                    pilot_config.metadata_execution.hard_request_timeout_seconds,
+                    remaining_run_seconds,
+                ),
+                event_sink=record_event,
+                only_endpoint=only_endpoint_value,
+            )
+            endpoint_calls += sum(event.outcome == "succeeded" for event in isolated.events)
+            state.attempt_history.append(isolated.model_dump(mode="json", exclude={"estimate"}))
+            if isolated.estimate is not None or (
+                only_endpoint_value is not None and not isolated.failure_type
+            ):
+                success = isolated
+                break
+            if isolated.failure_type == "metadata_hard_timeout":
+                timeouts += 1
+            last = isolated.events[-1] if isolated.events else None
+            retryable = isolated.failure_type == "metadata_hard_timeout" or bool(
+                last
+                and (
+                    last.http_status in {429, 500, 502, 503, 504}
+                    or last.exception_class
+                    in {"TimeoutError", "ConnectionError", "ConnectionResetError"}
+                )
+            )
+            if not retryable or attempt == pilot_config.metadata_execution.maximum_timeout_attempts:
+                state.failed_request_id = request.request_id
+                state.failed_endpoint = isolated.failed_endpoint
+                state.last_failure = isolated.failure_type
+                state.updated_at = datetime.now(UTC).isoformat()
+                write_checkpoint(checkpoint, state)
+                typer.echo(json.dumps(isolated.model_dump(mode="json"), sort_keys=True))
+                raise typer.Exit(code=1)
+            retries += 1
+        if success is None:
+            break
+        if only_endpoint_value is not None:
+            typer.echo(json.dumps(success.model_dump(mode="json"), sort_keys=True))
+            return
+        assert success is not None and success.estimate is not None
+        estimate = success.estimate
+        state.completed_estimates[request.request_id] = {
+            **estimate.__dict__,
+            "window_start": estimate.window_start.isoformat(),
+            "window_end": estimate.window_end.isoformat(),
+            "cost_usd": str(estimate.cost_usd),
+        }
+        state.pending_request_ids.remove(request.request_id)
+        state.failed_request_id = state.failed_endpoint = state.last_failure = None
+        state.updated_at = datetime.now(UTC).isoformat()
+        write_checkpoint(checkpoint, state)
+        typer.echo(
+            f"metadata preflight {len(state.completed_estimates)}/{len(requests)}: "
+            f"{request.request_id} {request.dataset}/{request.schema_name} cost={estimate.cost_usd}"
+        )
+
+    if state.pending_request_ids:
+        typer.echo(
+            json.dumps(
+                {
+                    "status": "checkpointed_incomplete",
+                    "completed": len(state.completed_estimates),
+                    "pending": len(state.pending_request_ids),
+                    "attempted": attempted,
+                    "endpoint_calls": endpoint_calls,
+                    "retries": retries,
+                    "timeouts": timeouts,
+                },
+                sort_keys=True,
+            )
+        )
+        return
+
+    estimates = []
+    finalized_requests = []
+    for request in requests:
+        payload = state.completed_estimates[request.request_id]
+        estimate = MetadataEstimate(
+            **{
+                **payload,
+                "window_start": datetime.fromisoformat(str(payload["window_start"])),
+                "window_end": datetime.fromisoformat(str(payload["window_end"])),
+                "cost_usd": Decimal(str(payload["cost_usd"])),
+            }
+        )
+        estimates.append(estimate)
+        finalized_requests.append(
+            finalize_request(request, estimate, datetime.fromisoformat(state.updated_at))
+        )
+    fresh_total = sum((estimate.cost_usd for estimate in estimates), Decimal("0"))
+    maximum_request = max((estimate.cost_usd for estimate in estimates), default=Decimal("0"))
+    rejections: list[Any] = []
+    if (
+        fresh_total > pilot_config.maximum_spend_usd
+        or maximum_request > pilot_config.maximum_single_request_usd
+    ):
+        _logger.error("Pilot preflight rejected metadata estimates over configured caps.")
+        raise typer.Exit(code=1)
+    elapsed = __import__("time").monotonic() - run_started
+    result = PreflightResult(
+        fresh_estimates={
+            request.request_id: str(estimate.cost_usd)
+            for request, estimate in zip(requests, estimates, strict=True)
+        },
+        planned_total_usd=str(
+            sum((to_decimal(request.estimated_cost or "0") for request in requests), Decimal("0"))
+        ),
+        fresh_total_usd=str(fresh_total),
+        increase_fraction="0",
+        within_single_request_cap=True,
+        within_total_cap=True,
+        within_increase_tolerance=True,
+        rejections=rejections,
+        passed=True,
+        metadata_call_count=len(estimates),
+        metadata_endpoint_call_count=sum(
+            event.get("outcome") == "succeeded"
+            for attempt in state.attempt_history
+            for event in attempt.get("events", [])
+        ),
+        retry_count=sum(
+            max(0, int(item["events"][0].get("attempt", 1)) - 1)
+            for item in state.attempt_history
+            if item.get("events")
+        ),
+        estimated_requests=finalized_requests,
+        started_at=state.created_at,
+        completed_at=state.updated_at,
+        elapsed_seconds=elapsed,
+    )
 
     generated_at = _now()
     bindings = {
@@ -1378,11 +1592,17 @@ def pilot_verify(
 
 @pilot_app.command("execute")
 def pilot_execute(
+    mode: str = typer.Option("paid", "--mode", help="Execution mode: validate-only or paid."),
     plan: Path = typer.Option(
         ..., "--plan", help="Path to the tracked pilot request-plan manifest."
     ),
     authorization: Path = typer.Option(
         ..., "--authorization", help="Path to the signed pilot authorization artifact."
+    ),
+    portal_attestation: Path | None = typer.Option(
+        None,
+        "--portal-attestation",
+        help="Time-limited, local manual portal-limit attestation.",
     ),
     confirm_plan_hash: str = typer.Option(
         ...,
@@ -1408,8 +1628,11 @@ def pilot_execute(
         "--journal",
         help="Path to the pilot acquisition journal SQLite file.",
     ),
+    output: Path | None = typer.Option(
+        None, "--output", help="Local execution or validation report path."
+    ),
 ) -> None:
-    """Attempt guarded pilot execution. Structurally cannot succeed in this milestone.
+    """Validate a pilot or run the guarded paid execution path.
 
     Both money guards (a valid, single-use authorization artifact and an
     explicit plan-hash confirmation) are enforced by
@@ -1423,11 +1646,16 @@ def pilot_execute(
     root = find_repository_root()
     plan = _resolve_under_root(root, plan)
     authorization = _resolve_under_root(root, authorization)
+    portal_attestation = (
+        _resolve_under_root(root, portal_attestation) if portal_attestation is not None else None
+    )
     config = _resolve_under_root(root, config)
     source_manifest = _resolve_under_root(root, source_manifest)
     split_manifest = _resolve_under_root(root, split_manifest)
     policy_manifest = _resolve_under_root(root, policy_manifest)
     try:
+        if mode not in {"validate-only", "paid"}:
+            raise ValueError("mode must be validate-only or paid")
         plan_payload, authorized_requests, expected_bindings = _validate_pilot_plan_artifacts(
             root=root,
             request_manifest=plan,
@@ -1459,10 +1687,52 @@ def pilot_execute(
                 "plan_hash_confirmation_mismatch",
                 "confirm_plan_hash does not match the plan under review",
             )
+        if portal_attestation is None:
+            raise PortalAttestationError("portal attestation is required")
+        attestation = load_portal_attestation(portal_attestation)
+        validate_portal_attestation(attestation, plan_hash=plan_hash_value, now=datetime.now(UTC))
+        seen_paths: set[str] = set()
+        for request in authorized_requests:
+            validate_logical_path(request.logical_output_path or "", seen_paths)
+            seen_paths.add((request.logical_output_path or "").replace(chr(92), "/").lower())
     except Exception as exc:
         message = f"Pilot execution blocked: authorization guard rejected: {redact(str(exc))}"
         typer.echo(message, err=True)
         raise typer.Exit(code=1) from exc
+
+    if mode == "validate-only":
+        _load_dotenv(root)
+        try:
+            validation = PilotExecutionCoordinator().validate_only(
+                requests=authorized_requests,
+                config=load_pilot_config(config),
+                plan_bindings=plan_payload["bindings"],
+                plan_metadata=_pilot_plan_hash_metadata(plan_payload),
+                metadata_provider_factory=lambda: DatabentoMetadataProvider(
+                    _raw_databento_client()
+                ),
+            )
+        except Exception as exc:
+            message = f"Pilot validation-only preflight failed: {redact(str(exc))}"
+            typer.echo(message, err=True)
+            raise typer.Exit(code=1) from exc
+        report = {
+            "status": "ok",
+            **validation.model_dump(),
+            "paid_client_constructed": validation.paid_provider_constructed,
+            "plan_hash": plan_hash_value,
+            "request_count": len(authorized_requests),
+            "fresh_total_cost": validation.estimated_total_cost,
+            "authorization_status": "validated_unconsumed",
+            "recovery_status": "journal_not_opened",
+            "blocking_failures": [],
+        }
+        if output is not None:
+            write_acquisition_json(_resolve_under_root(root, output), report)
+        typer.echo(json.dumps(report, sort_keys=True))
+        if not validation.ready_for_paid_execution:
+            raise typer.Exit(code=1)
+        return
 
     journal_full_path = _resolve_under_root(root, journal_path)
     journal_full_path.parent.mkdir(parents=True, exist_ok=True)

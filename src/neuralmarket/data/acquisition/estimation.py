@@ -152,7 +152,15 @@ class MetadataEstimator:
         deterministic_jitter: bool = True,
     ) -> None:
         """Wrap an already-constructed provider client in the acquisition guard."""
-        self._client = AcquisitionGuardedClient(client)
+        guarded = AcquisitionGuardedClient(client)
+        self._metadata = (
+            client
+            if all(
+                callable(getattr(client, name, None))
+                for name in ("get_record_count", "get_billable_size", "get_cost")
+            )
+            else guarded.metadata
+        )
         self._maximum_attempts = maximum_attempts
         self._initial_delay_seconds = initial_delay_seconds
         self._multiplier = multiplier
@@ -203,7 +211,7 @@ class MetadataEstimator:
             datetime.now().astimezone().isoformat(),
         )
         try:
-            result = getattr(self._client.metadata, name)(**kwargs)
+            result = getattr(self._metadata, name)(**kwargs)
         except Exception:
             completed_at = datetime.now(UTC).isoformat()
             elapsed = time.monotonic() - started

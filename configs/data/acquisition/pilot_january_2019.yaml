@@ -25,3 +25,8 @@ retry:
   multiplier: 2
   maximum_delay_seconds: 10
   jitter: "deterministic_seeded"
+metadata_execution:
+  hard_request_timeout_seconds: 120
+  maximum_timeout_attempts: 2
+  checkpoint_max_age_minutes: 30
+  total_run_deadline_seconds: 540

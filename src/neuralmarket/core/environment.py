@@ -38,9 +38,34 @@ _SUPPORTED_ENV_VARS = (
     "NEURALMARKET_ARTIFACT_ROOT",
 )
 
+_MARKET_ARTIFACT_PATTERNS = ("*.dbn", "*.dbz", "*.parquet", "*.arrow", "*.sqlite")
+_SCAN_EXCLUDED_NAMES = frozenset(
+    {".git", ".venv", ".pytest_cache", ".mypy_cache", ".ruff_cache", "__pycache__"}
+)
+
 
 class EnvironmentValidationError(Exception):
     """Raised when the runtime environment fails a required validation check."""
+
+
+def scan_production_artifacts(root: Path, *, excluded_roots: tuple[Path, ...] = ()) -> list[Path]:
+    """Return unauthorized market artifacts, excluding only exact supplied subtrees."""
+    resolved_exclusions = tuple(path.resolve() for path in excluded_roots)
+    findings: list[Path] = []
+    for pattern in _MARKET_ARTIFACT_PATTERNS:
+        for path in root.rglob(pattern):
+            resolved = path.resolve()
+            if any(name in _SCAN_EXCLUDED_NAMES for name in path.parts):
+                continue
+            if any(
+                resolved == excluded or excluded in resolved.parents
+                for excluded in resolved_exclusions
+            ):
+                continue
+            if path.name.endswith(".local.sqlite"):
+                continue
+            findings.append(path)
+    return sorted(set(findings))
 
 
 def find_repository_root(start: Path | None = None) -> Path:

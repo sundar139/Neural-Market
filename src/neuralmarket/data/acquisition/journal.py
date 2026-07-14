@@ -22,7 +22,7 @@ from pydantic import BaseModel, ConfigDict
 
 from neuralmarket.data.acquisition.states import ALLOWED_TRANSITIONS
 
-JOURNAL_SCHEMA_VERSION = 4
+JOURNAL_SCHEMA_VERSION = 5
 
 _COLUMNS = (
     "request_id",
@@ -132,6 +132,20 @@ class RequestJournal:
                     FOREIGN KEY(plan_hash) REFERENCES consumed_authorizations(plan_hash)
                 )
             """)
+            self._connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS authorization_reservations (
+                    authorization_hash TEXT PRIMARY KEY,
+                    plan_hash TEXT NOT NULL,
+                    execution_id TEXT NOT NULL UNIQUE,
+                    state TEXT NOT NULL
+                        CHECK(state IN ('available','reserved','consumed','voided')),
+                    reserved_at TEXT,
+                    consumed_at TEXT,
+                    failure_message TEXT
+                )
+                """
+            )
             row = self._connection.execute("SELECT version FROM schema_meta").fetchone()
             request_columns = {
                 str(column[1])
@@ -177,6 +191,69 @@ class RequestJournal:
         """Return plan hashes whose one-time authorization has been consumed."""
         rows = self._connection.execute("SELECT plan_hash FROM consumed_authorizations").fetchall()
         return {str(row[0]) for row in rows}
+
+    def reserve_authorization(
+        self, *, authorization_hash: str, plan_hash: str, execution_id: str, reserved_at: str
+    ) -> bool:
+        """Reserve an authorization for exactly one execution transactionally."""
+        try:
+            with self._connection:
+                row = self._connection.execute(
+                    "SELECT state FROM authorization_reservations WHERE authorization_hash = ?",
+                    (authorization_hash,),
+                ).fetchone()
+                if row is not None:
+                    return False
+                self._connection.execute(
+                    "INSERT INTO authorization_reservations "
+                    "(authorization_hash, plan_hash, execution_id, state, reserved_at) "
+                    "VALUES (?, ?, ?, 'reserved', ?)",
+                    (authorization_hash, plan_hash, execution_id, reserved_at),
+                )
+        except sqlite3.IntegrityError:
+            return False
+        return True
+
+    def release_reservation(
+        self, *, authorization_hash: str, execution_id: str, message: str
+    ) -> bool:
+        """Release an unused reservation after local provider construction fails."""
+        with self._connection:
+            count = self._connection.execute(
+                "DELETE FROM authorization_reservations WHERE authorization_hash = ? "
+                "AND execution_id = ? AND state = 'reserved'",
+                (authorization_hash, execution_id),
+            ).rowcount
+        return bool(count)
+
+    def consume_reserved_authorization(
+        self, *, authorization_hash: str, execution_id: str, consumed_at: str
+    ) -> bool:
+        """Consume a reservation immediately before the first paid invocation."""
+        with self._connection:
+            count = self._connection.execute(
+                "UPDATE authorization_reservations SET state = 'consumed', consumed_at = ? "
+                "WHERE authorization_hash = ? AND execution_id = ? AND state = 'reserved'",
+                (consumed_at, authorization_hash, execution_id),
+            ).rowcount
+            if count:
+                plan_hash = self._connection.execute(
+                    "SELECT plan_hash FROM authorization_reservations WHERE authorization_hash = ?",
+                    (authorization_hash,),
+                ).fetchone()[0]
+                self._connection.execute(
+                    "INSERT INTO consumed_authorizations "
+                    "(plan_hash, authorization_hash, consumed_at, execution_id) "
+                    "VALUES (?, ?, ?, ?)",
+                    (plan_hash, authorization_hash, consumed_at, execution_id),
+                )
+                self._connection.execute(
+                    "INSERT INTO execution_attempts "
+                    "(execution_id, plan_hash, authorization_hash, started_at, status) "
+                    "VALUES (?, ?, ?, ?, 'running')",
+                    (execution_id, plan_hash, authorization_hash, consumed_at),
+                )
+        return bool(count)
 
     def consume_authorization(
         self, *, plan_hash: str, authorization_hash: str, consumed_at: str
