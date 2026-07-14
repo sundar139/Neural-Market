@@ -34,12 +34,13 @@ def test_authorization_template_is_schema_valid_but_unusable() -> None:
     assert template["confirmation_phrase"] == "REPLACE_ME"
 
 
-def test_all_four_schemas_are_valid_json_schema() -> None:
+def test_pilot_local_artifact_schemas_are_valid_json_schema() -> None:
     for name in (
         "pilot_request_plan",
         "pilot_authorization",
         "pilot_execution",
         "pilot_quality_report",
+        "billing_reconciliation",
     ):
         schema = json.loads(
             (REPO_ROOT / f"data_contracts/{name}.schema.json").read_text(encoding="utf-8")

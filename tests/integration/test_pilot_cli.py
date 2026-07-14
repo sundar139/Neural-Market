@@ -327,6 +327,11 @@ def test_pilot_recover_help() -> None:
 
 
 @pytest.mark.integration
+def test_pilot_reconcile_billing_help() -> None:
+    assert runner.invoke(app, ["data", "pilot", "reconcile-billing", "--help"]).exit_code == 0
+
+
+@pytest.mark.integration
 def test_pilot_prepare_generates_manifest_and_stays_unauthorized(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

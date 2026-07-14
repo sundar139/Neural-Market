@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "neuralmarket:contract:billing_reconciliation:1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "reconciliation_version",
+    "execution_id",
+    "request_id",
+    "plan_hash",
+    "authorization_hash",
+    "portal_review_status",
+    "observed_usage_usd",
+    "reviewed_by",
+    "reviewed_at",
+    "review_method",
+    "billing_resolution",
+    "retry_eligible",
+    "manual_action_required",
+    "journal_state_before",
+    "journal_state_after",
+    "execution_attempt_status_before",
+    "execution_attempt_status_after",
+    "artifact_hash"
+  ],
+  "properties": {
+    "reconciliation_version": {"const": "1.0"},
+    "execution_id": {"type": "string", "minLength": 1},
+    "request_id": {"type": "string", "minLength": 1},
+    "plan_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "authorization_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "portal_review_status": {"enum": ["BILLED", "NOT_BILLED", "UNKNOWN"]},
+    "observed_usage_usd": {
+      "type": "string",
+      "anyOf": [
+        {"const": "UNKNOWN"},
+        {"pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"}
+      ]
+    },
+    "reviewed_by": {"const": "neuralmarket_local_operator"},
+    "reviewed_at": {"type": "string", "format": "date-time"},
+    "review_method": {"const": "manual_databento_portal_review"},
+    "billing_resolution": {
+      "enum": ["confirmed_billed", "confirmed_not_billed", "unresolved"]
+    },
+    "retry_eligible": {"type": "boolean"},
+    "manual_action_required": {"type": "boolean"},
+    "journal_state_before": {"type": "string"},
+    "journal_state_after": {
+      "enum": [
+        "billed_without_validated_artifact",
+        "retry_eligible_after_manual_nonbilling_confirmation",
+        "uncertain_billing"
+      ]
+    },
+    "execution_attempt_status_before": {"type": "string"},
+    "execution_attempt_status_after": {"type": "string"},
+    "artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

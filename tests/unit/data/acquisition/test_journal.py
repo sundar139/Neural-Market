@@ -126,4 +126,27 @@ def test_journal_migrates_prior_request_columns(tmp_path: Path) -> None:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(requests)")}
         version = connection.execute("SELECT version FROM schema_meta").fetchone()
     assert {"raw_byte_count", "raw_record_count", "provider_response_id"} <= columns
-    assert version == (5,)
+    assert version == (6,)
+
+
+def test_release_reservation_terminalizes_provider_construction_attempt(tmp_path: Path) -> None:
+    journal = RequestJournal(tmp_path / "journal.sqlite")
+    assert journal.reserve_authorization(
+        authorization_hash="a" * 64,
+        plan_hash="p" * 64,
+        execution_id="execution",
+        reserved_at="2026-07-14T00:00:00+00:00",
+    )
+    assert journal.release_reservation(
+        authorization_hash="a" * 64,
+        execution_id="execution",
+        message="paid provider construction failed",
+    )
+    row = journal.connection.execute(
+        "SELECT status, finished_at FROM execution_attempts WHERE execution_id = ?",
+        ("execution",),
+    ).fetchone()
+    assert row[0] == "failed_provider_construction"
+    assert row[1] is not None
+    consumed = journal.connection.execute("SELECT count(*) FROM consumed_authorizations").fetchone()
+    assert consumed[0] == 0

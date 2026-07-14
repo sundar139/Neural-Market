@@ -131,3 +131,24 @@ Two hard metadata timeouts were retried; completed endpoints remained
 checkpointed. All 75 endpoint results are present, no metadata child remains,
 and paid-provider constructions, range calls, downloaded records, batch calls,
 and live calls remained zero.
+
+## Uncertain-billing reconciliation control
+
+The first real paid pilot attempt invoked one historical provider request and
+then failed before raw persistence, leaving request `2750995e515e4f1a` in
+`uncertain_billing`. The report was blocked, but the execution-attempt row was
+stale `running`; recovery also failed to surface the uncertain request. The
+correction adds an offline `data pilot reconcile-billing` command and a typed
+local reconciliation artifact bound to execution ID, request ID, plan hash, and
+authorization hash.
+
+Manual portal status is the only billing evidence accepted. `BILLED` records
+`confirmed_billed`, remains non-retriable, and marks the request
+`billed_without_validated_artifact`. `NOT_BILLED` records
+`confirmed_not_billed`, marks the request
+`retry_eligible_after_manual_nonbilling_confirmation`, and still requires a new
+authorization and attestation before any future retry. `UNKNOWN` records
+`unresolved` and keeps the request in `uncertain_billing`. All paths finalize
+the execution attempt, append reconciliation history, preserve consumed
+authorization state, and perform zero provider constructions, metadata calls,
+downloads, retries, or deletions.

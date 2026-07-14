@@ -21,6 +21,12 @@ stay local. Account-neutral metadata belongs in `data/manifests/` instead
 Pilot metadata checkpoints and endpoint diagnostics use ignored `*.local.*`
 paths. They contain dependency hashes, request identities, estimates, and safe
 timing events, but never credentials, headers, response bodies, or market data.
+
+Manual billing reconciliation evidence lives under
+`reports/data/execution/reconciliation/` as ignored `.local.json` and
+`.local.sqlite` files. These artifacts bind the execution ID, request ID, plan
+hash, authorization hash, manual portal status, and artifact hash; they must not
+contain portal HTML, screenshots, API keys, card data, or market records.
 # Data reports and pilot evidence
 
 Local preflight, recovery, environment, and audit outputs use the `.local`

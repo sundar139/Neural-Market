@@ -151,3 +151,29 @@ def test_recovery_rejects_journal_path_escape(tmp_path: Path) -> None:
         journal.upsert(_entry("r1", state, "../outside.dbn", "0" * 64))
     report = run_recovery(journal=journal, data_root=tmp_path)
     assert any(f.category == "unsafe_path" for f in report.findings)
+
+
+def test_recovery_surfaces_uncertain_billing_and_stale_attempt(tmp_path: Path) -> None:
+    journal = RequestJournal(tmp_path / "journal.sqlite")
+    journal.upsert(_entry("uncertain", "planned", None, None))
+    journal.upsert(_entry("uncertain", "preflight_validated", None, None))
+    journal.upsert(_entry("uncertain", "request_started", None, None))
+    journal.upsert(_entry("uncertain", "uncertain_billing", None, None))
+    assert journal.reserve_authorization(
+        authorization_hash="a" * 64,
+        plan_hash="p" * 64,
+        execution_id="execution",
+        reserved_at=datetime.now(UTC).isoformat(),
+    )
+    assert journal.consume_reserved_authorization(
+        authorization_hash="a" * 64,
+        execution_id="execution",
+        consumed_at=datetime.now(UTC).isoformat(),
+    )
+    report = run_recovery(journal=journal, data_root=tmp_path)
+    assert report.uncertain_billing_count == 1
+    assert report.stale_running_attempt_count == 1
+    assert report.stale_running_attempts == ["execution"]
+    assert report.automatic_retry_allowed is False
+    assert report.retried == 0
+    assert report.deleted == 0

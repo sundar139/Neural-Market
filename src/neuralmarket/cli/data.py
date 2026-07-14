@@ -31,6 +31,11 @@ from neuralmarket.data.acquisition.authorization import (
     load_authorization,
     validate_authorization,
 )
+from neuralmarket.data.acquisition.billing_reconciliation import (
+    BillingReconciliationError,
+    apply_billing_reconciliation,
+    load_reconciliation_artifact,
+)
 from neuralmarket.data.acquisition.budget import to_decimal
 from neuralmarket.data.acquisition.configuration import load_acquisition_config
 from neuralmarket.data.acquisition.contracts import (
@@ -1950,8 +1955,15 @@ def pilot_recover(
         report = RecoveryReport(
             generated_at=datetime.now(UTC).isoformat(),
             findings=[],
+            uncertain_billing_count=0,
+            billed_without_validated_artifact_count=0,
+            confirmed_not_billed_count=0,
+            stale_running_attempt_count=0,
+            automatic_retry_allowed=False,
+            retry_eligible_under_new_authorization=False,
             quarantine_recommended=[],
             manual_recovery_required=[],
+            stale_running_attempts=[],
             retried=0,
             deleted=0,
         )
@@ -1963,3 +1975,37 @@ def pilot_recover(
             sort_keys=True,
         )
     )
+
+
+@pilot_app.command("reconcile-billing")
+def pilot_reconcile_billing(
+    journal_path: Path = typer.Option(
+        _DEFAULT_JOURNAL_PATH,
+        "--journal",
+        help="Path to the pilot acquisition journal SQLite file.",
+    ),
+    reconciliation: Path = typer.Option(
+        ..., "--reconciliation", help="Local billing reconciliation artifact."
+    ),
+    output: Path = typer.Option(..., "--output", help="Path to write reconciliation result."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Validate without mutating journal."),
+) -> None:
+    """Apply a manual Databento billing reconciliation without provider activity."""
+    configure_logging("INFO")
+    root = find_repository_root()
+    journal_full_path = _resolve_under_root(root, journal_path)
+    reconciliation = _resolve_under_root(root, reconciliation)
+    output = _resolve_under_root(root, output)
+    try:
+        artifact = load_reconciliation_artifact(reconciliation)
+        with RequestJournal(journal_full_path) as journal:
+            result = apply_billing_reconciliation(
+                journal=journal, artifact=artifact, dry_run=dry_run
+            )
+    except (BillingReconciliationError, ValueError, OSError) as exc:
+        typer.echo(f"Billing reconciliation blocked: {redact(str(exc))}", err=True)
+        raise typer.Exit(code=1) from exc
+    payload = result.model_dump()
+    payload["reconciliation_artifact_hash"] = artifact.artifact_hash
+    write_acquisition_json(output, payload)
+    typer.echo(json.dumps(payload, sort_keys=True))

@@ -15,6 +15,7 @@ keep on disk.
 from __future__ import annotations
 
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 from types import TracebackType
 
@@ -22,7 +23,7 @@ from pydantic import BaseModel, ConfigDict
 
 from neuralmarket.data.acquisition.states import ALLOWED_TRANSITIONS
 
-JOURNAL_SCHEMA_VERSION = 5
+JOURNAL_SCHEMA_VERSION = 6
 
 _COLUMNS = (
     "request_id",
@@ -83,6 +84,11 @@ class RequestJournal:
         self._connection.execute("PRAGMA foreign_keys=ON")
         self._migrate()
 
+    @property
+    def connection(self) -> sqlite3.Connection:
+        """Expose the underlying connection for coordinated journal transactions."""
+        return self._connection
+
     def _migrate(self) -> None:
         with self._connection:
             self._connection.execute(
@@ -129,9 +135,48 @@ class RequestJournal:
                     authorization_hash TEXT NOT NULL,
                     started_at TEXT NOT NULL,
                     status TEXT NOT NULL,
-                    FOREIGN KEY(plan_hash) REFERENCES consumed_authorizations(plan_hash)
+                    finished_at TEXT,
+                    blocking_request TEXT,
+                    blocking_state TEXT,
+                    requests_completed INTEGER,
+                    requests_uncertain INTEGER,
+                    paid_request_calls INTEGER,
+                    downloaded_records INTEGER,
+                    manual_action_required INTEGER
                 )
             """)
+            self._connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS request_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    request_id TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    event_at TEXT NOT NULL,
+                    detail_json TEXT NOT NULL
+                )
+                """
+            )
+            self._connection.execute(
+                """
+                CREATE TABLE IF NOT EXISTS billing_reconciliations (
+                    artifact_hash TEXT PRIMARY KEY,
+                    execution_id TEXT NOT NULL,
+                    request_id TEXT NOT NULL,
+                    plan_hash TEXT NOT NULL,
+                    authorization_hash TEXT NOT NULL,
+                    portal_review_status TEXT NOT NULL,
+                    observed_usage_usd TEXT NOT NULL,
+                    billing_resolution TEXT NOT NULL,
+                    retry_eligible INTEGER NOT NULL,
+                    manual_action_required INTEGER NOT NULL,
+                    reviewed_by TEXT NOT NULL,
+                    reviewed_at TEXT NOT NULL,
+                    review_method TEXT NOT NULL,
+                    applied_at TEXT NOT NULL,
+                    UNIQUE(execution_id, request_id)
+                )
+                """
+            )
             self._connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS authorization_reservations (
@@ -176,6 +221,26 @@ class RequestJournal:
             }.items():
                 if column not in consumed_columns:
                     self._connection.execute(statement)
+            attempt_columns = {
+                str(column[1])
+                for column in self._connection.execute(
+                    "PRAGMA table_info(execution_attempts)"
+                ).fetchall()
+            }
+            for column, statement in {
+                "finished_at": "ALTER TABLE execution_attempts ADD COLUMN finished_at TEXT",
+                "blocking_request": "ALTER TABLE execution_attempts ADD COLUMN blocking_request TEXT",  # noqa: E501
+                "blocking_state": "ALTER TABLE execution_attempts ADD COLUMN blocking_state TEXT",
+                "requests_completed": "ALTER TABLE execution_attempts ADD COLUMN requests_completed INTEGER",  # noqa: E501
+                "requests_uncertain": "ALTER TABLE execution_attempts ADD COLUMN requests_uncertain INTEGER",  # noqa: E501
+                "paid_request_calls": "ALTER TABLE execution_attempts ADD COLUMN paid_request_calls INTEGER",  # noqa: E501
+                "downloaded_records": "ALTER TABLE execution_attempts ADD COLUMN downloaded_records INTEGER",  # noqa: E501
+                "manual_action_required": (
+                    "ALTER TABLE execution_attempts ADD COLUMN manual_action_required INTEGER"
+                ),
+            }.items():
+                if column not in attempt_columns:
+                    self._connection.execute(statement)
             if row is None:
                 self._connection.execute(
                     "INSERT INTO schema_meta (version) VALUES (?)", (JOURNAL_SCHEMA_VERSION,)
@@ -210,6 +275,12 @@ class RequestJournal:
                     "VALUES (?, ?, ?, 'reserved', ?)",
                     (authorization_hash, plan_hash, execution_id, reserved_at),
                 )
+                self._connection.execute(
+                    "INSERT INTO execution_attempts "
+                    "(execution_id, plan_hash, authorization_hash, started_at, status) "
+                    "VALUES (?, ?, ?, ?, 'running')",
+                    (execution_id, plan_hash, authorization_hash, reserved_at),
+                )
         except sqlite3.IntegrityError:
             return False
         return True
@@ -219,6 +290,17 @@ class RequestJournal:
     ) -> bool:
         """Release an unused reservation after local provider construction fails."""
         with self._connection:
+            self._connection.execute(
+                "UPDATE execution_attempts SET status = ?, finished_at = ?, "
+                "blocking_state = ?, manual_action_required = 0 "
+                "WHERE execution_id = ? AND status = 'running'",
+                (
+                    "failed_provider_construction",
+                    datetime.now(UTC).isoformat(),
+                    "provider_construction_failed",
+                    execution_id,
+                ),
+            )
             count = self._connection.execute(
                 "DELETE FROM authorization_reservations WHERE authorization_hash = ? "
                 "AND execution_id = ? AND state = 'reserved'",
@@ -248,11 +330,47 @@ class RequestJournal:
                     (plan_hash, authorization_hash, consumed_at, execution_id),
                 )
                 self._connection.execute(
-                    "INSERT INTO execution_attempts "
+                    "INSERT OR IGNORE INTO execution_attempts "
                     "(execution_id, plan_hash, authorization_hash, started_at, status) "
                     "VALUES (?, ?, ?, ?, 'running')",
                     (execution_id, plan_hash, authorization_hash, consumed_at),
                 )
+        return bool(count)
+
+    def finalize_execution_attempt(
+        self,
+        *,
+        execution_id: str,
+        status: str,
+        finished_at: str,
+        blocking_request: str | None,
+        blocking_state: str | None,
+        requests_completed: int,
+        requests_uncertain: int,
+        paid_request_calls: int,
+        downloaded_records: int,
+        manual_action_required: bool,
+    ) -> bool:
+        """Finalize a known execution outcome without changing authorization state."""
+        with self._connection:
+            count = self._connection.execute(
+                "UPDATE execution_attempts SET status = ?, finished_at = ?, blocking_request = ?, "
+                "blocking_state = ?, requests_completed = ?, requests_uncertain = ?, "
+                "paid_request_calls = ?, downloaded_records = ?, manual_action_required = ? "
+                "WHERE execution_id = ? AND status = 'running'",
+                (
+                    status,
+                    finished_at,
+                    blocking_request,
+                    blocking_state,
+                    requests_completed,
+                    requests_uncertain,
+                    paid_request_calls,
+                    downloaded_records,
+                    int(manual_action_required),
+                    execution_id,
+                ),
+            ).rowcount
         return bool(count)
 
     def consume_authorization(

@@ -29,5 +29,23 @@ checksum, sidecar publication, and atomic rename. Normalized Parquet is an
 immutable derivation with deterministic columns, UTC timestamps, provenance,
 row-count reconciliation, schema fingerprint, and checksum.
 
-This pilot has performed zero paid requests, zero downloads, zero batch jobs,
-zero live connections, and spent zero Databento credits.
+The first controlled paid attempt stopped after the first provider invocation
+failed before any raw artifact was persisted. The request is recorded as
+`uncertain_billing`; recovery must surface that state and stale execution
+attempts, but must not retry, delete, download, or infer billing from missing
+files. Billing can be reconciled only from a local operator attestation created
+after manual Databento portal review and applied with:
+
+```powershell
+& .\.venv\Scripts\neuralmarket.exe data pilot reconcile-billing `
+    --journal "data/state/pilot_acquisition_journal.sqlite" `
+    --reconciliation "reports/data/execution/reconciliation/billing_reconciliation_<execution>.local.json" `
+    --output "reports/data/execution/reconciliation/reconciliation_result.local.json"
+```
+
+`BILLED` remains non-retriable as
+`billed_without_validated_artifact`; `NOT_BILLED` becomes
+`retry_eligible_after_manual_nonbilling_confirmation` but still requires a new
+authorization and attestation before any later retry; `UNKNOWN` remains
+`uncertain_billing`. Reconciliation never contacts Databento and never changes a
+consumed authorization back to available.

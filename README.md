@@ -95,9 +95,10 @@ The January 2019 SPY pilot plans 25 training-only requests using metadata
 endpoints; it does not download records. Preparation, offline verification,
 single-use authorization, read-only recovery, spend caps, storage, and lineage
 are documented in [pilot acquisition](docs/data/pilot_acquisition.md) and
-[data lineage](docs/data/data_lineage.md). A paid-provider adapter exists behind
-the durable guards, but this milestone never constructs it and execution fails
-closed with the false authorization template.
+[data lineage](docs/data/data_lineage.md). Paid execution uses durable journal
+accounting: uncertain billing blocks automatic retry, stale attempts are surfaced
+by recovery, and manual portal reconciliation is applied only from ignored local
+artifacts without provider activity.
 
 ## Data and secrets
 

@@ -46,8 +46,15 @@ class RecoveryReport(BaseModel):
 
     generated_at: str
     findings: list[RecoveryFinding]
+    uncertain_billing_count: int = 0
+    billed_without_validated_artifact_count: int = 0
+    confirmed_not_billed_count: int = 0
+    stale_running_attempt_count: int = 0
+    automatic_retry_allowed: bool = False
+    retry_eligible_under_new_authorization: bool = False
     quarantine_recommended: list[str]
     manual_recovery_required: list[str]
+    stale_running_attempts: list[str] = []
     retried: int
     deleted: int
 
@@ -110,8 +117,40 @@ def run_recovery(*, journal: RequestJournal, data_root: Path) -> RecoveryReport:
     quarantine_recommended: list[str] = []
     manual_recovery_required: list[str] = []
     partials = sorted(data_root.rglob("*.partial"))
+    uncertain_count = 0
+    billed_without_artifact_count = 0
+    confirmed_not_billed_count = 0
 
     for entry in journal.all():
+        if entry.state == "uncertain_billing":
+            uncertain_count += 1
+            findings.append(
+                RecoveryFinding(
+                    request_id=entry.request_id,
+                    category="consistent",
+                    detail="uncertain billing requires manual portal reconciliation; automatic retry disabled",  # noqa: E501
+                )
+            )
+            manual_recovery_required.append(entry.request_id)
+        elif entry.state == "billed_without_validated_artifact":
+            billed_without_artifact_count += 1
+            findings.append(
+                RecoveryFinding(
+                    request_id=entry.request_id,
+                    category="consistent",
+                    detail="billed without validated artifact; manual decision required; automatic retry disabled",  # noqa: E501
+                )
+            )
+            manual_recovery_required.append(entry.request_id)
+        elif entry.state == "retry_eligible_after_manual_nonbilling_confirmation":
+            confirmed_not_billed_count += 1
+            findings.append(
+                RecoveryFinding(
+                    request_id=entry.request_id,
+                    category="consistent",
+                    detail="manual nonbilling confirmation recorded; future retry requires new authorization",  # noqa: E501
+                )
+            )
         if entry.state in _RAW_PRESENT_STATES and entry.raw_path is None:
             findings.append(
                 RecoveryFinding(
@@ -251,11 +290,25 @@ def run_recovery(*, journal: RequestJournal, data_root: Path) -> RecoveryReport:
             )
             manual_recovery_required.append(entry.request_id)
 
+    stale_running_attempts = [
+        str(row[0])
+        for row in journal.connection.execute(
+            "SELECT execution_id FROM execution_attempts WHERE status = 'running'"
+        ).fetchall()
+    ]
+
     return RecoveryReport(
         generated_at=datetime.now(UTC).isoformat(),
         findings=findings,
+        uncertain_billing_count=uncertain_count,
+        billed_without_validated_artifact_count=billed_without_artifact_count,
+        confirmed_not_billed_count=confirmed_not_billed_count,
+        stale_running_attempt_count=len(stale_running_attempts),
+        automatic_retry_allowed=False,
+        retry_eligible_under_new_authorization=confirmed_not_billed_count > 0,
         quarantine_recommended=quarantine_recommended,
-        manual_recovery_required=manual_recovery_required,
+        manual_recovery_required=sorted(set(manual_recovery_required)),
+        stale_running_attempts=stale_running_attempts,
         retried=0,
         deleted=0,
     )

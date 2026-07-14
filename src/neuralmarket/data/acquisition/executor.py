@@ -765,10 +765,31 @@ class PilotExecutionCoordinator:
             for entry in entries
             if entry.normalized_path and Path(entry.normalized_path).exists()
         )
+        execution_id = hashlib.sha256(f"{plan_hash}:{authorization_hash}".encode()).hexdigest()[:32]
+        safe_resume_possible = blocking_state in {None, "local_processing_failure"}
+        manual_action_required = blocking_state not in {None, "local_processing_failure"}
+        if blocking_state is None:
+            attempt_status = "completed"
+        elif blocking_state == "block_uncertain_billing":
+            attempt_status = "blocked_uncertain_billing"
+        elif blocking_state == "local_processing_failure":
+            attempt_status = "failed_local_processing"
+        else:
+            attempt_status = "blocked"
+        journal.finalize_execution_attempt(
+            execution_id=execution_id,
+            status=attempt_status,
+            finished_at=datetime.now(UTC).isoformat(),
+            blocking_request=blocking_request,
+            blocking_state=blocking_state,
+            requests_completed=len(complete),
+            requests_uncertain=len(uncertain),
+            paid_request_calls=paid_calls,
+            downloaded_records=downloaded_records,
+            manual_action_required=manual_action_required,
+        )
         return PilotExecutionResult(
-            execution_id=hashlib.sha256(f"{plan_hash}:{authorization_hash}".encode()).hexdigest()[
-                :32
-            ],
+            execution_id=execution_id,
             plan_hash=plan_hash,
             authorization_hash=authorization_hash,
             portal_attestation_hash=portal_attestation_hash,
@@ -781,8 +802,8 @@ class PilotExecutionCoordinator:
             last_completed_request=complete[-1].request_id if complete else None,
             blocking_request=blocking_request,
             blocking_state=blocking_state,
-            safe_resume_possible=blocking_state in {None, "local_processing_failure"},
-            manual_action_required=blocking_state not in {None, "local_processing_failure"},
+            safe_resume_possible=safe_resume_possible,
+            manual_action_required=manual_action_required,
             estimated_total_cost=validation.estimated_total_cost,
             raw_bytes=raw_bytes,
             normalized_bytes=normalized_bytes,
