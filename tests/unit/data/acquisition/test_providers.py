@@ -11,6 +11,7 @@ from neuralmarket.data.acquisition.providers import (
     DatabentoPaidHistoricalProvider,
     PaidProviderError,
     _classify_provider_error,
+    create_databento_paid_provider,
 )
 from neuralmarket.data.acquisition.requests import (
     build_pilot_request_plan,
@@ -58,7 +59,7 @@ def test_paid_adapter_writes_fake_store_atomically(tmp_path) -> None:
     provider = DatabentoPaidHistoricalProvider(
         client=client,
         data_root=tmp_path,
-        validator=lambda _path, _checksum: True,
+        validator=lambda _path, _checksum, _request: True,
     )
 
     result = provider.acquire_range(request)
@@ -78,7 +79,7 @@ def test_paid_adapter_rejects_draft_before_client_call() -> None:
     provider = DatabentoPaidHistoricalProvider(
         client=client,
         data_root=__import__("pathlib").Path("data"),
-        validator=lambda _path, _checksum: True,
+        validator=lambda _path, _checksum, _request: True,
     )
 
     with pytest.raises(ValueError, match="not finalized"):
@@ -127,3 +128,34 @@ def test_metadata_facade_never_accesses_paid_namespaces() -> None:
     assert provider.get_record_count() == 1
     assert provider.get_billable_size() == 2
     assert provider.get_cost() == "0.01"
+
+
+def test_paid_factory_constructs_without_namespace_or_network_access(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    import databento
+
+    calls: list[str] = []
+
+    class HostileRoot:
+        def __init__(self, key: str) -> None:
+            assert key
+            calls.append("constructed")
+
+        @property
+        def timeseries(self):
+            raise AssertionError("timeseries accessed during construction")
+
+        @property
+        def batch(self):
+            raise AssertionError("batch accessed during construction")
+
+        @property
+        def live(self):
+            raise AssertionError("live accessed during construction")
+
+    monkeypatch.setattr(databento, "Historical", HostileRoot)
+    provider = create_databento_paid_provider(data_root=tmp_path, api_key="test-key")
+
+    assert isinstance(provider, DatabentoPaidHistoricalProvider)
+    assert calls == ["constructed"]

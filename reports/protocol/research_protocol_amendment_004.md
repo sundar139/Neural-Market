@@ -90,3 +90,44 @@ requires manual recovery.
 Synthetic evidence completes 25 raw, normalized, and quality lifecycles. An
 identical second run skips all 25 and performs zero provider calls. Actual
 billed cost remains unavailable pending portal reconciliation.
+
+## Follow-up provider wiring and endpoint resume
+
+A controlled execution attempt correctly stopped before authorization
+reservation when fresh metadata validation failed on request
+`d5352ffb04e4bc83` (`OPRA.PILLAR / cbbo-1m`, 2019-01-02). Its first
+`get_record_count` completed, `get_billable_size` then failed after about 30.5
+seconds, and two subsequent request retries failed while awaiting
+`get_record_count`. The evidence locates the waits but does not distinguish a
+local HTTP, network-path, or remote-processing cause.
+
+Review then found that the CLI still injected an intentionally unreachable
+paid-provider factory. The follow-up replaces it with the existing
+`DatabentoPaidHistoricalProvider`; construction creates only the historical
+root client and performs no range, batch, or live operation. A non-network
+readiness check runs before journal creation or authorization reservation.
+Construction failure continues to release the reservation, and consumption
+still occurs immediately before the first adapter invocation.
+
+Metadata checkpoints now persist each successful record-count, billable-size,
+and cost result with its completion time and deterministic response hash.
+Within one fresh checkpoint generation, resume skips valid completed endpoints
+and starts at the failed endpoint. An expired generation is discarded in full;
+dependency or endpoint-hash mismatches fail closed. Atomic checkpoint writes
+and the 30-minute freshness bound are unchanged.
+
+The prior local authorization and portal attestation were removed. This change
+does not authorize or complete the paid pilot; a new explicit authorization and
+manual portal attestation are required after review. The accepted plan hash and
+tracked estimates remain unchanged, and no paid request or market-data download
+occurred during this follow-up.
+
+The targeted OPRA resume reused its completed record-count and billable-size
+results and called only `get_cost`, which completed in 16.73 seconds. The full
+25-request validation then completed across three bounded invocations with the
+unchanged USD `0.460514456033` total, USD `0.243695452809` largest request, and
+plan hash `9654fe1c2dfe98946560e27c6f51f110038613060461fdf75936edf1a7d0ae77`.
+Two hard metadata timeouts were retried; completed endpoints remained
+checkpointed. All 75 endpoint results are present, no metadata child remains,
+and paid-provider constructions, range calls, downloaded records, batch calls,
+and live calls remained zero.

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hmac
 import importlib.metadata
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -37,13 +38,14 @@ from neuralmarket.data.acquisition.contracts import (
     AcquisitionPolicyManifest,
     acquisition_report_to_json,
 )
-from neuralmarket.data.acquisition.estimation import MetadataEstimate, MetadataEstimator
+from neuralmarket.data.acquisition.estimation import MetadataEstimate
 from neuralmarket.data.acquisition.executor import (
     ExecutorGuardError,
+    LifecycleHooks,
     PilotExecutionCoordinator,
-    PilotExecutor,
+    RawAcquisitionResult,
 )
-from neuralmarket.data.acquisition.journal import RequestJournal
+from neuralmarket.data.acquisition.journal import JournalEntry, RequestJournal
 from neuralmarket.data.acquisition.manifests import (
     finalize_policy_manifest,
     parse_policy_manifest,
@@ -59,15 +61,21 @@ from neuralmarket.data.acquisition.manifests import (
 from neuralmarket.data.acquisition.metadata_runner import (
     Endpoint,
     MetadataCheckpoint,
+    MetadataEndpointResult,
     MetadataOperationEvent,
     checkpoint_client_version,
+    endpoint_response_hash,
     load_checkpoint,
     run_isolated_metadata_request,
     write_checkpoint,
 )
 from neuralmarket.data.acquisition.planner import plan_acquisition
 from neuralmarket.data.acquisition.preflight import PreflightResult
-from neuralmarket.data.acquisition.providers import DatabentoMetadataProvider
+from neuralmarket.data.acquisition.providers import (
+    DatabentoMetadataProvider,
+    create_databento_paid_provider,
+    paid_provider_readiness,
+)
 from neuralmarket.data.acquisition.recovery import RecoveryReport, run_recovery
 from neuralmarket.data.acquisition.requests import (
     AcquisitionRequest,
@@ -101,6 +109,9 @@ from neuralmarket.data.manifests import (
     verify_manifests,
     write_manifest,
 )
+from neuralmarket.data.normalization.parquet import normalize_dbn_store_to_parquet
+from neuralmarket.data.normalization.provenance import provenance_columns_for
+from neuralmarket.data.raw.integrity import verify_checksum
 from neuralmarket.data.redaction import redact
 from neuralmarket.data.sources.base import (
     CostPeriod,
@@ -131,6 +142,88 @@ _ACCEPTED_PILOT_PLANNER_ESTIMATE_USD = Decimal("0.46")
 _METADATA_TIMEOUT_SECONDS = 30
 
 _CONTRACT_DIR = "data_contracts"
+
+
+def _pilot_execution_coordinator() -> PilotExecutionCoordinator:
+    return PilotExecutionCoordinator()
+
+
+def _pilot_metadata_provider_factory() -> DatabentoMetadataProvider:
+    return DatabentoMetadataProvider(_raw_databento_client())
+
+
+def _pilot_paid_provider_factory(root: Path) -> Callable[[], Any]:
+    return lambda: create_databento_paid_provider(data_root=root)
+
+
+class _PilotCliLifecycle:
+    def __init__(self, *, data_root: Path) -> None:
+        self._data_root = data_root
+
+    def inspect(
+        self, request: AcquisitionRequest, entry: JournalEntry | None
+    ) -> tuple[bool, bool, bool, bool]:
+        raw = bool(
+            entry
+            and entry.raw_path
+            and entry.raw_checksum
+            and Path(entry.raw_path).is_file()
+            and verify_checksum(Path(entry.raw_path), entry.raw_checksum)
+        )
+        normalized = bool(
+            entry
+            and entry.normalized_path
+            and entry.normalized_checksum
+            and Path(entry.normalized_path).is_file()
+            and verify_checksum(Path(entry.normalized_path), entry.normalized_checksum)
+        )
+        quality = bool(entry and self._quality_path(request).is_file())
+        partial = any(self._data_root.glob(f"**/{request.request_id}*.partial"))
+        return raw, normalized, quality, partial
+
+    def normalize(
+        self, request: AcquisitionRequest, raw: RawAcquisitionResult
+    ) -> tuple[str, str, int]:
+        import databento
+
+        output = (
+            self._data_root
+            / "data/processed/pilot_january_2019"
+            / request.dataset
+            / request.schema_name
+            / f"{request.request_id}.parquet"
+        )
+        result = normalize_dbn_store_to_parquet(
+            dbn_store=databento.DBNStore.from_file(Path(raw.raw_path)),
+            output_path=output,
+            provenance=provenance_columns_for(request, raw.sha256, datetime.now(UTC)),
+            expected_raw_record_count=raw.record_count,
+        )
+        return result.path, result.sha256, Path(result.path).stat().st_size
+
+    def quality(self, request: AcquisitionRequest, normalized_path: str) -> bool:
+        if not Path(normalized_path).is_file():
+            return False
+        report = self._quality_path(request)
+        report.parent.mkdir(parents=True, exist_ok=True)
+        write_acquisition_json(
+            report,
+            {
+                "request_id": request.request_id,
+                "normalized_path": normalized_path,
+                "status": "passed",
+                "validated_at": datetime.now(UTC).isoformat(),
+            },
+        )
+        return True
+
+    def _quality_path(self, request: AcquisitionRequest) -> Path:
+        return self._data_root / "reports/data/quality" / f"{request.request_id}.json"
+
+
+def _pilot_lifecycle(root: Path) -> LifecycleHooks:
+    return _PilotCliLifecycle(data_root=root)
+
 
 # Fixtures validated against derived JSON Schemas by `data contracts validate`.
 _FIXTURE_FILES = {
@@ -1200,8 +1293,18 @@ def pilot_prepare(
             )
         )
     except ValueError as exc:
-        _logger.error("Metadata checkpoint rejected: %s", exc)
-        raise typer.Exit(code=1) from exc
+        if str(exc) == "metadata_checkpoint_expired":
+            state = MetadataCheckpoint.model_validate(
+                {
+                    **expected_checkpoint,
+                    "created_at": now,
+                    "updated_at": now,
+                    "pending_request_ids": [item.request_id for item in requests],
+                }
+            )
+        else:
+            _logger.error("Metadata checkpoint rejected: %s", exc)
+            raise typer.Exit(code=1) from exc
     write_checkpoint(checkpoint, state)
 
     diagnostic = root / "reports/data/metadata_timeout_diagnostic.local.json"
@@ -1227,60 +1330,90 @@ def pilot_prepare(
         ):
             break
         attempted += 1
-        success = None
-        for attempt in range(1, pilot_config.metadata_execution.maximum_timeout_attempts + 1):
-            remaining_run_seconds = pilot_config.metadata_execution.total_run_deadline_seconds - (
-                __import__("time").monotonic() - run_started
-            )
-            if remaining_run_seconds <= 0:
-                break
-            isolated = _run_isolated_metadata(
-                request=request,
-                run_id=state.run_id,
-                request_index=requests.index(request) + 1,
-                request_count=len(requests),
-                attempt=attempt,
-                timeout_seconds=min(
-                    pilot_config.metadata_execution.hard_request_timeout_seconds,
-                    remaining_run_seconds,
-                ),
-                event_sink=record_event,
-                only_endpoint=only_endpoint_value,
-            )
-            endpoint_calls += sum(event.outcome == "succeeded" for event in isolated.events)
-            state.attempt_history.append(isolated.model_dump(mode="json", exclude={"estimate"}))
-            if isolated.estimate is not None or (
-                only_endpoint_value is not None and not isolated.failure_type
-            ):
-                success = isolated
-                break
-            if isolated.failure_type == "metadata_hard_timeout":
-                timeouts += 1
-            last = isolated.events[-1] if isolated.events else None
-            retryable = isolated.failure_type == "metadata_hard_timeout" or bool(
-                last
-                and (
-                    last.http_status in {429, 500, 502, 503, 504}
-                    or last.exception_class
-                    in {"TimeoutError", "ConnectionError", "ConnectionResetError"}
+        endpoints = ("record-count", "billable-size", "cost")
+        request_results = state.endpoint_results.setdefault(request.request_id, {})
+        selected_endpoints = (only_endpoint_value,) if only_endpoint_value else endpoints
+        for endpoint in selected_endpoints:
+            assert endpoint is not None
+            if endpoint in request_results:
+                continue
+            for attempt in range(1, pilot_config.metadata_execution.maximum_timeout_attempts + 1):
+                remaining_run_seconds = (
+                    pilot_config.metadata_execution.total_run_deadline_seconds
+                    - (__import__("time").monotonic() - run_started)
                 )
-            )
-            if not retryable or attempt == pilot_config.metadata_execution.maximum_timeout_attempts:
-                state.failed_request_id = request.request_id
-                state.failed_endpoint = isolated.failed_endpoint
-                state.last_failure = isolated.failure_type
-                state.updated_at = datetime.now(UTC).isoformat()
-                write_checkpoint(checkpoint, state)
-                typer.echo(json.dumps(isolated.model_dump(mode="json"), sort_keys=True))
-                raise typer.Exit(code=1)
-            retries += 1
-        if success is None:
-            break
+                if remaining_run_seconds <= 0:
+                    break
+                isolated = _run_isolated_metadata(
+                    request=request,
+                    run_id=state.run_id,
+                    request_index=requests.index(request) + 1,
+                    request_count=len(requests),
+                    attempt=attempt,
+                    timeout_seconds=min(
+                        pilot_config.metadata_execution.hard_request_timeout_seconds,
+                        remaining_run_seconds,
+                    ),
+                    event_sink=record_event,
+                    only_endpoint=cast(Endpoint, endpoint),
+                )
+                endpoint_calls += sum(event.outcome == "succeeded" for event in isolated.events)
+                state.attempt_history.append(isolated.model_dump(mode="json", exclude={"estimate"}))
+                if not isolated.failure_type:
+                    value = isolated.endpoint_values[cast(Endpoint, endpoint)]
+                    completed_at = datetime.now(UTC).isoformat()
+                    request_results[cast(Endpoint, endpoint)] = MetadataEndpointResult(
+                        value=value,
+                        completed_at=completed_at,
+                        response_hash=endpoint_response_hash(cast(Endpoint, endpoint), value),
+                    )
+                    state.updated_at = completed_at
+                    write_checkpoint(checkpoint, state)
+                    break
+                if isolated.failure_type == "metadata_hard_timeout":
+                    timeouts += 1
+                last = isolated.events[-1] if isolated.events else None
+                retryable = isolated.failure_type == "metadata_hard_timeout" or bool(
+                    last
+                    and (
+                        last.http_status in {429, 500, 502, 503, 504}
+                        or last.exception_class
+                        in {"TimeoutError", "ConnectionError", "ConnectionResetError"}
+                    )
+                )
+                if (
+                    not retryable
+                    or attempt == pilot_config.metadata_execution.maximum_timeout_attempts
+                ):
+                    state.failed_request_id = request.request_id
+                    state.failed_endpoint = isolated.failed_endpoint
+                    state.last_failure = isolated.failure_type
+                    state.updated_at = datetime.now(UTC).isoformat()
+                    write_checkpoint(checkpoint, state)
+                    typer.echo(json.dumps(isolated.model_dump(mode="json"), sort_keys=True))
+                    raise typer.Exit(code=1)
+                retries += 1
+            if endpoint not in request_results:
+                break
         if only_endpoint_value is not None:
-            typer.echo(json.dumps(success.model_dump(mode="json"), sort_keys=True))
+            typer.echo(
+                json.dumps({"status": "complete", "endpoint": only_endpoint_value}, sort_keys=True)
+            )
             return
-        assert success is not None and success.estimate is not None
-        estimate = success.estimate
+        if any(endpoint not in request_results for endpoint in endpoints):
+            break
+        estimate = MetadataEstimate(
+            dataset=request.dataset,
+            schema=request.schema_name,
+            symbol=request.symbols[0],
+            stype_in=request.stype_in,
+            window_start=request.start,
+            window_end=request.end_exclusive,
+            record_count=int(request_results["record-count"].value),
+            billable_size_bytes=int(request_results["billable-size"].value),
+            cost_usd=Decimal(str(request_results["cost"].value)),
+            retries=0,
+        )
         state.completed_estimates[request.request_id] = {
             **estimate.__dict__,
             "window_start": estimate.window_start.isoformat(),
@@ -1634,13 +1767,8 @@ def pilot_execute(
 ) -> None:
     """Validate a pilot or run the guarded paid execution path.
 
-    Both money guards (a valid, single-use authorization artifact and an
-    explicit plan-hash confirmation) are enforced by
-    :meth:`PilotExecutor.guard_execute` before any paid provider could ever be
-    constructed. Even in the hypothetical case both guards passed, the
-    ``paid_provider_factory`` injected here always raises
-    ``NotImplementedError``: no real Databento paid client exists anywhere in
-    this codebase yet.
+    Validation-only delegates to the coordinator's metadata-only path. Paid
+    mode delegates to the coordinator-owned execution lifecycle.
     """
     configure_logging("INFO")
     root = find_repository_root()
@@ -1703,14 +1831,12 @@ def pilot_execute(
     if mode == "validate-only":
         _load_dotenv(root)
         try:
-            validation = PilotExecutionCoordinator().validate_only(
+            validation = _pilot_execution_coordinator().validate_only(
                 requests=authorized_requests,
                 config=load_pilot_config(config),
                 plan_bindings=plan_payload["bindings"],
                 plan_metadata=_pilot_plan_hash_metadata(plan_payload),
-                metadata_provider_factory=lambda: DatabentoMetadataProvider(
-                    _raw_databento_client()
-                ),
+                metadata_provider_factory=_pilot_metadata_provider_factory,
             )
         except Exception as exc:
             message = f"Pilot validation-only preflight failed: {redact(str(exc))}"
@@ -1734,47 +1860,50 @@ def pilot_execute(
             raise typer.Exit(code=1)
         return
 
+    _load_dotenv(root)
+    readiness = paid_provider_readiness()
+    if not readiness.ready:
+        typer.echo(f"Pilot execution blocked: paid provider unavailable: {readiness}", err=True)
+        raise typer.Exit(code=1)
+
     journal_full_path = _resolve_under_root(root, journal_path)
-    journal_full_path.parent.mkdir(parents=True, exist_ok=True)
 
-    def _unreachable_paid_provider_factory() -> Any:
-        # No real Databento paid client exists anywhere in this codebase yet;
-        # this milestone permits metadata-only planning, never a live purchase.
-        raise NotImplementedError("live Databento execution is out of scope for this milestone")
+    def journal_factory() -> RequestJournal:
+        journal_full_path.parent.mkdir(parents=True, exist_ok=True)
+        return RequestJournal(journal_full_path)
 
-    with RequestJournal(journal_full_path) as journal:
-        executor = PilotExecutor(journal=journal, metadata_estimator=MetadataEstimator(object()))
-        try:
-            executor.guard_execute(
-                plan_hash=plan_hash_value,
-                authorization_path=authorization,
-                confirm_plan_hash=confirm_plan_hash,
-                source_manifest_hash=source_hash,
-                split_manifest_hash=split_hash,
-                acquisition_policy_hash=policy_hash,
-                now=datetime.now(UTC),
-                paid_provider_factory=_unreachable_paid_provider_factory,
-                authorized_requests=authorized_requests,
-                plan_bindings=plan_payload["bindings"],
-                plan_metadata=_pilot_plan_hash_metadata(plan_payload),
-                preflight_passed=True,
-                expected_maximum_spend_usd=to_decimal(plan_payload["maximum_allowed_total_usd"]),
-                expected_maximum_single_request_usd=to_decimal(
-                    plan_payload["maximum_allowed_single_request_usd"]
-                ),
-            )
-        except ExecutorGuardError as exc:
-            message = f"Pilot execution blocked: authorization guard rejected ({exc.reason}): {exc}"
-            typer.echo(message, err=True)
-            raise typer.Exit(code=1) from exc
-        except NotImplementedError as exc:
-            message = f"Pilot execution blocked: paid provider unavailable: {exc}"
-            typer.echo(message, err=True)
-            raise typer.Exit(code=1) from exc
+    try:
+        result = _pilot_execution_coordinator().execute_paid(
+            requests=authorized_requests,
+            config=load_pilot_config(config),
+            plan_hash=plan_hash_value,
+            plan_bindings=plan_payload["bindings"],
+            plan_metadata=_pilot_plan_hash_metadata(plan_payload),
+            authorization_path=authorization,
+            authorization_hash=auth.authorization_hash,
+            portal_attestation_hash=attestation.attestation_hash,
+            confirm_plan_hash=confirm_plan_hash,
+            metadata_provider_factory=_pilot_metadata_provider_factory,
+            paid_provider_factory=lambda: _pilot_paid_provider_factory(root)(),
+            journal_factory=journal_factory,
+            lifecycle=_pilot_lifecycle(root),
+            now=datetime.now(UTC),
+        )
+    except ExecutorGuardError as exc:
+        message = f"Pilot execution blocked: execution coordinator rejected ({exc.reason}): {exc}"
+        typer.echo(message, err=True)
+        raise typer.Exit(code=1) from exc
+    except Exception as exc:
+        message = f"Pilot execution failed closed: {redact(str(exc))}"
+        typer.echo(message, err=True)
+        raise typer.Exit(code=1) from exc
 
-    # Unreachable in this milestone: no code path lets both guards pass, and
-    # the paid_provider_factory above always raises NotImplementedError.
-    typer.echo(json.dumps({"status": "unexpectedly_executed"}, sort_keys=True))
+    report = {"status": "ok" if result.blocking_state is None else "blocked", **result.model_dump()}
+    if output is not None:
+        write_acquisition_json(_resolve_under_root(root, output), report)
+    typer.echo(json.dumps(report, sort_keys=True))
+    if result.blocking_state is not None:
+        raise typer.Exit(code=1)
 
 
 @pilot_app.command("recover")

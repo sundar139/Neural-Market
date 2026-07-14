@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import tempfile
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -96,7 +97,7 @@ class DatabentoPaidHistoricalProvider(PaidHistoricalProvider):
         *,
         client: Any,
         data_root: Path,
-        validator: Callable[[Path, str], bool],
+        validator: Callable[[Path, str, AcquisitionRequest], bool],
         chunk_size: int = 1024 * 1024,
     ) -> None:
         """Initialize the injected client and safe storage seam."""
@@ -147,7 +148,7 @@ class DatabentoPaidHistoricalProvider(PaidHistoricalProvider):
                 request=request,
                 data_root=self._data_root,
                 chunks=self._chunks(export_path),
-                validator=self._validator,
+                validator=lambda path, checksum: self._validator(path, checksum, request),
             )
         finally:
             export_path.unlink(missing_ok=True)
@@ -160,10 +161,54 @@ class DatabentoPaidHistoricalProvider(PaidHistoricalProvider):
         )
 
 
-def validate_paid_adapter_factory(factory: Callable[[], DatabentoPaidHistoricalProvider]) -> None:
-    """Check an injected adapter factory without invoking any provider method."""
-    adapter = factory()
-    if not isinstance(adapter, DatabentoPaidHistoricalProvider):
-        raise TypeError("paid adapter factory must return DatabentoPaidHistoricalProvider")
-    if not callable(getattr(adapter, "acquire_range", None)):
-        raise TypeError("paid adapter must expose acquire_range")
+@dataclass(frozen=True)
+class PaidProviderReadiness:
+    """Non-network readiness evidence checked before authorization reservation."""
+
+    ready: bool
+    dependency_installed: bool
+    api_key_configured: bool
+    adapter_importable: bool
+    acquire_method_present: bool
+
+
+def paid_provider_readiness() -> PaidProviderReadiness:
+    """Check production wiring without constructing a client or touching the network."""
+    import importlib.util
+
+    dependency = importlib.util.find_spec("databento") is not None
+    key = bool(os.environ.get("DATABENTO_API_KEY"))
+    method = callable(getattr(DatabentoPaidHistoricalProvider, "acquire_range", None))
+    return PaidProviderReadiness(
+        ready=dependency and key and method,
+        dependency_installed=dependency,
+        api_key_configured=key,
+        adapter_importable=True,
+        acquire_method_present=method,
+    )
+
+
+def create_databento_paid_provider(
+    *,
+    data_root: Path,
+    api_key: str | None = None,
+) -> DatabentoPaidHistoricalProvider:
+    """Construct the paid adapter without invoking or inspecting paid namespaces."""
+    import databento
+
+    from neuralmarket.data.raw.dbn import validate_dbn_file
+
+    key = api_key or os.environ.get("DATABENTO_API_KEY")
+    if not key:
+        raise RuntimeError("DATABENTO_API_KEY is not configured")
+    client = databento.Historical(key)
+
+    def validate(path: Path, checksum: str, request: AcquisitionRequest) -> bool:
+        return validate_dbn_file(
+            path,
+            expected_request=request,
+            expected_sha256=checksum,
+            dbn_store_factory=lambda item: databento.DBNStore.from_file(item),
+        ).passed
+
+    return DatabentoPaidHistoricalProvider(client=client, data_root=data_root, validator=validate)

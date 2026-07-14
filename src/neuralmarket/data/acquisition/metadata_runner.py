@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.metadata
 import json
 import multiprocessing
@@ -54,6 +55,7 @@ class IsolatedMetadataResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     estimate: MetadataEstimate | None = None
+    endpoint_values: dict[Endpoint, int | float | str] = Field(default_factory=dict)
     events: list[MetadataOperationEvent]
     failure_type: str | None = None
     failed_endpoint: Endpoint | None = None
@@ -268,12 +270,34 @@ def run_isolated_metadata_request(
         )
     return IsolatedMetadataResult(
         estimate=estimate,
+        endpoint_values={
+            cast(Endpoint, key): cast(int | float | str, value) for key, value in values.items()
+        },
         events=events,
         child_pid=child.pid or -1,
         child_exitcode=child.exitcode,
         child_joined=not child.is_alive(),
         remaining_children=active,
     )
+
+
+def endpoint_response_hash(endpoint: Endpoint, value: int | float | str) -> str:
+    """Hash only stable endpoint semantics, excluding attempts and timings."""
+    payload = json.dumps(
+        {"endpoint": endpoint, "value": str(value)}, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()
+
+
+class MetadataEndpointResult(BaseModel):
+    """One reusable endpoint result within a fresh checkpoint generation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: Literal["complete"] = "complete"
+    value: int | float | str
+    completed_at: str
+    response_hash: str
 
 
 class MetadataCheckpoint(BaseModel):
@@ -294,6 +318,9 @@ class MetadataCheckpoint(BaseModel):
     estimator_version: str = ESTIMATOR_VERSION
     ordered_request_specification_hashes: list[str]
     completed_estimates: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    endpoint_results: dict[str, dict[Endpoint, MetadataEndpointResult]] = Field(
+        default_factory=dict
+    )
     pending_request_ids: list[str]
     failed_request_id: str | None = None
     failed_endpoint: Endpoint | None = None
@@ -336,6 +363,10 @@ def load_checkpoint(
             float(estimate[key]) < 0 for key in ("record_count", "billable_size_bytes", "cost_usd")
         ):
             raise ValueError("invalid_metadata_checkpoint_estimate")
+    for endpoints in checkpoint.endpoint_results.values():
+        for endpoint, result in endpoints.items():
+            if result.response_hash != endpoint_response_hash(endpoint, result.value):
+                raise ValueError("invalid_metadata_endpoint_hash")
     return checkpoint
 
 

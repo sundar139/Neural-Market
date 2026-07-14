@@ -578,7 +578,7 @@ class PilotExecutionCoordinator:
         confirm_plan_hash: str,
         metadata_provider_factory: Callable[[], MetadataProvider],
         paid_provider_factory: Callable[[], PaidHistoricalProvider],
-        journal: RequestJournal,
+        journal_factory: Callable[[], RequestJournal],
         lifecycle: LifecycleHooks,
         now: datetime,
     ) -> PilotExecutionResult:
@@ -597,145 +597,148 @@ class PilotExecutionCoordinator:
         if not validation.ready_for_paid_execution:
             raise ExecutorGuardError("preflight_not_passed")
 
-        executor = PilotExecutor(journal=journal)
-        if not journal.all():
-            executor.prepare(requests)
-            for request in requests:
-                executor.transition(request.request_id, "preflight_validated")
+        with journal_factory() as journal:
+            executor = PilotExecutor(journal=journal)
+            if not journal.all():
+                executor.prepare(requests)
+                for request in requests:
+                    executor.transition(request.request_id, "preflight_validated")
 
-        actions: list[tuple[AcquisitionRequest, RecoveryAction]] = []
-        for request in requests:
-            entry = journal.get(request.request_id)
-            raw, normalized, quality, partial = lifecycle.inspect(request, entry)
-            action = select_recovery_action(
-                entry,
-                raw_valid=raw,
-                normalized_valid=normalized,
-                quality_valid=quality,
-                partial_present=partial,
-            )
-            actions.append((request, action))
-            if action in {"block_uncertain_billing", "quarantine", "manual_recovery_required"}:
-                return self._report(
-                    requests=requests,
+            actions: list[tuple[AcquisitionRequest, RecoveryAction]] = []
+            for request in requests:
+                entry = journal.get(request.request_id)
+                raw, normalized, quality, partial = lifecycle.inspect(request, entry)
+                action = select_recovery_action(
+                    entry,
+                    raw_valid=raw,
+                    normalized_valid=normalized,
+                    quality_valid=quality,
+                    partial_present=partial,
+                )
+                actions.append((request, action))
+                if action in {"block_uncertain_billing", "quarantine", "manual_recovery_required"}:
+                    return self._report(
+                        requests=requests,
+                        plan_hash=plan_hash,
+                        authorization_hash=authorization_hash,
+                        portal_attestation_hash=portal_attestation_hash,
+                        validation=validation,
+                        journal=journal,
+                        skipped=sum(previous == "skip" for _, previous in actions),
+                        paid_calls=0,
+                        downloaded_records=0,
+                        blocking_request=request.request_id,
+                        blocking_state=action,
+                        paid_provider_constructed=False,
+                    )
+
+            needs_provider = any(action == "execute_provider" for _, action in actions)
+            provider: PaidHistoricalProvider | None = None
+            if needs_provider:
+                provider = executor.guard_execute(
                     plan_hash=plan_hash,
-                    authorization_hash=authorization_hash,
-                    portal_attestation_hash=portal_attestation_hash,
-                    validation=validation,
-                    journal=journal,
-                    skipped=sum(previous == "skip" for _, previous in actions),
-                    paid_calls=0,
-                    downloaded_records=0,
-                    blocking_request=request.request_id,
-                    blocking_state=action,
-                    paid_provider_constructed=False,
+                    authorization_path=authorization_path,
+                    confirm_plan_hash=confirm_plan_hash,
+                    source_manifest_hash=str(plan_bindings["source_manifest_hash"]),
+                    split_manifest_hash=str(plan_bindings["split_manifest_hash"]),
+                    acquisition_policy_hash=str(plan_bindings["acquisition_policy_hash"]),
+                    now=now,
+                    paid_provider_factory=paid_provider_factory,
+                    authorized_requests=requests,
+                    plan_bindings=plan_bindings,
+                    plan_metadata=plan_metadata,
+                    preflight_passed=True,
+                    expected_maximum_spend_usd=config.maximum_spend_usd,
+                    expected_maximum_single_request_usd=config.maximum_single_request_usd,
+                    resume_consumed=plan_hash in journal.consumed_authorization_ids(),
                 )
 
-        needs_provider = any(action == "execute_provider" for _, action in actions)
-        provider: PaidHistoricalProvider | None = None
-        if needs_provider:
-            provider = executor.guard_execute(
-                plan_hash=plan_hash,
-                authorization_path=authorization_path,
-                confirm_plan_hash=confirm_plan_hash,
-                source_manifest_hash=str(plan_bindings["source_manifest_hash"]),
-                split_manifest_hash=str(plan_bindings["split_manifest_hash"]),
-                acquisition_policy_hash=str(plan_bindings["acquisition_policy_hash"]),
-                now=now,
-                paid_provider_factory=paid_provider_factory,
-                authorized_requests=requests,
-                plan_bindings=plan_bindings,
-                plan_metadata=plan_metadata,
-                preflight_passed=True,
-                expected_maximum_spend_usd=config.maximum_spend_usd,
-                expected_maximum_single_request_usd=config.maximum_single_request_usd,
-                resume_consumed=plan_hash in journal.consumed_authorization_ids(),
-            )
-
-        paid_calls = downloaded_records = skipped = 0
-        blocking_request = blocking_state = None
-        for request, action in actions:
-            entry = journal.get(request.request_id)
-            assert entry is not None
-            if action == "skip":
-                skipped += 1
-                continue
-            try:
-                if action == "execute_provider":
-                    assert provider is not None
-                    executor.transition(
-                        request.request_id,
-                        "request_started",
-                        attempt_count=entry.attempt_count + 1,
-                        request_started_at=datetime.now(UTC).isoformat(),
-                    )
-                    paid_calls += 1
-                    raw_result = provider.acquire_range(request)
-                    downloaded_records += raw_result.record_count
-                    executor.transition(request.request_id, "response_received")
-                    executor.transition(request.request_id, "raw_persisting")
-                    executor.transition(
-                        request.request_id,
-                        "raw_validated",
-                        raw_path=raw_result.raw_path,
-                        raw_checksum=raw_result.sha256,
-                        raw_record_count=raw_result.record_count,
-                        raw_byte_count=Path(raw_result.raw_path).stat().st_size,
-                        request_completed_at=datetime.now(UTC).isoformat(),
-                    )
-                else:
-                    assert (
-                        entry.raw_path and entry.raw_checksum and entry.raw_record_count is not None
-                    )
-                    raw_result = RawAcquisitionResult(
-                        request_id=request.request_id,
-                        raw_path=entry.raw_path,
-                        sha256=entry.raw_checksum,
-                        record_count=entry.raw_record_count,
-                    )
-                if action in {"execute_provider", "resume_normalization"}:
-                    path, checksum, _ = lifecycle.normalize(request, raw_result)
-                    executor.transition(
-                        request.request_id,
-                        "normalized",
-                        normalized_path=path,
-                        normalized_checksum=checksum,
-                    )
-                normalized_path = journal.get(request.request_id).normalized_path  # type: ignore[union-attr]
-                assert normalized_path
-                if not lifecycle.quality(request, normalized_path):
-                    blocking_request, blocking_state = request.request_id, "quality_rejected"
+            paid_calls = downloaded_records = skipped = 0
+            blocking_request = blocking_state = None
+            for request, action in actions:
+                entry = journal.get(request.request_id)
+                assert entry is not None
+                if action == "skip":
+                    skipped += 1
+                    continue
+                try:
+                    if action == "execute_provider":
+                        assert provider is not None
+                        executor.transition(
+                            request.request_id,
+                            "request_started",
+                            attempt_count=entry.attempt_count + 1,
+                            request_started_at=datetime.now(UTC).isoformat(),
+                        )
+                        paid_calls += 1
+                        raw_result = provider.acquire_range(request)
+                        downloaded_records += raw_result.record_count
+                        executor.transition(request.request_id, "response_received")
+                        executor.transition(request.request_id, "raw_persisting")
+                        executor.transition(
+                            request.request_id,
+                            "raw_validated",
+                            raw_path=raw_result.raw_path,
+                            raw_checksum=raw_result.sha256,
+                            raw_record_count=raw_result.record_count,
+                            raw_byte_count=Path(raw_result.raw_path).stat().st_size,
+                            request_completed_at=datetime.now(UTC).isoformat(),
+                        )
+                    else:
+                        assert (
+                            entry.raw_path
+                            and entry.raw_checksum
+                            and entry.raw_record_count is not None
+                        )
+                        raw_result = RawAcquisitionResult(
+                            request_id=request.request_id,
+                            raw_path=entry.raw_path,
+                            sha256=entry.raw_checksum,
+                            record_count=entry.raw_record_count,
+                        )
+                    if action in {"execute_provider", "resume_normalization"}:
+                        path, checksum, _ = lifecycle.normalize(request, raw_result)
+                        executor.transition(
+                            request.request_id,
+                            "normalized",
+                            normalized_path=path,
+                            normalized_checksum=checksum,
+                        )
+                    normalized_path = journal.get(request.request_id).normalized_path  # type: ignore[union-attr]
+                    assert normalized_path
+                    if not lifecycle.quality(request, normalized_path):
+                        blocking_request, blocking_state = request.request_id, "quality_rejected"
+                        break
+                    executor.transition(request.request_id, "quality_validated")
+                except Exception as exc:
+                    current = journal.get(request.request_id)
+                    if current is not None and current.state == "request_started":
+                        executor.transition(
+                            request.request_id,
+                            "uncertain_billing",
+                            failure_category=getattr(exc, "category", "paid_invocation_failed"),
+                            failure_message=str(exc),
+                        )
+                        blocking_state = "block_uncertain_billing"
+                    else:
+                        blocking_state = "local_processing_failure"
+                    blocking_request = request.request_id
                     break
-                executor.transition(request.request_id, "quality_validated")
-            except Exception as exc:
-                current = journal.get(request.request_id)
-                if current is not None and current.state == "request_started":
-                    executor.transition(
-                        request.request_id,
-                        "uncertain_billing",
-                        failure_category=getattr(exc, "category", "paid_invocation_failed"),
-                        failure_message=str(exc),
-                    )
-                    blocking_state = "block_uncertain_billing"
-                else:
-                    blocking_state = "local_processing_failure"
-                blocking_request = request.request_id
-                break
 
-        return self._report(
-            requests=requests,
-            plan_hash=plan_hash,
-            authorization_hash=authorization_hash,
-            portal_attestation_hash=portal_attestation_hash,
-            validation=validation,
-            journal=journal,
-            skipped=skipped,
-            paid_calls=paid_calls,
-            downloaded_records=downloaded_records,
-            blocking_request=blocking_request,
-            blocking_state=blocking_state,
-            paid_provider_constructed=provider is not None,
-        )
+            return self._report(
+                requests=requests,
+                plan_hash=plan_hash,
+                authorization_hash=authorization_hash,
+                portal_attestation_hash=portal_attestation_hash,
+                validation=validation,
+                journal=journal,
+                skipped=skipped,
+                paid_calls=paid_calls,
+                downloaded_records=downloaded_records,
+                blocking_request=blocking_request,
+                blocking_state=blocking_state,
+                paid_provider_constructed=provider is not None,
+            )
 
     @staticmethod
     def _report(

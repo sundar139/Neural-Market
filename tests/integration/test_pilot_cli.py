@@ -1,7 +1,9 @@
 import json
-from datetime import timedelta
+import sqlite3
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -16,10 +18,15 @@ from neuralmarket.data.acquisition.authorization import (
 )
 from neuralmarket.data.acquisition.executor import (
     PilotExecutionCoordinator,
+    PilotExecutionResult,
     RawAcquisitionResult,
+    ValidationOnlyResult,
 )
 from neuralmarket.data.acquisition.journal import RequestJournal
-from neuralmarket.data.acquisition.metadata_runner import IsolatedMetadataResult
+from neuralmarket.data.acquisition.metadata_runner import (
+    IsolatedMetadataResult,
+    MetadataOperationEvent,
+)
 from neuralmarket.data.acquisition.requests import AcquisitionRequest, load_pilot_config
 from neuralmarket.data.raw.integrity import sha256_of_file
 
@@ -63,20 +70,10 @@ class _HighCostClient(_Client):
 
 def _isolated(cost: str = "0.01001"):
     def run(**kwargs):
-        request = kwargs["request"]
+        endpoint = kwargs.get("only_endpoint")
+        values = {"record-count": 10, "billable-size": 100, "cost": cost}
         return IsolatedMetadataResult(
-            estimate=data_module.MetadataEstimate(
-                dataset=request.dataset,
-                schema=request.schema_name,
-                symbol=request.symbols[0],
-                stype_in=request.stype_in,
-                window_start=request.start,
-                window_end=request.end_exclusive,
-                record_count=10,
-                billable_size_bytes=100,
-                cost_usd=Decimal(cost),
-                retries=0,
-            ),
+            endpoint_values={endpoint: values[endpoint]} if endpoint else values,
             events=[],
             child_pid=1,
             child_exitcode=0,
@@ -85,6 +82,124 @@ def _isolated(cost: str = "0.01001"):
         )
 
     return run
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("failed_endpoint", "resumed_calls"),
+    [("billable-size", ["billable-size", "cost"]), ("cost", ["cost"])],
+)
+def test_pilot_prepare_resumes_only_failed_endpoint(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failed_endpoint: str,
+    resumed_calls: list[str],
+) -> None:
+    checkpoint = tmp_path / "checkpoint.json"
+    plan = tmp_path / "plan.json"
+    calls: list[str] = []
+    failing = True
+
+    def isolated(**kwargs):
+        nonlocal failing
+        request = kwargs["request"]
+        endpoint = kwargs["only_endpoint"]
+        calls.append(endpoint)
+        failed = failing and endpoint == failed_endpoint
+        event = MetadataOperationEvent(
+            run_id="run",
+            request_index=1,
+            request_count=25,
+            request_id=request.request_id,
+            dataset=request.dataset,
+            schema_name=request.schema_name,
+            session_date=request.session_date.isoformat() if request.session_date else None,
+            endpoint=endpoint,
+            attempt=kwargs["attempt"],
+            started_at=datetime.now(UTC).isoformat(),
+            completed_at=datetime.now(UTC).isoformat(),
+            elapsed_seconds=0.01,
+            outcome="failed" if failed else "succeeded",
+            exception_class="ConnectionError" if failed else None,
+            child_pid=1,
+        )
+        return IsolatedMetadataResult(
+            endpoint_values={}
+            if failed
+            else {
+                endpoint: {"record-count": 10, "billable-size": 100, "cost": "0.01001"}[endpoint]
+            },
+            events=[event],
+            failure_type="ConnectionError" if failed else None,
+            failed_endpoint=endpoint if failed else None,
+            child_pid=1,
+            child_exitcode=0,
+            child_joined=True,
+            remaining_children=0,
+        )
+
+    monkeypatch.setattr(data_module, "_load_dotenv", lambda root: None)
+    monkeypatch.setattr(data_module, "_run_isolated_metadata", isolated)
+    monkeypatch.setenv("DATABENTO_API_KEY", "test-only")
+    args = [
+        "data",
+        "pilot",
+        "prepare",
+        "--config",
+        _PILOT_CONFIG,
+        "--output",
+        str(tmp_path / "report.json"),
+        "--request-manifest",
+        str(plan),
+        "--checkpoint",
+        str(checkpoint),
+        "--max-requests",
+        "1",
+    ]
+    assert runner.invoke(app, args).exit_code == 1
+    failing = False
+    calls.clear()
+    assert runner.invoke(app, [*args, "--resume"]).exit_code == 0
+    assert calls == resumed_calls
+
+
+@pytest.mark.integration
+def test_pilot_prepare_expired_checkpoint_repeats_all_endpoints(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    calls: list[str] = []
+
+    def isolated(**kwargs):
+        endpoint = kwargs["only_endpoint"]
+        calls.append(endpoint)
+        return _isolated()(**kwargs)
+
+    monkeypatch.setattr(data_module, "_load_dotenv", lambda root: None)
+    monkeypatch.setattr(data_module, "_run_isolated_metadata", isolated)
+    monkeypatch.setenv("DATABENTO_API_KEY", "test-only")
+    checkpoint = tmp_path / "checkpoint.json"
+    args = [
+        "data",
+        "pilot",
+        "prepare",
+        "--config",
+        _PILOT_CONFIG,
+        "--output",
+        str(tmp_path / "report.json"),
+        "--request-manifest",
+        str(tmp_path / "plan.json"),
+        "--checkpoint",
+        str(checkpoint),
+        "--max-requests",
+        "1",
+    ]
+    assert runner.invoke(app, args).exit_code == 0
+    payload = json.loads(checkpoint.read_text(encoding="utf-8"))
+    payload["updated_at"] = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
+    checkpoint.write_text(json.dumps(payload), encoding="utf-8")
+    calls.clear()
+    assert runner.invoke(app, [*args, "--resume"]).exit_code == 0
+    assert calls == ["record-count", "billable-size", "cost"]
 
 
 @pytest.fixture
@@ -120,6 +235,75 @@ def pilot_manifest_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path
     )
     assert result.exit_code == 0, result.stdout
     return request_manifest_path
+
+
+def _write_execution_inputs(plan: dict[str, Any], tmp_path: Path) -> tuple[Path, Path]:
+    now = data_module.datetime.now(data_module.UTC)
+    auth_payload: dict[str, object] = {
+        "authorization_version": "1.0",
+        "pilot_plan_hash": plan["plan_hash"],
+        "source_manifest_hash": plan["bindings"]["source_manifest_hash"],
+        "split_manifest_hash": plan["bindings"]["split_manifest_hash"],
+        "acquisition_policy_hash": plan["bindings"]["acquisition_policy_hash"],
+        "maximum_spend_usd": "5.00",
+        "maximum_single_request_usd": "1.00",
+        "authorized_currency": "USD",
+        "authorized_at": (now - timedelta(minutes=1)).isoformat(),
+        "expires_at": (now + timedelta(minutes=10)).isoformat(),
+        "authorized_by": "test_operator",
+        "confirmation_phrase": CONFIRMATION_PHRASE,
+        "purchase_authorized": True,
+    }
+    auth_payload["authorization_hash"] = compute_authorization_hash(auth_payload)
+    auth_path = tmp_path / "authorization.json"
+    auth_path.write_text(json.dumps(auth_payload), encoding="utf-8")
+
+    attestation_payload: dict[str, object] = {
+        "attestation_version": "1.0",
+        "portal_historical_limit_usd": "5.00",
+        "portal_limit_confirmed": True,
+        "portal_limit_confirmed_at": now.isoformat(),
+        "portal_limit_confirmed_by": "test_operator",
+        "confirmation_method": "manual_portal_review",
+        "expires_at": (now + timedelta(minutes=10)).isoformat(),
+        "plan_hash": plan["plan_hash"],
+    }
+    attestation_payload["attestation_hash"] = compute_attestation_hash(attestation_payload)
+    attestation_path = tmp_path / "attestation.json"
+    attestation_path.write_text(json.dumps(attestation_payload), encoding="utf-8")
+    return auth_path, attestation_path
+
+
+def _execute_args(
+    *,
+    plan_path: Path,
+    plan_hash: str,
+    auth_path: Path,
+    attestation_path: Path,
+    journal_path: Path,
+    output_path: Path | None = None,
+    mode: str = "paid",
+) -> list[str]:
+    args = [
+        "data",
+        "pilot",
+        "execute",
+        "--mode",
+        mode,
+        "--plan",
+        str(plan_path),
+        "--authorization",
+        str(auth_path),
+        "--portal-attestation",
+        str(attestation_path),
+        "--confirm-plan-hash",
+        plan_hash,
+        "--journal",
+        str(journal_path),
+    ]
+    if output_path is not None:
+        args.extend(["--output", str(output_path)])
+    return args
 
 
 @pytest.mark.integration
@@ -474,6 +658,317 @@ def test_pilot_validate_only_uses_metadata_capability_without_paid_namespaces(
 
 
 @pytest.mark.integration
+def test_pilot_execute_paid_delegates_to_coordinator_once(
+    pilot_manifest_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    plan = json.loads(pilot_manifest_path.read_text(encoding="utf-8"))
+    auth_path, attestation_path = _write_execution_inputs(plan, tmp_path)
+    calls = {"execute_paid": 0, "validate_only": 0}
+
+    class SpyCoordinator:
+        def validate_only(self, **kwargs: Any) -> ValidationOnlyResult:
+            calls["validate_only"] += 1
+            raise AssertionError("validate_only should not be called for paid mode")
+
+        def execute_paid(self, **kwargs: Any) -> PilotExecutionResult:
+            calls["execute_paid"] += 1
+            return PilotExecutionResult(
+                execution_id="e" * 32,
+                plan_hash=plan["plan_hash"],
+                authorization_hash="a" * 64,
+                portal_attestation_hash="t" * 64,
+                fresh_preflight_hash=plan["plan_hash"],
+                requests_planned=25,
+                requests_completed=25,
+                requests_skipped=0,
+                requests_failed=0,
+                requests_uncertain=0,
+                last_completed_request="done",
+                blocking_request=None,
+                blocking_state=None,
+                safe_resume_possible=True,
+                manual_action_required=False,
+                estimated_total_cost="0.25025",
+                raw_bytes=25,
+                normalized_bytes=25,
+                quality_summary={"passed": 25, "failed": 0},
+                paid_provider_constructed=True,
+                paid_request_calls=25,
+                download_attempts=25,
+                downloaded_records=25,
+            )
+
+    monkeypatch.setattr(data_module, "_load_dotenv", lambda root: None)
+    monkeypatch.setattr(data_module, "paid_provider_readiness", lambda: SimpleNamespace(ready=True))
+    monkeypatch.setattr(data_module, "_pilot_execution_coordinator", SpyCoordinator)
+    result = runner.invoke(
+        app,
+        _execute_args(
+            plan_path=pilot_manifest_path,
+            plan_hash=plan["plan_hash"],
+            auth_path=auth_path,
+            attestation_path=attestation_path,
+            journal_path=tmp_path / "journal.sqlite",
+        ),
+    )
+    assert result.exit_code == 0, result.output
+    assert calls == {"execute_paid": 1, "validate_only": 0}
+
+
+@pytest.mark.integration
+def test_pilot_execute_validate_only_delegates_without_paid_factory_or_journal(
+    pilot_manifest_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    plan = json.loads(pilot_manifest_path.read_text(encoding="utf-8"))
+    auth_path, attestation_path = _write_execution_inputs(plan, tmp_path)
+    calls = {"execute_paid": 0, "validate_only": 0, "paid_factory": 0}
+
+    class SpyCoordinator:
+        def validate_only(self, **kwargs: Any) -> ValidationOnlyResult:
+            calls["validate_only"] += 1
+            return ValidationOnlyResult(
+                ready_for_paid_execution=True,
+                fresh_preflight_hash=plan["plan_hash"],
+                estimated_total_cost="0.25025",
+                largest_request_cost="0.01001",
+            )
+
+        def execute_paid(self, **kwargs: Any) -> PilotExecutionResult:
+            calls["execute_paid"] += 1
+            raise AssertionError("execute_paid should not be called for validate-only")
+
+    def paid_factory(root: Path):
+        calls["paid_factory"] += 1
+        raise AssertionError("paid factory should not be built")
+
+    monkeypatch.setattr(data_module, "_load_dotenv", lambda root: None)
+    monkeypatch.setattr(data_module, "_pilot_execution_coordinator", SpyCoordinator)
+    monkeypatch.setattr(data_module, "_pilot_paid_provider_factory", paid_factory)
+    journal = tmp_path / "journal.sqlite"
+    result = runner.invoke(
+        app,
+        _execute_args(
+            plan_path=pilot_manifest_path,
+            plan_hash=plan["plan_hash"],
+            auth_path=auth_path,
+            attestation_path=attestation_path,
+            journal_path=journal,
+            mode="validate-only",
+        ),
+    )
+    assert result.exit_code == 0, result.output
+    assert calls == {"execute_paid": 0, "validate_only": 1, "paid_factory": 0}
+    assert not journal.exists()
+
+
+@pytest.mark.integration
+def test_pilot_execute_source_has_no_direct_guard_execute_call() -> None:
+    assert ".guard_execute(" not in Path(data_module.__file__).read_text(encoding="utf-8")
+
+
+class _FakePaid:
+    def __init__(self, tmp_path: Path, journal_path: Path | None = None) -> None:
+        self.tmp_path = tmp_path
+        self.journal_path = journal_path
+        self.calls: list[str] = []
+        self.consumed_before_first_call = False
+
+    def acquire_range(self, request: AcquisitionRequest) -> RawAcquisitionResult:
+        if not self.calls and self.journal_path is not None:
+            with sqlite3.connect(self.journal_path) as conn:
+                state = conn.execute("SELECT state FROM authorization_reservations").fetchone()
+            self.consumed_before_first_call = state == ("consumed",)
+        self.calls.append(request.request_id)
+        path = self.tmp_path / "raw" / f"{request.request_id}.dbn"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(request.request_id.encode())
+        return RawAcquisitionResult(
+            request_id=request.request_id,
+            raw_path=str(path),
+            sha256=sha256_of_file(path),
+            record_count=1,
+        )
+
+
+class _FakeLifecycle:
+    def __init__(self, tmp_path: Path) -> None:
+        self.tmp_path = tmp_path
+        self.quality_ids: set[str] = set()
+
+    def inspect(self, request, entry):
+        return (
+            bool(entry and entry.raw_path and Path(entry.raw_path).exists()),
+            bool(entry and entry.normalized_path and Path(entry.normalized_path).exists()),
+            request.request_id in self.quality_ids,
+            False,
+        )
+
+    def normalize(self, request, raw):
+        path = self.tmp_path / "normalized" / f"{request.request_id}.parquet"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(Path(raw.raw_path).read_bytes())
+        checksum = sha256_of_file(path)
+        return str(path), checksum, path.stat().st_size
+
+    def quality(self, request, normalized_path):
+        self.quality_ids.add(request.request_id)
+        (self.tmp_path / "quality").mkdir(exist_ok=True)
+        (self.tmp_path / "quality" / f"{request.request_id}.json").write_text(
+            json.dumps({"status": "passed"}), encoding="utf-8"
+        )
+        return True
+
+
+@pytest.mark.integration
+def test_pilot_execute_cli_fake_paid_lifecycle_and_dry_resume(
+    pilot_manifest_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    plan = json.loads(pilot_manifest_path.read_text(encoding="utf-8"))
+    auth_path, attestation_path = _write_execution_inputs(plan, tmp_path)
+    journal = tmp_path / "journal.sqlite"
+    paid = _FakePaid(tmp_path, journal)
+    lifecycle = _FakeLifecycle(tmp_path)
+    constructions = 0
+
+    def paid_factory(root: Path):
+        def build():
+            nonlocal constructions
+            constructions += 1
+            return paid
+
+        return build
+
+    monkeypatch.setattr(data_module, "_load_dotenv", lambda root: None)
+    monkeypatch.setattr(data_module, "paid_provider_readiness", lambda: SimpleNamespace(ready=True))
+    monkeypatch.setattr(data_module, "_pilot_metadata_provider_factory", _ZeroCostMetadata)
+    monkeypatch.setattr(data_module, "_pilot_paid_provider_factory", paid_factory)
+    monkeypatch.setattr(data_module, "_pilot_lifecycle", lambda root: lifecycle)
+    result = runner.invoke(
+        app,
+        _execute_args(
+            plan_path=pilot_manifest_path,
+            plan_hash=plan["plan_hash"],
+            auth_path=auth_path,
+            attestation_path=attestation_path,
+            journal_path=journal,
+            output_path=tmp_path / "paid.json",
+        ),
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads((tmp_path / "paid.json").read_text(encoding="utf-8"))
+    assert payload["requests_planned"] == 25
+    assert payload["requests_completed"] == 25
+    assert payload["paid_provider_constructed"] is True
+    assert payload["paid_request_calls"] == 25
+    assert constructions == 1
+    assert paid.consumed_before_first_call is True
+    assert len(list((tmp_path / "raw").glob("*.dbn"))) == 25
+    assert len(list((tmp_path / "normalized").glob("*.parquet"))) == 25
+    assert len(list((tmp_path / "quality").glob("*.json"))) == 25
+
+    paid.calls.clear()
+    result = runner.invoke(
+        app,
+        _execute_args(
+            plan_path=pilot_manifest_path,
+            plan_hash=plan["plan_hash"],
+            auth_path=auth_path,
+            attestation_path=attestation_path,
+            journal_path=journal,
+            output_path=tmp_path / "resume.json",
+        ),
+    )
+    assert result.exit_code == 0, result.output
+    resumed = json.loads((tmp_path / "resume.json").read_text(encoding="utf-8"))
+    assert resumed["requests_skipped"] == 25
+    assert resumed["paid_provider_constructed"] is False
+    assert resumed["paid_request_calls"] == 0
+    assert paid.calls == []
+
+
+@pytest.mark.integration
+def test_pilot_execute_fresh_preflight_failure_creates_no_journal_or_paid_provider(
+    pilot_manifest_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    plan = json.loads(pilot_manifest_path.read_text(encoding="utf-8"))
+    auth_path, attestation_path = _write_execution_inputs(plan, tmp_path)
+    journal = tmp_path / "journal.sqlite"
+    paid_factory_calls = 0
+
+    class FailingMetadata(_ZeroCostMetadata):
+        def get_cost(self, **kwargs: Any) -> float:
+            raise RuntimeError("metadata failed")
+
+    def paid_factory(root: Path):
+        nonlocal paid_factory_calls
+        paid_factory_calls += 1
+        raise AssertionError("paid provider factory must not be requested")
+
+    monkeypatch.setattr(data_module, "_load_dotenv", lambda root: None)
+    monkeypatch.setattr(data_module, "paid_provider_readiness", lambda: SimpleNamespace(ready=True))
+    monkeypatch.setattr(data_module, "_pilot_metadata_provider_factory", FailingMetadata)
+    monkeypatch.setattr(data_module, "_pilot_paid_provider_factory", paid_factory)
+    result = runner.invoke(
+        app,
+        _execute_args(
+            plan_path=pilot_manifest_path,
+            plan_hash=plan["plan_hash"],
+            auth_path=auth_path,
+            attestation_path=attestation_path,
+            journal_path=journal,
+        ),
+    )
+    assert result.exit_code != 0
+    assert not journal.exists()
+    assert paid_factory_calls == 0
+
+
+@pytest.mark.integration
+def test_pilot_execute_provider_construction_failure_releases_reservation(
+    pilot_manifest_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    plan = json.loads(pilot_manifest_path.read_text(encoding="utf-8"))
+    auth_path, attestation_path = _write_execution_inputs(plan, tmp_path)
+    journal = tmp_path / "journal.sqlite"
+    attempts = 0
+
+    def paid_factory(root: Path):
+        def build():
+            nonlocal attempts
+            attempts += 1
+            raise RuntimeError("construction failed")
+
+        return build
+
+    monkeypatch.setattr(data_module, "_load_dotenv", lambda root: None)
+    monkeypatch.setattr(data_module, "paid_provider_readiness", lambda: SimpleNamespace(ready=True))
+    monkeypatch.setattr(data_module, "_pilot_metadata_provider_factory", _ZeroCostMetadata)
+    monkeypatch.setattr(data_module, "_pilot_paid_provider_factory", paid_factory)
+    monkeypatch.setattr(data_module, "_pilot_lifecycle", lambda root: _FakeLifecycle(tmp_path))
+    result = runner.invoke(
+        app,
+        _execute_args(
+            plan_path=pilot_manifest_path,
+            plan_hash=plan["plan_hash"],
+            auth_path=auth_path,
+            attestation_path=attestation_path,
+            journal_path=journal,
+        ),
+    )
+    assert result.exit_code != 0
+    assert attempts == 1
+    with sqlite3.connect(journal) as conn:
+        reservations = conn.execute("SELECT state FROM authorization_reservations").fetchall()
+        consumed = conn.execute("SELECT * FROM consumed_authorizations").fetchall()
+        request_started = conn.execute(
+            "SELECT count(*) FROM requests WHERE state = 'request_started'"
+        ).fetchone()[0]
+    assert reservations == []
+    assert consumed == []
+    assert request_started == 0
+
+
+@pytest.mark.integration
 def test_pilot_recover_reports_no_downloads(pilot_manifest_path: Path, tmp_path: Path) -> None:
     output_path = tmp_path / "pilot_recovery.local.json"
     journal_path = tmp_path / "journal.sqlite"
@@ -570,42 +1065,42 @@ def test_coordinator_fake_25_request_lifecycle(pilot_manifest_path: Path, tmp_pa
 
     paid = Paid()
     lifecycle = Lifecycle()
-    with RequestJournal(tmp_path / "journal.sqlite") as journal:
-        result = PilotExecutionCoordinator().execute_paid(
-            requests=requests,
-            config=load_pilot_config(Path(_PILOT_CONFIG)),
-            plan_hash=plan["plan_hash"],
-            plan_bindings=plan["bindings"],
-            plan_metadata=data_module._pilot_plan_hash_metadata(plan),
-            authorization_path=auth_path,
-            authorization_hash=str(auth["authorization_hash"]),
-            portal_attestation_hash="t" * 64,
-            confirm_plan_hash=plan["plan_hash"],
-            metadata_provider_factory=_ZeroCostMetadata,
-            paid_provider_factory=lambda: paid,
-            journal=journal,
-            lifecycle=lifecycle,
-            now=now,
-        )
+    journal_path = tmp_path / "journal.sqlite"
+    result = PilotExecutionCoordinator().execute_paid(
+        requests=requests,
+        config=load_pilot_config(Path(_PILOT_CONFIG)),
+        plan_hash=plan["plan_hash"],
+        plan_bindings=plan["bindings"],
+        plan_metadata=data_module._pilot_plan_hash_metadata(plan),
+        authorization_path=auth_path,
+        authorization_hash=str(auth["authorization_hash"]),
+        portal_attestation_hash="t" * 64,
+        confirm_plan_hash=plan["plan_hash"],
+        metadata_provider_factory=_ZeroCostMetadata,
+        paid_provider_factory=lambda: paid,
+        journal_factory=lambda: RequestJournal(journal_path),
+        lifecycle=lifecycle,
+        now=now,
+    )
+    with RequestJournal(journal_path) as journal:
         assert len(journal.consumed_authorization_ids()) == 1
 
-    with RequestJournal(tmp_path / "journal.sqlite") as journal:
-        resumed = PilotExecutionCoordinator().execute_paid(
-            requests=requests,
-            config=load_pilot_config(Path(_PILOT_CONFIG)),
-            plan_hash=plan["plan_hash"],
-            plan_bindings=plan["bindings"],
-            plan_metadata=data_module._pilot_plan_hash_metadata(plan),
-            authorization_path=auth_path,
-            authorization_hash=str(auth["authorization_hash"]),
-            portal_attestation_hash="t" * 64,
-            confirm_plan_hash=plan["plan_hash"],
-            metadata_provider_factory=_ZeroCostMetadata,
-            paid_provider_factory=lambda: (_ for _ in ()).throw(AssertionError()),
-            journal=journal,
-            lifecycle=lifecycle,
-            now=now,
-        )
+    resumed = PilotExecutionCoordinator().execute_paid(
+        requests=requests,
+        config=load_pilot_config(Path(_PILOT_CONFIG)),
+        plan_hash=plan["plan_hash"],
+        plan_bindings=plan["bindings"],
+        plan_metadata=data_module._pilot_plan_hash_metadata(plan),
+        authorization_path=auth_path,
+        authorization_hash=str(auth["authorization_hash"]),
+        portal_attestation_hash="t" * 64,
+        confirm_plan_hash=plan["plan_hash"],
+        metadata_provider_factory=_ZeroCostMetadata,
+        paid_provider_factory=lambda: (_ for _ in ()).throw(AssertionError()),
+        journal_factory=lambda: RequestJournal(journal_path),
+        lifecycle=lifecycle,
+        now=now,
+    )
 
     assert result.requests_completed == 25
     assert result.paid_request_calls == 25

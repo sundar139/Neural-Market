@@ -11,7 +11,9 @@ import pytest
 
 from neuralmarket.data.acquisition.metadata_runner import (
     MetadataCheckpoint,
+    MetadataEndpointResult,
     MetadataOperationEvent,
+    endpoint_response_hash,
     load_checkpoint,
     run_isolated_metadata_request,
     write_checkpoint,
@@ -149,4 +151,36 @@ def test_checkpoint_rejects_expired_and_corrupt(tmp_path: Path) -> None:
         load_checkpoint(path, expected=expected, maximum_age_minutes=30)
     path.write_text("not json", encoding="utf-8")
     with pytest.raises(ValueError, match="invalid"):
+        load_checkpoint(path, expected=expected, maximum_age_minutes=30)
+
+
+def test_checkpoint_rejects_endpoint_hash_mismatch(tmp_path: Path) -> None:
+    path = tmp_path / "checkpoint.json"
+    checkpoint = _checkpoint(datetime.now(UTC))
+    checkpoint.endpoint_results["request"] = {
+        "record-count": MetadataEndpointResult(
+            value=10,
+            completed_at=datetime.now(UTC).isoformat(),
+            response_hash=endpoint_response_hash("record-count", 10),
+        )
+    }
+    write_checkpoint(path, checkpoint)
+    payload = path.read_text(encoding="utf-8").replace(
+        endpoint_response_hash("record-count", 10), "0" * 64
+    )
+    path.write_text(payload, encoding="utf-8")
+    expected = {
+        key: getattr(checkpoint, key)
+        for key in (
+            "source_manifest_hash",
+            "split_manifest_hash",
+            "acquisition_policy_hash",
+            "pilot_config_hash",
+            "calendar_version",
+            "databento_client_version",
+            "estimator_version",
+            "ordered_request_specification_hashes",
+        )
+    }
+    with pytest.raises(ValueError, match="endpoint_hash"):
         load_checkpoint(path, expected=expected, maximum_age_minutes=30)
