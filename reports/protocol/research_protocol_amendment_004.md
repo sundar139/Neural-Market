@@ -142,7 +142,12 @@ correction adds an offline `data pilot reconcile-billing` command and a typed
 local reconciliation artifact bound to execution ID, request ID, plan hash, and
 authorization hash.
 
-Manual portal status is the only billing evidence accepted. `BILLED` records
+Manual portal status is the only billing evidence accepted. Reconciliation
+history is append-only: a superseding artifact references the immediate current
+artifact hash and a monotonic sequence. `UNKNOWN -> NOT_BILLED` and
+`UNKNOWN -> BILLED` are allowed; stale predecessor hashes, same-sequence
+conflicts, and replacement of terminal `BILLED`/`NOT_BILLED` resolutions fail
+closed. `BILLED` records
 `confirmed_billed`, remains non-retriable, and marks the request
 `billed_without_validated_artifact`. `NOT_BILLED` records
 `confirmed_not_billed`, marks the request

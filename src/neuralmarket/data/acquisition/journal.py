@@ -23,7 +23,7 @@ from pydantic import BaseModel, ConfigDict
 
 from neuralmarket.data.acquisition.states import ALLOWED_TRANSITIONS
 
-JOURNAL_SCHEMA_VERSION = 6
+JOURNAL_SCHEMA_VERSION = 7
 
 _COLUMNS = (
     "request_id",
@@ -173,7 +173,11 @@ class RequestJournal:
                     reviewed_at TEXT NOT NULL,
                     review_method TEXT NOT NULL,
                     applied_at TEXT NOT NULL,
-                    UNIQUE(execution_id, request_id)
+                    supersedes_reconciliation_hash TEXT,
+                    supersession_reason TEXT,
+                    supersession_evidence_method TEXT,
+                    supersession_sequence INTEGER NOT NULL DEFAULT 1,
+                    UNIQUE(execution_id, request_id, supersession_sequence)
                 )
                 """
             )
@@ -241,6 +245,57 @@ class RequestJournal:
             }.items():
                 if column not in attempt_columns:
                     self._connection.execute(statement)
+            reconciliation_columns = {
+                str(column[1])
+                for column in self._connection.execute(
+                    "PRAGMA table_info(billing_reconciliations)"
+                ).fetchall()
+            }
+            if "supersession_sequence" not in reconciliation_columns:
+                self._connection.execute(
+                    "ALTER TABLE billing_reconciliations RENAME TO billing_reconciliations_old"
+                )
+                self._connection.execute(
+                    """
+                    CREATE TABLE billing_reconciliations (
+                        artifact_hash TEXT PRIMARY KEY,
+                        execution_id TEXT NOT NULL,
+                        request_id TEXT NOT NULL,
+                        plan_hash TEXT NOT NULL,
+                        authorization_hash TEXT NOT NULL,
+                        portal_review_status TEXT NOT NULL,
+                        observed_usage_usd TEXT NOT NULL,
+                        billing_resolution TEXT NOT NULL,
+                        retry_eligible INTEGER NOT NULL,
+                        manual_action_required INTEGER NOT NULL,
+                        reviewed_by TEXT NOT NULL,
+                        reviewed_at TEXT NOT NULL,
+                        review_method TEXT NOT NULL,
+                        applied_at TEXT NOT NULL,
+                        supersedes_reconciliation_hash TEXT,
+                        supersession_reason TEXT,
+                        supersession_evidence_method TEXT,
+                        supersession_sequence INTEGER NOT NULL DEFAULT 1,
+                        UNIQUE(execution_id, request_id, supersession_sequence)
+                    )
+                    """
+                )
+                self._connection.execute(
+                    """
+                    INSERT INTO billing_reconciliations (
+                        artifact_hash, execution_id, request_id, plan_hash, authorization_hash,
+                        portal_review_status, observed_usage_usd, billing_resolution,
+                        retry_eligible, manual_action_required, reviewed_by, reviewed_at,
+                        review_method, applied_at, supersession_sequence
+                    )
+                    SELECT artifact_hash, execution_id, request_id, plan_hash, authorization_hash,
+                        portal_review_status, observed_usage_usd, billing_resolution,
+                        retry_eligible, manual_action_required, reviewed_by, reviewed_at,
+                        review_method, applied_at, 1
+                    FROM billing_reconciliations_old
+                    """
+                )
+                self._connection.execute("DROP TABLE billing_reconciliations_old")
             if row is None:
                 self._connection.execute(
                     "INSERT INTO schema_meta (version) VALUES (?)", (JOURNAL_SCHEMA_VERSION,)

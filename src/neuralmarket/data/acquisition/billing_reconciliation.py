@@ -15,7 +15,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Literal, cast
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from neuralmarket.data.acquisition.journal import RequestJournal
 
@@ -31,6 +31,7 @@ _BILLING_RESOLUTIONS = {
     "NOT_BILLED": "confirmed_not_billed",
     "UNKNOWN": "unresolved",
 }
+_TERMINAL_STATUSES = {"BILLED", "NOT_BILLED"}
 
 
 class BillingReconciliationError(RuntimeError):
@@ -60,6 +61,10 @@ class BillingReconciliationArtifact(BaseModel):
     execution_attempt_status_before: str
     execution_attempt_status_after: str
     artifact_hash: str
+    supersedes_reconciliation_hash: str | None = None
+    supersession_reason: str | None = None
+    supersession_evidence_method: str | None = None
+    supersession_sequence: int = 1
 
     @field_validator("observed_usage_usd")
     @classmethod
@@ -74,12 +79,38 @@ class BillingReconciliationArtifact(BaseModel):
             raise ValueError("observed_usage_usd must be nonnegative")
         return str(decimal)
 
+    @model_validator(mode="after")
+    def _validate_supersession_fields(self) -> BillingReconciliationArtifact:
+        has_predecessor = self.supersedes_reconciliation_hash is not None
+        if has_predecessor:
+            if self.supersession_sequence < 2:
+                raise ValueError("supersession sequence must be >= 2")
+            if not self.supersession_reason:
+                raise ValueError("supersession_reason is required")
+            if self.supersession_evidence_method != "manual_databento_portal_review":
+                raise ValueError(
+                    "supersession_evidence_method must be manual_databento_portal_review"
+                )
+        elif any((self.supersession_reason, self.supersession_evidence_method)):
+            raise ValueError("supersession metadata requires supersedes_reconciliation_hash")
+        elif self.supersession_sequence != 1:
+            raise ValueError("initial reconciliation sequence must be 1")
+        return self
+
 
 def canonical_artifact_hash(payload: dict[str, object]) -> str:
     """Return SHA-256 over canonical JSON excluding ``artifact_hash``."""
     unsigned = {key: value for key, value in payload.items() if key != "artifact_hash"}
     canonical = json.dumps(unsigned, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _attempt_status(status: str) -> str:
+    if status == "UNKNOWN":
+        return "blocked_uncertain_billing"
+    if status == "NOT_BILLED":
+        return "blocked_reconciled_not_billed"
+    return "blocked_reconciled_billed"
 
 
 def load_reconciliation_artifact(path: Path) -> BillingReconciliationArtifact:
@@ -99,6 +130,10 @@ def load_reconciliation_artifact(path: Path) -> BillingReconciliationArtifact:
         raise BillingReconciliationError("billing resolution does not match portal status")
     if artifact.journal_state_after != expected_state:
         raise BillingReconciliationError("journal_state_after does not match portal status")
+    if artifact.execution_attempt_status_after != _attempt_status(artifact.portal_review_status):
+        raise BillingReconciliationError(
+            "execution_attempt_status_after does not match portal status"
+        )
     if artifact.retry_eligible != expected_retry:
         raise BillingReconciliationError("retry_eligible does not match portal status")
     if artifact.manual_action_required != expected_manual:
@@ -127,6 +162,8 @@ class ReconciliationResult(BaseModel):
     request_state_before: str
     request_state_after: str
     retry_eligible: bool
+    automatic_retry_allowed: bool = False
+    new_authorization_required: bool
     manual_action_required: bool
     execution_attempt_status_before: str
     execution_attempt_status_after: str
@@ -135,6 +172,7 @@ class ReconciliationResult(BaseModel):
     blocking_state: str
     authorization_state_before: str
     authorization_state_after: str
+    reconciliation_chain_valid: bool = True
     retried: int = 0
     deleted: int = 0
     paid_provider_constructed: bool = False
@@ -153,6 +191,107 @@ def _fetch_one(
     return cast(sqlite3.Row, row)
 
 
+def _effective_reconciliation(
+    conn: sqlite3.Connection, execution_id: str, request_id: str
+) -> sqlite3.Row | None:
+    row = conn.execute(
+        "SELECT * FROM billing_reconciliations WHERE execution_id = ? AND request_id = ? "
+        "ORDER BY supersession_sequence DESC, applied_at DESC LIMIT 1",
+        (execution_id, request_id),
+    ).fetchone()
+    return cast(sqlite3.Row | None, row)
+
+
+def _reconciliation_by_hash(conn: sqlite3.Connection, artifact_hash: str) -> sqlite3.Row | None:
+    row = conn.execute(
+        "SELECT * FROM billing_reconciliations WHERE artifact_hash = ?", (artifact_hash,)
+    ).fetchone()
+    return cast(sqlite3.Row | None, row)
+
+
+def _validate_chain_transition(
+    *, conn: sqlite3.Connection, artifact: BillingReconciliationArtifact
+) -> None:
+    existing_artifact = _reconciliation_by_hash(conn, artifact.artifact_hash)
+    if existing_artifact is not None:
+        return
+
+    effective = _effective_reconciliation(conn, artifact.execution_id, artifact.request_id)
+    if effective is None:
+        if artifact.supersedes_reconciliation_hash is not None:
+            raise BillingReconciliationError("stale predecessor hash; no current reconciliation")
+        if artifact.supersession_sequence != 1:
+            raise BillingReconciliationError("wrong supersession sequence")
+        return
+
+    if artifact.supersedes_reconciliation_hash is None:
+        raise BillingReconciliationError("new reconciliation must supersede current effective hash")
+
+    sequence_conflict = conn.execute(
+        "SELECT artifact_hash FROM billing_reconciliations "
+        "WHERE execution_id = ? AND request_id = ? AND supersession_sequence = ?",
+        (artifact.execution_id, artifact.request_id, artifact.supersession_sequence),
+    ).fetchone()
+    if sequence_conflict is not None:
+        raise BillingReconciliationError("conflicting reconciliation sequence already recorded")
+    if artifact.supersedes_reconciliation_hash != effective["artifact_hash"]:
+        raise BillingReconciliationError("stale predecessor hash")
+    expected_sequence = int(effective["supersession_sequence"]) + 1
+    if artifact.supersession_sequence != expected_sequence:
+        raise BillingReconciliationError("wrong supersession sequence")
+
+    current_status = str(effective["portal_review_status"])
+    next_status = artifact.portal_review_status
+    if current_status == "UNKNOWN" and next_status in {"BILLED", "NOT_BILLED"}:
+        return
+    if current_status == "UNKNOWN" and next_status == "UNKNOWN":
+        if artifact.artifact_hash == effective["artifact_hash"]:
+            return
+        raise BillingReconciliationError("UNKNOWN supersession must be identical to be idempotent")
+    if current_status in _TERMINAL_STATUSES and next_status != current_status:
+        raise BillingReconciliationError("terminal reconciliation cannot be superseded")
+    raise BillingReconciliationError("unsupported reconciliation supersession")
+
+
+def _result(
+    *,
+    status: str,
+    artifact: BillingReconciliationArtifact,
+    request_state_before: str,
+    request_state_after: str,
+    attempt_status_before: str,
+    attempt_status_after: str,
+    finished_at_populated: bool,
+    blocking_request: str,
+    blocking_state: str,
+    authorization_state: str,
+    idempotent_replay: bool = False,
+) -> ReconciliationResult:
+    return ReconciliationResult(
+        status=status,
+        execution_id=artifact.execution_id,
+        request_id=artifact.request_id,
+        portal_review_status=artifact.portal_review_status,
+        billing_resolution=artifact.billing_resolution,
+        request_state_before=request_state_before,
+        request_state_after=request_state_after,
+        retry_eligible=artifact.retry_eligible,
+        automatic_retry_allowed=False,
+        new_authorization_required=artifact.retry_eligible,
+        manual_action_required=artifact.manual_action_required,
+        execution_attempt_status_before=attempt_status_before,
+        execution_attempt_status_after=attempt_status_after,
+        finished_at_populated=finished_at_populated,
+        blocking_request=blocking_request,
+        blocking_state=blocking_state,
+        authorization_state_before=authorization_state,
+        authorization_state_after=authorization_state,
+        paid_request_calls=1,
+        downloaded_records=0,
+        idempotent_replay=idempotent_replay,
+    )
+
+
 def apply_billing_reconciliation(
     *, journal: RequestJournal, artifact: BillingReconciliationArtifact, dry_run: bool = False
 ) -> ReconciliationResult:
@@ -161,11 +300,7 @@ def apply_billing_reconciliation(
     conn.row_factory = sqlite3.Row
     now = datetime.now(UTC).isoformat()
     target_state = _REQUEST_STATES[artifact.portal_review_status]
-    target_attempt_status = (
-        "blocked_uncertain_billing"
-        if artifact.portal_review_status == "UNKNOWN"
-        else f"reconciled_{artifact.billing_resolution}"
-    )
+    target_attempt_status = _attempt_status(artifact.portal_review_status)
 
     request = _fetch_one(
         conn, "SELECT * FROM requests WHERE request_id = ?", (artifact.request_id,)
@@ -175,32 +310,28 @@ def apply_billing_reconciliation(
     )
     reservation = _fetch_one(
         conn,
-        "SELECT * FROM authorization_reservations WHERE authorization_hash = ? AND execution_id = ?",  # noqa: E501
+        "SELECT * FROM authorization_reservations "
+        "WHERE authorization_hash = ? AND execution_id = ?",
         (artifact.authorization_hash, artifact.execution_id),
-    )
-    consumed = _fetch_one(
-        conn,
-        "SELECT * FROM consumed_authorizations WHERE plan_hash = ? AND authorization_hash = ?",
-        (artifact.plan_hash, artifact.authorization_hash),
     )
     if (
         attempt["plan_hash"] != artifact.plan_hash
         or attempt["authorization_hash"] != artifact.authorization_hash
     ):
         raise BillingReconciliationError("execution attempt binding mismatch")
+    consumed = _fetch_one(
+        conn,
+        "SELECT * FROM consumed_authorizations WHERE plan_hash = ? AND authorization_hash = ?",
+        (artifact.plan_hash, artifact.authorization_hash),
+    )
     if consumed["execution_id"] != artifact.execution_id:
         raise BillingReconciliationError("consumed authorization binding mismatch")
     if reservation["state"] != "consumed":
         raise BillingReconciliationError("authorization is not consumed")
 
-    existing = conn.execute(
-        "SELECT artifact_hash, portal_review_status FROM billing_reconciliations "
-        "WHERE execution_id = ? AND request_id = ?",
-        (artifact.execution_id, artifact.request_id),
-    ).fetchone()
-    if existing is not None:
-        if existing["artifact_hash"] != artifact.artifact_hash:
-            raise BillingReconciliationError("conflicting reconciliation already recorded")
+    _validate_chain_transition(conn=conn, artifact=artifact)
+    existing_artifact = _reconciliation_by_hash(conn, artifact.artifact_hash)
+    if existing_artifact is not None:
         after_attempt = _fetch_one(
             conn,
             "SELECT * FROM execution_attempts WHERE execution_id = ?",
@@ -209,23 +340,17 @@ def apply_billing_reconciliation(
         after_request = _fetch_one(
             conn, "SELECT * FROM requests WHERE request_id = ?", (artifact.request_id,)
         )
-        return ReconciliationResult(
+        return _result(
             status="ok",
-            execution_id=artifact.execution_id,
-            request_id=artifact.request_id,
-            portal_review_status=artifact.portal_review_status,
-            billing_resolution=artifact.billing_resolution,
+            artifact=artifact,
             request_state_before=str(request["state"]),
             request_state_after=str(after_request["state"]),
-            retry_eligible=artifact.retry_eligible,
-            manual_action_required=artifact.manual_action_required,
-            execution_attempt_status_before=str(attempt["status"]),
-            execution_attempt_status_after=str(after_attempt["status"]),
+            attempt_status_before=str(attempt["status"]),
+            attempt_status_after=str(after_attempt["status"]),
             finished_at_populated=after_attempt["finished_at"] is not None,
             blocking_request=str(after_attempt["blocking_request"]),
             blocking_state=str(after_attempt["blocking_state"]),
-            authorization_state_before=str(reservation["state"]),
-            authorization_state_after=str(reservation["state"]),
+            authorization_state=str(reservation["state"]),
             idempotent_replay=True,
         )
 
@@ -238,23 +363,17 @@ def apply_billing_reconciliation(
             "execution attempt status does not match reconciliation precondition"
         )
 
-    result = ReconciliationResult(
+    result = _result(
         status="dry_run" if dry_run else "ok",
-        execution_id=artifact.execution_id,
-        request_id=artifact.request_id,
-        portal_review_status=artifact.portal_review_status,
-        billing_resolution=artifact.billing_resolution,
+        artifact=artifact,
         request_state_before=str(request["state"]),
         request_state_after=target_state,
-        retry_eligible=artifact.retry_eligible,
-        manual_action_required=artifact.manual_action_required,
-        execution_attempt_status_before=str(attempt["status"]),
-        execution_attempt_status_after=target_attempt_status,
+        attempt_status_before=str(attempt["status"]),
+        attempt_status_after=target_attempt_status,
         finished_at_populated=True,
         blocking_request=artifact.request_id,
         blocking_state="block_uncertain_billing",
-        authorization_state_before=str(reservation["state"]),
-        authorization_state_after=str(reservation["state"]),
+        authorization_state=str(reservation["state"]),
     )
     if dry_run:
         return result
@@ -262,9 +381,12 @@ def apply_billing_reconciliation(
     with conn:
         conn.execute(
             "INSERT INTO billing_reconciliations "
-            "(artifact_hash, execution_id, request_id, plan_hash, authorization_hash, portal_review_status, "  # noqa: E501
-            "observed_usage_usd, billing_resolution, retry_eligible, manual_action_required, reviewed_by, "  # noqa: E501
-            "reviewed_at, review_method, applied_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",  # noqa: E501
+            "(artifact_hash, execution_id, request_id, plan_hash, authorization_hash, "
+            "portal_review_status, observed_usage_usd, billing_resolution, retry_eligible, "
+            "manual_action_required, reviewed_by, reviewed_at, review_method, applied_at, "
+            "supersedes_reconciliation_hash, supersession_reason, "
+            "supersession_evidence_method, supersession_sequence) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 artifact.artifact_hash,
                 artifact.execution_id,
@@ -280,6 +402,10 @@ def apply_billing_reconciliation(
                 artifact.reviewed_at,
                 artifact.review_method,
                 now,
+                artifact.supersedes_reconciliation_hash,
+                artifact.supersession_reason,
+                artifact.supersession_evidence_method,
+                artifact.supersession_sequence,
             ),
         )
         conn.execute(
@@ -293,8 +419,9 @@ def apply_billing_reconciliation(
             ),
         )
         conn.execute(
-            "UPDATE requests SET state = ?, updated_at = ?, failure_category = ?, failure_message = ? "  # noqa: E501
-            "WHERE request_id = ? AND state = 'uncertain_billing'",
+            "UPDATE requests "
+            "SET state = ?, updated_at = ?, failure_category = ?, failure_message = ? "
+            "WHERE request_id = ?",
             (
                 target_state,
                 now,
@@ -304,15 +431,17 @@ def apply_billing_reconciliation(
             ),
         )
         conn.execute(
-            "UPDATE execution_attempts SET status = ?, finished_at = COALESCE(finished_at, ?), "
-            "blocking_request = ?, blocking_state = ?, requests_completed = 0, requests_uncertain = 1, "  # noqa: E501
-            "paid_request_calls = 1, downloaded_records = 0, manual_action_required = ? "
-            "WHERE execution_id = ?",
+            "UPDATE execution_attempts "
+            "SET status = ?, finished_at = COALESCE(finished_at, ?), "
+            "blocking_request = ?, blocking_state = ?, requests_completed = 0, "
+            "requests_uncertain = ?, paid_request_calls = 1, downloaded_records = 0, "
+            "manual_action_required = ? WHERE execution_id = ?",
             (
                 target_attempt_status,
                 now,
                 artifact.request_id,
                 "block_uncertain_billing",
+                1 if artifact.portal_review_status == "UNKNOWN" else 0,
                 int(artifact.manual_action_required),
                 artifact.execution_id,
             ),
@@ -331,6 +460,10 @@ def build_reconciliation_artifact(
     journal_state_before: str,
     execution_attempt_status_before: str,
     reviewed_at: str | None = None,
+    supersedes_reconciliation_hash: str | None = None,
+    supersession_reason: str | None = None,
+    supersession_evidence_method: str | None = None,
+    supersession_sequence: int = 1,
 ) -> BillingReconciliationArtifact:
     """Build a canonical artifact for the local operator's exact portal input."""
     status = portal_review_status
@@ -353,9 +486,11 @@ def build_reconciliation_artifact(
         "journal_state_before": journal_state_before,
         "journal_state_after": _REQUEST_STATES[status],
         "execution_attempt_status_before": execution_attempt_status_before,
-        "execution_attempt_status_after": "blocked_uncertain_billing"
-        if status == "UNKNOWN"
-        else f"reconciled_{_BILLING_RESOLUTIONS[status]}",
+        "execution_attempt_status_after": _attempt_status(status),
+        "supersedes_reconciliation_hash": supersedes_reconciliation_hash,
+        "supersession_reason": supersession_reason,
+        "supersession_evidence_method": supersession_evidence_method,
+        "supersession_sequence": supersession_sequence,
     }
     payload["artifact_hash"] = canonical_artifact_hash(payload)
     return BillingReconciliationArtifact.model_validate(payload)

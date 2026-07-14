@@ -1958,6 +1958,7 @@ def pilot_recover(
             uncertain_billing_count=0,
             billed_without_validated_artifact_count=0,
             confirmed_not_billed_count=0,
+            retry_eligible_count=0,
             stale_running_attempt_count=0,
             automatic_retry_allowed=False,
             retry_eligible_under_new_authorization=False,

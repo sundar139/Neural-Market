@@ -21,6 +21,10 @@
     "journal_state_after",
     "execution_attempt_status_before",
     "execution_attempt_status_after",
+    "supersedes_reconciliation_hash",
+    "supersession_reason",
+    "supersession_evidence_method",
+    "supersession_sequence",
     "artifact_hash"
   ],
   "properties": {
@@ -54,7 +58,21 @@
       ]
     },
     "execution_attempt_status_before": {"type": "string"},
-    "execution_attempt_status_after": {"type": "string"},
+    "execution_attempt_status_after": {
+      "enum": [
+        "blocked_uncertain_billing",
+        "blocked_reconciled_billed",
+        "blocked_reconciled_not_billed"
+      ]
+    },
+    "supersedes_reconciliation_hash": {
+      "anyOf": [{"type": "null"}, {"type": "string", "pattern": "^[0-9a-f]{64}$"}]
+    },
+    "supersession_reason": {"anyOf": [{"type": "null"}, {"type": "string", "minLength": 1}]},
+    "supersession_evidence_method": {
+      "anyOf": [{"type": "null"}, {"const": "manual_databento_portal_review"}]
+    },
+    "supersession_sequence": {"type": "integer", "minimum": 1},
     "artifact_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
   }
 }

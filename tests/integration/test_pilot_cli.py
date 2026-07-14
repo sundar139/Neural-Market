@@ -16,13 +16,14 @@ from neuralmarket.data.acquisition.authorization import (
     CONFIRMATION_PHRASE,
     compute_authorization_hash,
 )
+from neuralmarket.data.acquisition.billing_reconciliation import build_reconciliation_artifact
 from neuralmarket.data.acquisition.executor import (
     PilotExecutionCoordinator,
     PilotExecutionResult,
     RawAcquisitionResult,
     ValidationOnlyResult,
 )
-from neuralmarket.data.acquisition.journal import RequestJournal
+from neuralmarket.data.acquisition.journal import JournalEntry, RequestJournal
 from neuralmarket.data.acquisition.metadata_runner import (
     IsolatedMetadataResult,
     MetadataOperationEvent,
@@ -329,6 +330,96 @@ def test_pilot_recover_help() -> None:
 @pytest.mark.integration
 def test_pilot_reconcile_billing_help() -> None:
     assert runner.invoke(app, ["data", "pilot", "reconcile-billing", "--help"]).exit_code == 0
+
+
+@pytest.mark.integration
+def test_pilot_reconcile_billing_cli_applies_supersession_without_provider(tmp_path: Path) -> None:
+    journal_path = tmp_path / "journal.sqlite"
+    journal = RequestJournal(journal_path)
+    now = datetime.now(UTC).isoformat()
+    journal.upsert(
+        JournalEntry(
+            request_id="request-1",
+            request_hash="r" * 64,
+            state="uncertain_billing",
+            attempt_count=1,
+            estimated_cost_usd="0.01",
+            actual_billed_cost_usd=None,
+            raw_path=None,
+            raw_checksum=None,
+            normalized_path=None,
+            normalized_checksum=None,
+            failure_category="provider_error",
+            failure_message="paid historical provider operation failed",
+            created_at=now,
+            updated_at=now,
+        )
+    )
+    assert journal.reserve_authorization(
+        authorization_hash="a" * 64,
+        plan_hash="p" * 64,
+        execution_id="execution-1",
+        reserved_at=now,
+    )
+    assert journal.consume_reserved_authorization(
+        authorization_hash="a" * 64,
+        execution_id="execution-1",
+        consumed_at=now,
+    )
+    unknown = build_reconciliation_artifact(
+        execution_id="execution-1",
+        request_id="request-1",
+        plan_hash="p" * 64,
+        authorization_hash="a" * 64,
+        portal_review_status="UNKNOWN",
+        observed_usage_usd="UNKNOWN",
+        journal_state_before="uncertain_billing",
+        execution_attempt_status_before="running",
+        reviewed_at=now,
+    )
+    result = data_module.apply_billing_reconciliation(journal=journal, artifact=unknown)
+    assert result.status == "ok"
+    superseding = build_reconciliation_artifact(
+        execution_id="execution-1",
+        request_id="request-1",
+        plan_hash="p" * 64,
+        authorization_hash="a" * 64,
+        portal_review_status="NOT_BILLED",
+        observed_usage_usd="0.00",
+        journal_state_before="uncertain_billing",
+        execution_attempt_status_before="blocked_uncertain_billing",
+        reviewed_at=now,
+        supersedes_reconciliation_hash=unknown.artifact_hash,
+        supersession_reason="operator obtained definitive portal nonbilling evidence",
+        supersession_evidence_method="manual_databento_portal_review",
+        supersession_sequence=2,
+    )
+    artifact_path = tmp_path / "not_billed.json"
+    artifact_path.write_text(superseding.model_dump_json(), encoding="utf-8")
+    output_path = tmp_path / "result.json"
+
+    cli = runner.invoke(
+        app,
+        [
+            "data",
+            "pilot",
+            "reconcile-billing",
+            "--journal",
+            str(journal_path),
+            "--reconciliation",
+            str(artifact_path),
+            "--output",
+            str(output_path),
+        ],
+    )
+
+    assert cli.exit_code == 0, cli.output
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+    assert payload["request_state_after"] == "retry_eligible_after_manual_nonbilling_confirmation"
+    assert payload["new_authorization_required"] is True
+    assert payload["paid_provider_constructed"] is False
+    assert payload["metadata_calls"] == 0
+    assert payload["downloaded_records"] == 0
 
 
 @pytest.mark.integration

@@ -49,6 +49,7 @@ class RecoveryReport(BaseModel):
     uncertain_billing_count: int = 0
     billed_without_validated_artifact_count: int = 0
     confirmed_not_billed_count: int = 0
+    retry_eligible_count: int = 0
     stale_running_attempt_count: int = 0
     automatic_retry_allowed: bool = False
     retry_eligible_under_new_authorization: bool = False
@@ -303,6 +304,7 @@ def run_recovery(*, journal: RequestJournal, data_root: Path) -> RecoveryReport:
         uncertain_billing_count=uncertain_count,
         billed_without_validated_artifact_count=billed_without_artifact_count,
         confirmed_not_billed_count=confirmed_not_billed_count,
+        retry_eligible_count=confirmed_not_billed_count,
         stale_running_attempt_count=len(stale_running_attempts),
         automatic_retry_allowed=False,
         retry_eligible_under_new_authorization=confirmed_not_billed_count > 0,

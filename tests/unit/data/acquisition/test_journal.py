@@ -126,7 +126,7 @@ def test_journal_migrates_prior_request_columns(tmp_path: Path) -> None:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(requests)")}
         version = connection.execute("SELECT version FROM schema_meta").fetchone()
     assert {"raw_byte_count", "raw_record_count", "provider_response_id"} <= columns
-    assert version == (6,)
+    assert version == (7,)
 
 
 def test_release_reservation_terminalizes_provider_construction_attempt(tmp_path: Path) -> None:

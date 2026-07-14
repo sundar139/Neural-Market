@@ -43,7 +43,10 @@ after manual Databento portal review and applied with:
     --output "reports/data/execution/reconciliation/reconciliation_result.local.json"
 ```
 
-`BILLED` remains non-retriable as
+Reconciliation is immutable. If an initial `UNKNOWN` artifact is later resolved,
+the new artifact must supersede the current effective reconciliation hash with a
+monotonic `supersession_sequence`; stale predecessors and terminal-status
+replacement fail closed. `BILLED` remains non-retriable as
 `billed_without_validated_artifact`; `NOT_BILLED` becomes
 `retry_eligible_after_manual_nonbilling_confirmation` but still requires a new
 authorization and attestation before any later retry; `UNKNOWN` remains

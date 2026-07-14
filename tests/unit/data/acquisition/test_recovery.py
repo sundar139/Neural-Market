@@ -177,3 +177,28 @@ def test_recovery_surfaces_uncertain_billing_and_stale_attempt(tmp_path: Path) -
     assert report.automatic_retry_allowed is False
     assert report.retried == 0
     assert report.deleted == 0
+
+
+def test_recovery_reports_confirmed_not_billed_without_retry(tmp_path: Path) -> None:
+    journal = RequestJournal(tmp_path / "journal.sqlite")
+    journal.upsert(_entry("confirmed", "planned", None, None))
+    journal.upsert(_entry("confirmed", "preflight_validated", None, None))
+    journal.upsert(_entry("confirmed", "request_started", None, None))
+    journal.upsert(_entry("confirmed", "uncertain_billing", None, None))
+    journal.upsert(
+        _entry(
+            "confirmed",
+            "retry_eligible_after_manual_nonbilling_confirmation",
+            None,
+            None,
+        )
+    )
+    report = run_recovery(journal=journal, data_root=tmp_path)
+    assert report.uncertain_billing_count == 0
+    assert report.confirmed_not_billed_count == 1
+    assert report.retry_eligible_count == 1
+    assert report.automatic_retry_allowed is False
+    assert report.retry_eligible_under_new_authorization is True
+    assert report.manual_recovery_required == []
+    assert report.retried == 0
+    assert report.deleted == 0
