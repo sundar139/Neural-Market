@@ -102,10 +102,59 @@ current snapshot per dataset and generation is allowed.
 
 ## Scope note
 
-This milestone delivers the estimator as a tested library plus its contract,
-tests, and documentation. It is not yet wired into the live metadata preflight
-because no metadata network call runs in this milestone; integration into the
-runner is deferred to the next authorized preflight. No metadata call, paid
-request, download, authorization, or portal attestation occurred. The production
-checkpoint was not modified; only an ignored backup copy was created under
+The first stage delivered the estimator as a tested library plus its contract,
+tests, and documentation. No metadata call, paid request, download,
+authorization, or portal attestation occurred; the production checkpoint was not
+modified; only ignored backup copies were created under
 `reports/data/execution/cost_fallback/`.
+
+## Production metadata-runner integration
+
+The estimator is now wired into the guarded metadata runner and the
+`data pilot prepare` CLI. `metadata.get_cost` remains the preferred source: on
+success the cost endpoint records `cost_source = provider_response`, the exact
+provider decimal, and no 25% margin. Only after `get_cost` exhausts its bounded
+attempts on HTTP 500/502/503/504 or a connection/network timeout does the runner
+attempt the derived fallback (`cost_fallback_trigger`); prohibited failures
+(4xx, 429, entitlement, authentication, invalid request) and any non-`cost`
+failure continue to fail closed exactly as before, and the unit-price snapshot is
+never fetched for them.
+
+The restricted metadata facade now also exposes `list_publishers` and
+`list_unit_prices`; time-series, batch, and live namespaces remain unreachable.
+Unit-price snapshots are fetched at most once per dataset per preflight
+(`UnitPriceSnapshotCache`) through the same Windows spawn-child boundary as the
+other metadata endpoints (`run_isolated_unit_price_request`), with the same hard
+deadline, terminate/kill, and zero-remaining-children guarantees.
+
+A completed cost endpoint distinguishes provider, derived, and portal responses.
+Derived entries persist the raw and conservative cost, billable size and its
+response hash, the unit price and snapshot hash, the cross-validation evidence
+hash, the calculation version, the sanitized fallback trigger class and HTTP
+status, and an immutable `derivation_hash`
+(`data_contracts/pilot_metadata_checkpoint.schema.json`). A derived cost still
+counts as one completed cost result in the 75-endpoint preflight. Legacy
+checkpoints without the new fields remain readable and load as provider costs;
+loading never rewrites a checkpoint.
+
+Plan-level aggregation (`plan_cost_rollup`) reports provider/derived/portal/
+unavailable counts, raw and conservative totals, and the largest raw and
+conservative requests. The conservative total (each derived request carrying its
+25% margin) governs the ≤ USD 5.00 total cap, ≤ USD 1.00 per-request cap, and
+the 1.50× drift ceiling; provider-only plans are unaffected because their
+conservative cost equals their raw cost.
+
+## Cross-validation sample policy
+
+For the January pilot the minimum compatible sample count is **1**, because
+exactly one exact `OPRA.PILLAR / cbbo-1m / historical-streaming` provider
+comparison currently exists. The preflight report records
+`pilot_cross_validation_sample_count = 1` and
+`full_acquisition_minimum_sample_count = 2`: before full development-data
+acquisition, at least two independent compatible provider comparisons are
+required. One sample is not claimed sufficient for the full acquisition phase.
+
+No metadata call, `list_unit_prices`, `get_billable_size`, `get_cost`,
+`timeseries.get_range`, paid request, download, authorization, or portal
+attestation occurred during this integration; all provider behavior was injected
+or fixture-based. The production checkpoint retains its original SHA-256.

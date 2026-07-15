@@ -31,7 +31,8 @@ API keys, card data, or market records.
 
 Cost-fallback checkpoint backups live under
 `reports/data/execution/cost_fallback/` as ignored `.local.json` files. They are
-byte-for-byte copies of the metadata checkpoint taken before derived-cost work,
+byte-for-byte copies of the metadata checkpoint taken before derived-cost work
+(estimator build and metadata-runner integration),
 carrying the same dependency hashes, request identities, and safe timing events,
 and never credentials, response bodies, or market data.
 

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://neuralmarket/data_contracts/pilot_metadata_checkpoint.schema.json",
+  "title": "PilotMetadataCheckpointCostEndpoint",
+  "description": "Cost-source-aware shape of one completed cost endpoint inside the ignored pilot metadata checkpoint. Provider costs carry only value/completed_at/response_hash (cost_source unset or 'provider_response'); derived costs additionally carry conservative and provenance fields. Legacy checkpoints without these fields remain readable and load as provider costs.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "value", "completed_at", "response_hash"],
+  "properties": {
+    "status": {"const": "complete"},
+    "value": {"type": ["string", "number"], "description": "Provider or derived cost as returned/derived (decimal string for derived)."},
+    "completed_at": {"type": "string", "format": "date-time"},
+    "response_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "cost_source": {
+      "type": ["string", "null"],
+      "enum": ["provider_response", "derived_response", "portal_response", null],
+      "description": "Unset/null is interpreted as a provider get_cost result."
+    },
+    "raw_cost_usd": {"type": ["string", "null"]},
+    "conservative_cost_usd": {"type": ["string", "null"], "description": "Derived raw x 1.25; equals raw for provider costs."},
+    "billable_size_bytes": {"type": ["integer", "null"], "minimum": 0},
+    "billable_size_response_hash": {"type": ["string", "null"]},
+    "unit_price_usd_per_gib": {"type": ["string", "null"]},
+    "unit_price_snapshot_hash": {"type": ["string", "null"]},
+    "cross_validation_evidence_hash": {"type": ["string", "null"]},
+    "calculation_version": {"type": ["string", "null"]},
+    "fallback_trigger_class": {"type": ["string", "null"]},
+    "fallback_trigger_http_status": {"type": ["integer", "null"]},
+    "derivation_hash": {"type": ["string", "null"], "description": "Immutable estimate hash binding every derived provenance input."}
+  }
+}

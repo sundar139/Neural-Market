@@ -18,6 +18,18 @@ from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from neuralmarket.data.acquisition.cost_estimation import (
+    ACQUISITION_FEED_MODE,
+    CostSource,
+    PlanCostEntry,
+    PlanCostSummary,
+    ProviderCostSample,
+    UnitPriceSnapshot,
+    build_derived_estimate,
+    cross_validate,
+    parse_unit_price_snapshot,
+    summarize_plan,
+)
 from neuralmarket.data.acquisition.estimation import MetadataEstimate
 from neuralmarket.data.acquisition.providers import DatabentoMetadataProvider
 from neuralmarket.data.acquisition.requests import AcquisitionRequest
@@ -289,8 +301,17 @@ def endpoint_response_hash(endpoint: Endpoint, value: int | float | str) -> str:
     return hashlib.sha256(payload.encode()).hexdigest()
 
 
+CostResponseKind = Literal["provider_response", "derived_response", "portal_response"]
+
+
 class MetadataEndpointResult(BaseModel):
-    """One reusable endpoint result within a fresh checkpoint generation."""
+    """One reusable endpoint result within a fresh checkpoint generation.
+
+    The cost-source and derived-provenance fields are optional and default to
+    ``None`` so legacy checkpoints (value/completed_at/response_hash only) remain
+    readable; a cost endpoint with ``cost_source`` unset is interpreted as a
+    provider ``get_cost`` result.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -298,6 +319,19 @@ class MetadataEndpointResult(BaseModel):
     value: int | float | str
     completed_at: str
     response_hash: str
+    # Cost-source provenance (only populated on cost endpoints).
+    cost_source: CostResponseKind | None = None
+    raw_cost_usd: str | None = None
+    conservative_cost_usd: str | None = None
+    billable_size_bytes: int | None = None
+    billable_size_response_hash: str | None = None
+    unit_price_usd_per_gib: str | None = None
+    unit_price_snapshot_hash: str | None = None
+    cross_validation_evidence_hash: str | None = None
+    calculation_version: str | None = None
+    fallback_trigger_class: str | None = None
+    fallback_trigger_http_status: int | None = None
+    derivation_hash: str | None = None
 
 
 class MetadataCheckpoint(BaseModel):
@@ -373,3 +407,288 @@ def load_checkpoint(
 def checkpoint_client_version() -> str:
     """Return the exact Databento version bound into checkpoints."""
     return importlib.metadata.version("databento")
+
+
+# --- Derived-cost fallback integration ---------------------------------------
+
+#: Terminal cost-endpoint failures eligible for the derived fallback.
+_FALLBACK_HTTP_STATUSES = frozenset({500, 502, 503, 504})
+_FALLBACK_EXCEPTION_CLASSES = frozenset({"TimeoutError", "ConnectionError", "ConnectionResetError"})
+
+
+def cost_fallback_trigger(result: IsolatedMetadataResult) -> tuple[int | None, str | None] | None:
+    """Classify a terminal cost failure into a fallback trigger, or ``None``.
+
+    Returns ``(http_status, failure_category)`` when the failure is a bounded
+    provider ``5xx`` or a connection/network timeout; ``None`` when the failure
+    is prohibited (4xx, auth, entitlement, rate limit, invalid request) or the
+    failed endpoint was not ``cost``. Fail-closed: unknown failures return ``None``.
+    """
+    if result.failed_endpoint != "cost":
+        return None
+    if result.failure_type == "metadata_hard_timeout":
+        return None, "provider_timeout"
+    last = result.events[-1] if result.events else None
+    if last is None:
+        return None
+    if last.http_status in _FALLBACK_HTTP_STATUSES:
+        return last.http_status, None
+    if last.exception_class in _FALLBACK_EXCEPTION_CLASSES:
+        return last.http_status, "provider_network_timeout"
+    return None
+
+
+def build_provider_cost_samples(
+    checkpoint: MetadataCheckpoint,
+    *,
+    dataset: str,
+    schema: str,
+    feed_mode: str,
+    account_pricing_context: str,
+) -> list[ProviderCostSample]:
+    """Gather compatible successful provider ``get_cost`` cross-validation samples.
+
+    Only provider-sourced costs (``cost_source`` unset or ``provider_response``)
+    for the exact dataset and schema count; derived costs are never evidence.
+    """
+    samples: list[ProviderCostSample] = []
+    for request_id, estimate in checkpoint.completed_estimates.items():
+        if estimate.get("dataset") != dataset or estimate.get("schema") != schema:
+            continue
+        cost_endpoint = checkpoint.endpoint_results.get(request_id, {}).get("cost")
+        if cost_endpoint is not None and cost_endpoint.cost_source not in (
+            None,
+            "provider_response",
+        ):
+            continue
+        samples.append(
+            ProviderCostSample(
+                dataset=dataset,
+                schema=schema,
+                feed_mode=feed_mode,
+                account_pricing_context=account_pricing_context,
+                billable_size_bytes=int(estimate["billable_size_bytes"]),
+                provider_cost_usd=Decimal(str(estimate["cost_usd"])),
+            )
+        )
+    return samples
+
+
+def derive_cost_endpoint_result(
+    *,
+    request: AcquisitionRequest,
+    billable_size_result: MetadataEndpointResult,
+    snapshot: UnitPriceSnapshot,
+    samples: list[ProviderCostSample],
+    account_pricing_context: str,
+    failure_http_status: int | None,
+    failure_category: str | None,
+    now_utc: str,
+) -> MetadataEndpointResult:
+    """Build a derived cost endpoint result, fail-closed via the estimator.
+
+    Raises :class:`~neuralmarket.data.errors.CostEstimationError` when the
+    failure is ineligible, evidence is incompatible, or cross-validation fails.
+    """
+    cross_validation = cross_validate(
+        snapshot,
+        dataset=request.dataset,
+        schema=request.schema_name,
+        feed_mode=ACQUISITION_FEED_MODE,
+        account_pricing_context=account_pricing_context,
+        samples=samples,
+    )
+    estimate = build_derived_estimate(
+        request_id=request.request_id,
+        request_specification_hash=request.request_hash,
+        dataset=request.dataset,
+        schema=request.schema_name,
+        feed_mode=ACQUISITION_FEED_MODE,
+        billable_size_bytes=int(billable_size_result.value),
+        billable_size_response_hash=billable_size_result.response_hash,
+        snapshot=snapshot,
+        cross_validation=cross_validation,
+        failure_http_status=failure_http_status,
+        failure_category=failure_category,
+        calculated_at=now_utc,
+    )
+    value = str(estimate.cost_usd)
+    return MetadataEndpointResult(
+        value=value,
+        completed_at=now_utc,
+        response_hash=endpoint_response_hash("cost", value),
+        cost_source="derived_response",
+        raw_cost_usd=str(estimate.cost_usd),
+        conservative_cost_usd=str(estimate.conservative_cost_usd),
+        billable_size_bytes=estimate.billable_size_bytes,
+        billable_size_response_hash=estimate.billable_size_response_hash,
+        unit_price_usd_per_gib=str(estimate.unit_price_usd_per_gib),
+        unit_price_snapshot_hash=estimate.unit_price_snapshot_hash,
+        cross_validation_evidence_hash=estimate.cross_validation_evidence_hash,
+        calculation_version=estimate.calculation_version,
+        fallback_trigger_class=failure_category or "http_5xx",
+        fallback_trigger_http_status=failure_http_status,
+        derivation_hash=estimate.estimate_hash,
+    )
+
+
+class UnitPriceSnapshotCache:
+    """At-most-once-per-dataset unit-price snapshot cache for one preflight."""
+
+    def __init__(self, loader: Callable[[str], UnitPriceSnapshot]) -> None:
+        """Wrap a per-dataset snapshot loader (production wraps list_unit_prices)."""
+        self._loader = loader
+        self._cache: dict[str, UnitPriceSnapshot] = {}
+        self.load_count = 0
+
+    def get(self, dataset: str) -> UnitPriceSnapshot:
+        """Return the cached snapshot for a dataset, loading it at most once."""
+        if dataset not in self._cache:
+            self.load_count += 1
+            self._cache[dataset] = self._loader(dataset)
+        return self._cache[dataset]
+
+
+def plan_cost_rollup(
+    checkpoint: MetadataCheckpoint, *, tracked_total_usd: Decimal
+) -> PlanCostSummary:
+    """Aggregate provider and derived costs and evaluate conservative gates."""
+    entries: list[PlanCostEntry] = []
+    for request_id, estimate in checkpoint.completed_estimates.items():
+        raw = Decimal(str(estimate["cost_usd"]))
+        cost_endpoint = checkpoint.endpoint_results.get(request_id, {}).get("cost")
+        if cost_endpoint is not None and cost_endpoint.cost_source == "derived_response":
+            source = CostSource.DERIVED_BILLABLE_SIZE_UNIT_PRICE
+            conservative = Decimal(str(cost_endpoint.conservative_cost_usd))
+        else:
+            source = CostSource.PROVIDER_GET_COST
+            conservative = raw
+        entries.append(PlanCostEntry(request_id, source, raw, conservative))
+    return summarize_plan(entries, tracked_total_usd=tracked_total_usd)
+
+
+def _unit_price_child(
+    output: Any,
+    dataset: str,
+    client_version: str,
+    retrieved_at_utc: str,
+    expires_at_utc: str,
+) -> None:
+    """Fetch one dataset's unit prices in a child and emit a sanitized snapshot."""
+    import databento as db
+
+    provider = DatabentoMetadataProvider(db.Historical())
+    try:
+        raw = provider.list_unit_prices(dataset=dataset)
+        blocks = _sanitize_unit_price_response(raw)
+        snapshot = parse_unit_price_snapshot(
+            blocks,
+            dataset=dataset,
+            feed_mode=ACQUISITION_FEED_MODE,
+            databento_client_version=client_version,
+            retrieved_at_utc=retrieved_at_utc,
+            expires_at_utc=expires_at_utc,
+        )
+        output.put(("snapshot", snapshot.__dict__))
+    except BaseException as exc:
+        output.put(("failure", {"message": type(exc).__name__}))
+    finally:
+        provider.close()
+
+
+def _sanitize_unit_price_response(raw: object) -> list[dict[str, Any]]:
+    """Normalize a Databento unit-price response into sanitized mode blocks."""
+    blocks: list[dict[str, Any]] = []
+    if isinstance(raw, dict):
+        for mode, schemas in raw.items():
+            if isinstance(schemas, dict):
+                blocks.append({"mode": str(mode), "schemas": dict(schemas)})
+    elif isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict) and "mode" in item and "schemas" in item:
+                blocks.append({"mode": str(item["mode"]), "schemas": dict(item["schemas"])})
+    return blocks
+
+
+class IsolatedUnitPriceResult(BaseModel):
+    """Typed outcome for one isolated unit-price snapshot child."""
+
+    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
+
+    snapshot: UnitPriceSnapshot | None = None
+    failure_type: str | None = None
+    child_terminated: bool = False
+    child_joined: bool
+    remaining_children: int
+
+
+def run_isolated_unit_price_request(
+    *,
+    dataset: str,
+    client_version: str,
+    retrieved_at_utc: str,
+    expires_at_utc: str,
+    timeout_seconds: float,
+    worker: Callable[..., None] = _unit_price_child,
+) -> IsolatedUnitPriceResult:
+    """Fetch one dataset's unit-price snapshot in a spawn child, killed at deadline."""
+    context = multiprocessing.get_context("spawn")
+    output = context.Queue()
+    child = context.Process(
+        target=worker,
+        args=(output, dataset, client_version, retrieved_at_utc, expires_at_utc),
+        name=f"neuralmarket-unitprice-{dataset}",
+    )
+    child.start()
+    deadline = time.monotonic() + timeout_seconds
+    snapshot_payload: dict[str, Any] | None = None
+    failure: dict[str, object] | None = None
+    while time.monotonic() < deadline and child.is_alive():
+        try:
+            kind, payload = output.get(timeout=min(0.1, max(0.01, deadline - time.monotonic())))
+        except queue.Empty:
+            continue
+        if kind == "snapshot":
+            snapshot_payload = payload
+        elif kind == "failure":
+            failure = payload
+    child.join(timeout=0.2)
+    terminated = False
+    if child.is_alive():
+        terminated = True
+        child.terminate()
+        child.join(timeout=2)
+        if child.is_alive():
+            child.kill()
+            child.join(timeout=2)
+    while True:
+        try:
+            kind, payload = output.get_nowait()
+        except queue.Empty:
+            break
+        if kind == "snapshot":
+            snapshot_payload = payload
+        elif kind == "failure":
+            failure = payload
+    active = sum(
+        item.name.startswith("neuralmarket-unitprice-")
+        for item in multiprocessing.active_children()
+    )
+    if terminated:
+        return IsolatedUnitPriceResult(
+            failure_type="unit_price_hard_timeout",
+            child_terminated=True,
+            child_joined=not child.is_alive(),
+            remaining_children=active,
+        )
+    if failure is not None or snapshot_payload is None:
+        return IsolatedUnitPriceResult(
+            failure_type=str((failure or {}).get("message", "unit_price_child_failed")),
+            child_joined=not child.is_alive(),
+            remaining_children=active,
+        )
+    return IsolatedUnitPriceResult(
+        snapshot=UnitPriceSnapshot(**snapshot_payload),
+        child_joined=not child.is_alive(),
+        remaining_children=active,
+    )

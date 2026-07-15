@@ -36,6 +36,14 @@ class DatabentoMetadataProvider:
         self._metadata = metadata
         self._close = getattr(client, "close", None)
 
+    def list_publishers(self, **kwargs: object) -> object:
+        """Return the approved metadata publisher listing."""
+        return self._metadata.list_publishers(**kwargs)
+
+    def list_unit_prices(self, **kwargs: object) -> object:
+        """Return the approved historical unit-price listing for a dataset."""
+        return self._metadata.list_unit_prices(**kwargs)
+
     def get_record_count(self, **kwargs: object) -> object:
         """Return a metadata-only record count."""
         return self._metadata.get_record_count(**kwargs)

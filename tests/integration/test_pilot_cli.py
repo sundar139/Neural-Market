@@ -164,6 +164,191 @@ def test_pilot_prepare_resumes_only_failed_endpoint(
     assert calls == resumed_calls
 
 
+def _fallback_isolated(cbbo_cost: str):
+    """Succeed everywhere except the 2nd cbbo-1m cost, which fails with HTTP 504."""
+    seen_cbbo: list[str] = []
+
+    def run(**kwargs):
+        request = kwargs["request"]
+        endpoint = kwargs["only_endpoint"]
+        schema = request.schema_name
+        values = {
+            "record-count": 10,
+            "billable-size": 5209600 if schema == "cbbo-1m" else 100,
+            "cost": cbbo_cost if schema == "cbbo-1m" else "0.01001",
+        }
+        fail = False
+        if endpoint == "cost" and schema == "cbbo-1m":
+            if request.request_id not in seen_cbbo:
+                seen_cbbo.append(request.request_id)
+            fail = len(seen_cbbo) >= 2 and request.request_id == seen_cbbo[1]
+        if fail:
+            event = MetadataOperationEvent(
+                run_id="run",
+                request_index=1,
+                request_count=25,
+                request_id=request.request_id,
+                dataset=request.dataset,
+                schema_name=request.schema_name,
+                session_date=request.session_date.isoformat() if request.session_date else None,
+                endpoint="cost",
+                attempt=kwargs["attempt"],
+                started_at=datetime.now(UTC).isoformat(),
+                completed_at=datetime.now(UTC).isoformat(),
+                elapsed_seconds=60.0,
+                outcome="failed",
+                exception_class="BentoServerError",
+                http_status=504,
+                child_pid=1,
+            )
+            return IsolatedMetadataResult(
+                endpoint_values={},
+                events=[event],
+                failure_type="BentoServerError",
+                failed_endpoint="cost",
+                child_pid=1,
+                child_exitcode=0,
+                child_joined=True,
+                remaining_children=0,
+            )
+        return IsolatedMetadataResult(
+            endpoint_values={endpoint: values[endpoint]},
+            events=[],
+            child_pid=1,
+            child_exitcode=0,
+            child_joined=True,
+            remaining_children=0,
+        )
+
+    return run
+
+
+@pytest.mark.integration
+def test_pilot_prepare_derived_cost_fallback_on_504(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from neuralmarket.data.acquisition.cost_estimation import (
+        ACQUISITION_FEED_MODE,
+        parse_unit_price_snapshot,
+    )
+
+    cbbo_cost = str(Decimal(5209600) * Decimal("2.0") / Decimal(2**30))
+
+    def loader(dataset: str):
+        return parse_unit_price_snapshot(
+            [{"mode": ACQUISITION_FEED_MODE, "schemas": {"cbbo-1m": "2.0"}}],
+            dataset=dataset,
+            feed_mode=ACQUISITION_FEED_MODE,
+            databento_client_version="0.81.0",
+            retrieved_at_utc=datetime.now(UTC).isoformat(),
+            expires_at_utc=(datetime.now(UTC) + timedelta(minutes=30)).isoformat(),
+        )
+
+    monkeypatch.setattr(data_module, "_load_dotenv", lambda root: None)
+    monkeypatch.setattr(data_module, "_raw_databento_client", lambda: _Client())
+    monkeypatch.setattr(data_module, "_run_isolated_metadata", _fallback_isolated(cbbo_cost))
+    monkeypatch.setattr(data_module, "_pilot_unit_price_snapshot_loader", loader)
+    monkeypatch.setenv("DATABENTO_API_KEY", "test-only")
+
+    output_path = tmp_path / "preflight.json"
+    result = runner.invoke(
+        app,
+        [
+            "data",
+            "pilot",
+            "prepare",
+            "--config",
+            _PILOT_CONFIG,
+            "--output",
+            str(output_path),
+            "--request-manifest",
+            str(tmp_path / "plan.json"),
+            "--checkpoint",
+            str(tmp_path / "checkpoint.local.json"),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    report = json.loads(output_path.read_text(encoding="utf-8"))
+    summary = report["cost_source_summary"]
+    assert summary["derived_cost_count"] == 1
+    assert summary["provider_cost_count"] == 24
+    assert len(summary["fallback_request_ids"]) == 1
+    assert len(summary["unit_price_snapshot_hashes"]) == 1
+    assert summary["pilot_cross_validation_sample_count"] == 1
+    assert summary["full_acquisition_minimum_sample_count"] == 2
+    assert Decimal(summary["conservative_total_usd"]) > Decimal(summary["raw_total_usd"])
+
+
+@pytest.mark.integration
+def test_pilot_prepare_blocks_fallback_on_403(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def isolated(**kwargs):
+        request = kwargs["request"]
+        endpoint = kwargs["only_endpoint"]
+        if endpoint == "cost" and request.schema_name == "cbbo-1m":
+            event = MetadataOperationEvent(
+                run_id="run",
+                request_index=1,
+                request_count=25,
+                request_id=request.request_id,
+                dataset=request.dataset,
+                schema_name=request.schema_name,
+                session_date=request.session_date.isoformat() if request.session_date else None,
+                endpoint="cost",
+                attempt=kwargs["attempt"],
+                started_at=datetime.now(UTC).isoformat(),
+                completed_at=datetime.now(UTC).isoformat(),
+                elapsed_seconds=1.0,
+                outcome="failed",
+                exception_class="BentoClientError",
+                http_status=403,
+                child_pid=1,
+            )
+            return IsolatedMetadataResult(
+                endpoint_values={},
+                events=[event],
+                failure_type="BentoClientError",
+                failed_endpoint="cost",
+                child_pid=1,
+                child_exitcode=0,
+                child_joined=True,
+                remaining_children=0,
+            )
+        return _isolated()(**kwargs)
+
+    loader_calls = {"n": 0}
+
+    def loader(dataset: str):
+        loader_calls["n"] += 1
+        raise AssertionError("snapshot must not load for a prohibited failure")
+
+    monkeypatch.setattr(data_module, "_load_dotenv", lambda root: None)
+    monkeypatch.setattr(data_module, "_raw_databento_client", lambda: _Client())
+    monkeypatch.setattr(data_module, "_run_isolated_metadata", isolated)
+    monkeypatch.setattr(data_module, "_pilot_unit_price_snapshot_loader", loader)
+    monkeypatch.setenv("DATABENTO_API_KEY", "test-only")
+
+    result = runner.invoke(
+        app,
+        [
+            "data",
+            "pilot",
+            "prepare",
+            "--config",
+            _PILOT_CONFIG,
+            "--output",
+            str(tmp_path / "preflight.json"),
+            "--request-manifest",
+            str(tmp_path / "plan.json"),
+            "--checkpoint",
+            str(tmp_path / "checkpoint.local.json"),
+        ],
+    )
+    assert result.exit_code == 1
+    assert loader_calls["n"] == 0
+
+
 @pytest.mark.integration
 def test_pilot_prepare_expired_checkpoint_repeats_all_endpoints(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path

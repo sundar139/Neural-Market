@@ -100,3 +100,20 @@ drift gate, and authorization binding. Provider-returned costs are never
 altered. Each estimate binds the request-specification, billable-size response,
 unit-price snapshot, and cross-validation evidence hashes plus the calculation
 version into an immutable `estimate_hash`.
+
+In `data pilot prepare`, `get_cost` stays the preferred source and records
+`cost_source = provider_response` with no added margin. Only after `get_cost`
+exhausts its bounded attempts on HTTP 500/502/503/504 or a connection/network
+timeout does the runner derive a cost; the unit-price snapshot for the dataset is
+fetched at most once per preflight, through the same spawn-child boundary as the
+other metadata endpoints, and cross-validated against a completed same-context
+provider `get_cost` before use. A completed cost endpoint records provider,
+derived, or portal provenance
+(`data_contracts/pilot_metadata_checkpoint.schema.json`); legacy checkpoints
+without the new fields load as provider costs and are never rewritten on load.
+The preflight report's `cost_source_summary` lists provider/derived counts, raw
+and conservative totals, fallback request IDs, unit-price snapshot hashes, and
+the cross-validation sample counts (`pilot_cross_validation_sample_count = 1`,
+`full_acquisition_minimum_sample_count = 2` — full development acquisition
+requires at least two compatible provider comparisons). Conservative costs govern
+the per-request, total, and drift gates.

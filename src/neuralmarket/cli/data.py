@@ -6,7 +6,7 @@ import hmac
 import importlib.metadata
 import json
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
@@ -68,10 +68,16 @@ from neuralmarket.data.acquisition.metadata_runner import (
     MetadataCheckpoint,
     MetadataEndpointResult,
     MetadataOperationEvent,
+    UnitPriceSnapshotCache,
+    build_provider_cost_samples,
     checkpoint_client_version,
+    cost_fallback_trigger,
+    derive_cost_endpoint_result,
     endpoint_response_hash,
     load_checkpoint,
+    plan_cost_rollup,
     run_isolated_metadata_request,
+    run_isolated_unit_price_request,
     write_checkpoint,
 )
 from neuralmarket.data.acquisition.planner import plan_acquisition
@@ -128,6 +134,78 @@ from neuralmarket.data.sources.databento import DatabentoSource
 _logger = get_logger(__name__)
 
 _run_isolated_metadata = run_isolated_metadata_request
+
+#: Single-account pricing context bound to the pilot's derived cross-validation.
+_PILOT_ACCOUNT_PRICING_CONTEXT = "pilot-databento-historical-v1"
+#: Unit-price snapshot freshness for a single preflight generation.
+_UNIT_PRICE_SNAPSHOT_TTL_MINUTES = 30
+
+
+def _pilot_unit_price_snapshot_loader(dataset: str) -> Any:
+    """Load one dataset's unit-price snapshot through the isolated child boundary.
+
+    Never invoked in metadata-free runs; overridable seam for fake injection.
+    """
+    now = datetime.now(UTC)
+    result = run_isolated_unit_price_request(
+        dataset=dataset,
+        client_version=checkpoint_client_version(),
+        retrieved_at_utc=now.isoformat(),
+        expires_at_utc=(now + timedelta(minutes=_UNIT_PRICE_SNAPSHOT_TTL_MINUTES)).isoformat(),
+        timeout_seconds=120.0,
+    )
+    if result.snapshot is None:
+        raise MarketDataError(f"unit-price snapshot unavailable: {result.failure_type}")
+    return result.snapshot
+
+
+def _maybe_derive_cost_fallback(
+    *,
+    request: AcquisitionRequest,
+    endpoint: Endpoint,
+    isolated: Any,
+    state: MetadataCheckpoint,
+    request_results: dict[Endpoint, MetadataEndpointResult],
+    snapshot_cache: UnitPriceSnapshotCache,
+) -> MetadataEndpointResult | None:
+    """Attempt a fail-closed derived cost after a bounded provider get_cost failure.
+
+    Returns a completed derived cost endpoint result, or ``None`` when the
+    failure is ineligible or the evidence is incompatible (caller then fails
+    closed exactly as before). Only reached after get_cost exhausts its attempts.
+    """
+    if endpoint != "cost":
+        return None
+    trigger = cost_fallback_trigger(isolated)
+    if trigger is None:
+        return None
+    billable = request_results.get("billable-size")
+    if billable is None:
+        return None
+    http_status, category = trigger
+    try:
+        samples = build_provider_cost_samples(
+            state,
+            dataset=request.dataset,
+            schema=request.schema_name,
+            feed_mode="historical-streaming",
+            account_pricing_context=_PILOT_ACCOUNT_PRICING_CONTEXT,
+        )
+        snapshot = snapshot_cache.get(request.dataset)
+        return derive_cost_endpoint_result(
+            request=request,
+            billable_size_result=billable,
+            snapshot=snapshot,
+            samples=samples,
+            account_pricing_context=_PILOT_ACCOUNT_PRICING_CONTEXT,
+            failure_http_status=http_status,
+            failure_category=category,
+            now_utc=datetime.now(UTC).isoformat(),
+        )
+    except MarketDataError as exc:
+        _logger.warning("Derived cost fallback declined for %s: %s", request.request_id, exc)
+        return None
+
 
 app = typer.Typer(help="Market-data contracts, splits, and source qualification.")
 acquisition_app = typer.Typer(help="Budget-constrained, metadata-only OPRA acquisition planning.")
@@ -1328,6 +1406,7 @@ def pilot_prepare(
         selected = selected[:max_requests]
     run_started = __import__("time").monotonic()
     endpoint_calls = retries = timeouts = attempted = 0
+    snapshot_cache = UnitPriceSnapshotCache(lambda ds: _pilot_unit_price_snapshot_loader(ds))
     for request in selected:
         if (
             __import__("time").monotonic() - run_started
@@ -1371,6 +1450,7 @@ def pilot_prepare(
                         value=value,
                         completed_at=completed_at,
                         response_hash=endpoint_response_hash(cast(Endpoint, endpoint), value),
+                        cost_source="provider_response" if endpoint == "cost" else None,
                     )
                     state.updated_at = completed_at
                     write_checkpoint(checkpoint, state)
@@ -1390,6 +1470,21 @@ def pilot_prepare(
                     not retryable
                     or attempt == pilot_config.metadata_execution.maximum_timeout_attempts
                 ):
+                    derived = _maybe_derive_cost_fallback(
+                        request=request,
+                        endpoint=cast(Endpoint, endpoint),
+                        isolated=isolated,
+                        state=state,
+                        request_results=request_results,
+                        snapshot_cache=snapshot_cache,
+                    )
+                    if derived is not None:
+                        request_results[cast(Endpoint, endpoint)] = derived
+                        state.failed_request_id = state.failed_endpoint = None
+                        state.last_failure = None
+                        state.updated_at = derived.completed_at
+                        write_checkpoint(checkpoint, state)
+                        break
                     state.failed_request_id = request.request_id
                     state.failed_endpoint = isolated.failed_endpoint
                     state.last_failure = isolated.failure_type
@@ -1469,10 +1564,12 @@ def pilot_prepare(
         )
     fresh_total = sum((estimate.cost_usd for estimate in estimates), Decimal("0"))
     maximum_request = max((estimate.cost_usd for estimate in estimates), default=Decimal("0"))
+    cost_summary = plan_cost_rollup(state, tracked_total_usd=_ACCEPTED_PILOT_PLANNER_ESTIMATE_USD)
     rejections: list[Any] = []
     if (
-        fresh_total > pilot_config.maximum_spend_usd
-        or maximum_request > pilot_config.maximum_single_request_usd
+        cost_summary.conservative_total_usd > pilot_config.maximum_spend_usd
+        or cost_summary.largest_conservative_request_usd > pilot_config.maximum_single_request_usd
+        or not cost_summary.within_drift_ceiling
     ):
         _logger.error("Pilot preflight rejected metadata estimates over configured caps.")
         raise typer.Exit(code=1)
@@ -1592,6 +1689,35 @@ def pilot_prepare(
     )
     manifest_payload["plan_hash"] = phash
 
+    fallback_request_ids = sorted(
+        request_id
+        for request_id, endpoints in state.endpoint_results.items()
+        if (cost := endpoints.get("cost")) is not None and cost.cost_source == "derived_response"
+    )
+    snapshot_hashes = sorted(
+        {
+            cost.unit_price_snapshot_hash
+            for endpoints in state.endpoint_results.values()
+            if (cost := endpoints.get("cost")) is not None and cost.unit_price_snapshot_hash
+        }
+    )
+    cost_source_summary = {
+        "provider_cost_count": cost_summary.provider_cost_count,
+        "derived_cost_count": cost_summary.derived_cost_count,
+        "portal_cost_count": cost_summary.portal_cost_count,
+        "unavailable_cost_count": cost_summary.unavailable_cost_count,
+        "raw_total_usd": str(cost_summary.raw_total_usd),
+        "conservative_total_usd": str(cost_summary.conservative_total_usd),
+        "largest_raw_request_usd": str(cost_summary.largest_raw_request_usd),
+        "largest_conservative_request_usd": str(cost_summary.largest_conservative_request_usd),
+        "within_total_cap": cost_summary.within_total_cap,
+        "within_per_request_cap": cost_summary.within_per_request_cap,
+        "within_drift_ceiling": cost_summary.within_drift_ceiling,
+        "fallback_request_ids": fallback_request_ids,
+        "unit_price_snapshot_hashes": snapshot_hashes,
+        "pilot_cross_validation_sample_count": 1,
+        "full_acquisition_minimum_sample_count": 2,
+    }
     report_payload = {
         "generated_at": generated_at,
         "plan_hash": phash,
@@ -1599,6 +1725,7 @@ def pilot_prepare(
         "bindings": bindings,
         "preflight": result.model_dump(mode="json", exclude={"estimated_requests"}),
         "estimate_comparison": estimate_comparison,
+        "cost_source_summary": cost_source_summary,
         "purchase_authorized": False,
         "download_attempts": 0,
         "batch_jobs_submitted": 0,
@@ -1628,6 +1755,10 @@ def pilot_prepare(
                 "plan_hash": phash,
                 "passed": result.passed,
                 "fresh_total_usd": result.fresh_total_usd,
+                "provider_cost_count": cost_summary.provider_cost_count,
+                "derived_cost_count": cost_summary.derived_cost_count,
+                "conservative_total_usd": str(cost_summary.conservative_total_usd),
+                "fallback_request_ids": fallback_request_ids,
                 "purchase_authorized": False,
                 "download_attempts": 0,
                 "batch_jobs_submitted": 0,
