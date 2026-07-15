@@ -80,7 +80,7 @@ class _MetadataExecutionBlock(BaseModel):
     hard_request_timeout_seconds: int = Field(gt=0, le=300)
     maximum_timeout_attempts: int = Field(gt=0, le=3)
     checkpoint_max_age_minutes: int = Field(gt=0, le=120)
-    total_run_deadline_seconds: int = Field(gt=0, le=1800)
+    total_run_deadline_seconds: int = Field(gt=0, le=7200)
 
 
 class PilotExecutionConfig(BaseModel):

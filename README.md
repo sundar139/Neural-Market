@@ -108,6 +108,11 @@ cross-validation against a successful same-context provider quote, and every
 spending gate then uses the conservative (×1.25) amount. See
 [pilot acquisition](docs/data/pilot_acquisition.md).
 
+`data pilot prepare --resume` is fail-closed: it resumes the exact checkpoint or
+exits nonzero, never silently restarting. A checkpoint past its freshness window
+resumes only with `--allow-stale-checkpoint-sha256` matching its exact bytes
+(age-bypass only; all other integrity checks stay mandatory).
+
 ## Data and secrets
 
 Raw licensed vendor data is never committed; generated data is tracked with DVC

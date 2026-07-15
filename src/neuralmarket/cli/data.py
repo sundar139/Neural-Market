@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import importlib.metadata
 import json
@@ -37,6 +38,10 @@ from neuralmarket.data.acquisition.billing_reconciliation import (
     load_reconciliation_artifact,
 )
 from neuralmarket.data.acquisition.budget import to_decimal
+from neuralmarket.data.acquisition.checkpoint_compatibility import (
+    is_pilot_config_hash_compatible,
+    is_valid_sha256,
+)
 from neuralmarket.data.acquisition.configuration import load_acquisition_config
 from neuralmarket.data.acquisition.contracts import (
     AcquisitionPlanReport,
@@ -1263,6 +1268,69 @@ def _distribution_version(name: str) -> str:
         return "not-installed"
 
 
+#: Age ceiling used only after an explicit, hash-authorized stale resume. Large
+#: enough to bypass the freshness window while leaving every other check intact.
+_STALE_RESUME_MAX_AGE_MINUTES = 10**9
+
+
+def _sha256_file(path: Path) -> str:
+    """Return the SHA-256 of a file's exact bytes."""
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _resolve_checkpoint_state(
+    *,
+    checkpoint: Path,
+    expected: dict[str, object],
+    current_config_hash: str,
+    normal_max_age_minutes: int,
+    resume: bool,
+    allow_stale_sha256: str | None,
+    now: str,
+    request_ids: list[str],
+) -> MetadataCheckpoint:
+    """Load a resumable checkpoint fail-closed, or build a fresh one for non-resume.
+
+    Explicit ``--resume`` never silently starts a new generation: a missing,
+    stale (without authorization), or otherwise-invalid checkpoint exits nonzero.
+    ``allow_stale_sha256`` bypasses the age window only, and only when it equals
+    the checkpoint's exact bytes; every other integrity, plan, endpoint-hash, and
+    configuration-compatibility check remains mandatory.
+    """
+    if not resume:
+        return MetadataCheckpoint.model_validate(
+            {
+                **expected,
+                "pilot_config_hash": current_config_hash,
+                "created_at": now,
+                "updated_at": now,
+                "pending_request_ids": request_ids,
+            }
+        )
+    if not checkpoint.exists():
+        _logger.error("Resume requested but checkpoint does not exist: %s", checkpoint)
+        raise typer.Exit(code=1)
+    maximum_age_minutes = normal_max_age_minutes
+    if allow_stale_sha256 is not None:
+        if not is_valid_sha256(allow_stale_sha256) or allow_stale_sha256 != _sha256_file(
+            checkpoint
+        ):
+            _logger.error("Stale-checkpoint authorization hash did not match the checkpoint bytes.")
+            raise typer.Exit(code=1)
+        maximum_age_minutes = _STALE_RESUME_MAX_AGE_MINUTES
+    try:
+        state = load_checkpoint(
+            checkpoint, expected=expected, maximum_age_minutes=maximum_age_minutes
+        )
+    except ValueError as exc:
+        _logger.error("Metadata checkpoint rejected: %s", exc)
+        raise typer.Exit(code=1) from exc
+    if not is_pilot_config_hash_compatible(state.pilot_config_hash, current_config_hash):
+        _logger.error("Checkpoint configuration hash is not operationally compatible.")
+        raise typer.Exit(code=1)
+    return state
+
+
 @pilot_app.command("prepare")
 def pilot_prepare(
     config: Path = typer.Option(..., "--config", help="Path to the pilot-execution YAML config."),
@@ -1291,6 +1359,15 @@ def pilot_prepare(
         help="Ignored atomic metadata checkpoint.",
     ),
     resume: bool = typer.Option(False, "--resume", help="Resume a matching fresh checkpoint."),
+    allow_stale_checkpoint_sha256: str | None = typer.Option(
+        None,
+        "--allow-stale-checkpoint-sha256",
+        help=(
+            "Authorize resuming a stale (past freshness window) checkpoint whose exact "
+            "bytes hash to this 64-lowercase-hex value. Bypasses age only; valid with "
+            "--resume; all other integrity checks remain mandatory."
+        ),
+    ),
     max_requests: int | None = typer.Option(
         None, "--max-requests", min=1, help="Attempt at most this many pending requests."
     ),
@@ -1345,49 +1422,34 @@ def pilot_prepare(
     if not __import__("os").environ.get("DATABENTO_API_KEY"):
         raise typer.Exit(code=2)
 
+    if allow_stale_checkpoint_sha256 is not None and not resume:
+        raise typer.BadParameter("--allow-stale-checkpoint-sha256 requires --resume")
+
     calendar_version = _distribution_version("exchange-calendars")
     only_endpoint_value = cast(Endpoint | None, only_endpoint)
+    current_config_hash = config_sha256(config)
+    # ``pilot_config_hash`` is validated separately for operational compatibility,
+    # so it is not part of the strict expected-binding equality check.
     expected_checkpoint: dict[str, object] = {
         "source_manifest_hash": source_hash,
         "split_manifest_hash": split_hash,
         "acquisition_policy_hash": policy_hash,
-        "pilot_config_hash": config_sha256(config),
         "calendar_version": calendar_version,
         "databento_client_version": checkpoint_client_version(),
         "estimator_version": "pilot-metadata-process-v1",
         "ordered_request_specification_hashes": [item.request_hash for item in requests],
     }
     now = datetime.now(UTC).isoformat()
-    try:
-        state = (
-            load_checkpoint(
-                checkpoint,
-                expected=expected_checkpoint,
-                maximum_age_minutes=pilot_config.metadata_execution.checkpoint_max_age_minutes,
-            )
-            if resume and checkpoint.exists()
-            else MetadataCheckpoint.model_validate(
-                {
-                    **expected_checkpoint,
-                    "created_at": now,
-                    "updated_at": now,
-                    "pending_request_ids": [item.request_id for item in requests],
-                }
-            )
-        )
-    except ValueError as exc:
-        if str(exc) == "metadata_checkpoint_expired":
-            state = MetadataCheckpoint.model_validate(
-                {
-                    **expected_checkpoint,
-                    "created_at": now,
-                    "updated_at": now,
-                    "pending_request_ids": [item.request_id for item in requests],
-                }
-            )
-        else:
-            _logger.error("Metadata checkpoint rejected: %s", exc)
-            raise typer.Exit(code=1) from exc
+    state = _resolve_checkpoint_state(
+        checkpoint=checkpoint,
+        expected=expected_checkpoint,
+        current_config_hash=current_config_hash,
+        normal_max_age_minutes=pilot_config.metadata_execution.checkpoint_max_age_minutes,
+        resume=resume,
+        allow_stale_sha256=allow_stale_checkpoint_sha256,
+        now=now,
+        request_ids=[item.request_id for item in requests],
+    )
     write_checkpoint(checkpoint, state)
 
     diagnostic = root / "reports/data/metadata_timeout_diagnostic.local.json"

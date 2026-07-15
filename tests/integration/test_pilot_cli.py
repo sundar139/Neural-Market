@@ -350,9 +350,11 @@ def test_pilot_prepare_blocks_fallback_on_403(
 
 
 @pytest.mark.integration
-def test_pilot_prepare_expired_checkpoint_repeats_all_endpoints(
+def test_pilot_prepare_stale_checkpoint_resume_is_fail_closed_and_authorizable(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    import hashlib
+
     calls: list[str] = []
 
     def isolated(**kwargs):
@@ -380,12 +382,38 @@ def test_pilot_prepare_expired_checkpoint_repeats_all_endpoints(
         "1",
     ]
     assert runner.invoke(app, args).exit_code == 0
+
+    # Make the checkpoint stale (past the 30-minute freshness window).
     payload = json.loads(checkpoint.read_text(encoding="utf-8"))
     payload["updated_at"] = (datetime.now(UTC) - timedelta(hours=1)).isoformat()
     checkpoint.write_text(json.dumps(payload), encoding="utf-8")
+    stale_bytes = checkpoint.read_bytes()
+    good_hash = hashlib.sha256(stale_bytes).hexdigest()
+
+    # Ordinary --resume on a stale checkpoint fails closed; no silent restart.
     calls.clear()
-    assert runner.invoke(app, [*args, "--resume"]).exit_code == 0
-    assert calls == ["record-count", "billable-size", "cost"]
+    result = runner.invoke(app, [*args, "--resume"])
+    assert result.exit_code == 1
+    assert calls == []
+    assert checkpoint.read_bytes() == stale_bytes
+
+    # Wrong authorization hash fails closed before any provider activity.
+    result = runner.invoke(app, [*args, "--resume", "--allow-stale-checkpoint-sha256", "0" * 64])
+    assert result.exit_code == 1
+    assert calls == []
+    assert checkpoint.read_bytes() == stale_bytes
+
+    # The override requires --resume.
+    result = runner.invoke(app, [*args, "--allow-stale-checkpoint-sha256", good_hash])
+    assert result.exit_code != 0
+
+    # Correct authorization hash resumes the exact stale checkpoint.
+    completed_before = len(payload["completed_estimates"])
+    result = runner.invoke(app, [*args, "--resume", "--allow-stale-checkpoint-sha256", good_hash])
+    assert result.exit_code == 0
+    resumed = json.loads(checkpoint.read_text(encoding="utf-8"))
+    # Completed work was preserved, not reset to zero.
+    assert len(resumed["completed_estimates"]) >= completed_before
 
 
 @pytest.fixture

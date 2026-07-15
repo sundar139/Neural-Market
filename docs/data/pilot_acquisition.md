@@ -193,3 +193,27 @@ tested entirely offline; **one new controlled live probe is still required**
 before the metadata checkpoint may be resumed, and acquisition remains
 unauthorized. This milestone did not run a live probe — do not assume the live
 call now passes.
+
+### Stale-checkpoint resume and metadata deadline
+
+`data pilot prepare --resume` now means *resume this exact checkpoint or fail
+closed*: a missing, stale, hash-invalid, plan-incompatible, or otherwise-invalid
+checkpoint exits nonzero and never silently starts a fresh generation (the prior
+behavior, which discarded completed endpoints). A checkpoint older than
+`checkpoint_max_age_minutes` (still 30) may be resumed only with
+`--allow-stale-checkpoint-sha256 <64-lowercase-hex>` matching the checkpoint's
+exact bytes; this bypasses **age only** — every schema, canonical-hash,
+plan/source/split/policy, request, endpoint-hash, and configuration-compatibility
+check remains mandatory, and completed endpoints are preserved rather than
+re-fetched. The option is valid only with `--resume`.
+
+`total_run_deadline_seconds` is raised to `7200` so one bounded invocation can
+complete the 59 pending endpoints (worst case ≈ 21 OPRA `cbbo-1m` costs × 120 s ×
+2 attempts). Because that is an operational control (it changes no request, budget,
+or cost semantics), `checkpoint_compatibility.py` lets a checkpoint bound to the
+prior `540`-second config resume: the stored config hash must equal the current
+hash or a hand-verified prior hash whose only field difference is the deadline
+(see amendment 009). Any scientific/budget difference fails closed. Everything was
+implemented and tested offline; a separate authorized live milestone is still
+required to resume and complete the checkpoint, and acquisition remains
+unauthorized.

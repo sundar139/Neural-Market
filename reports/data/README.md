@@ -51,6 +51,14 @@ duplicate modes for downstream rejection, and fails closed on ambiguous
 (`schemas` + `unit_prices`) or malformed wrappers. Downstream Decimal/mode/schema
 validation is unchanged.
 
+Metadata-completion evidence lives under
+`reports/data/execution/metadata_completion/` as ignored `.local.*` files:
+pre-resume checkpoint backups plus sanitized resume stdout/stderr, cost rollups,
+and checkpoint-validation reports. `--resume` is fail-closed and a stale
+checkpoint resumes only with `--allow-stale-checkpoint-sha256` matching its exact
+bytes (bypasses age only). None of this evidence contains credentials, raw
+responses, or market data.
+
 Cost-fallback checkpoint backups live under
 `reports/data/execution/cost_fallback/` as ignored `.local.json` files. They are
 byte-for-byte copies of the metadata checkpoint taken before derived-cost work
