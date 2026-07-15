@@ -140,3 +140,32 @@ This correction was developed and validated entirely offline against fixtures
 that model the observed SDK shape. A new live unit-price probe is still required
 before the production metadata checkpoint may be resumed, and market-data
 acquisition remains unauthorized.
+
+### Unit-price failure diagnostics
+
+The first shape correction remained insufficient: a second live probe still
+failed, and the child returned only the exception class, so neither the failing
+**stage** nor the response **structure** was recoverable — a single authorized
+call could not be diagnosed. `unit_price_diagnostics.py` closes that gap. On any
+failure the isolated child now returns a typed, versioned
+`UnitPriceFailureDiagnostic` (`diagnostic_schema_version =
+"unit-price-diagnostic-v1"`) carrying the failing stage (`provider_call`,
+`sanitization`, `snapshot_parsing`, `child_timeout`, …), a stable machine-readable
+`failure_code` (e.g. `sequence_item_not_mapping`, `schemas_empty`,
+`target_mode_missing`, `target_mode_duplicate`, `target_schema_missing`,
+`target_price_invalid`), a bounded price-free structural summary, and a SHA-256
+structural fingerprint. `IsolatedUnitPriceResult` also exposes `child_exit_code`.
+
+Raw response logging is prohibited because a real response carries prices and may
+carry account-linked values. The summary captures only **structure** — value
+types, mapping/schema **key names**, lengths, and truncation flags — never
+prices, scalar values, string contents, credentials, or `repr()` of arbitrary
+objects. It is bounded (≤16 sequence items, ≤32 keys per level, depth ≤3, key
+length ≤128, ≤32 KiB) with explicit truncation flags, and cycle-safe. The
+fingerprint hashes only that structural summary, so **changing prices does not
+change it** while changing a mode or schema key does — a stable signal for
+comparing responses across probes.
+
+Parser acceptance/rejection was deliberately left **unchanged**; diagnostics only
+observe and classify it. One new controlled live probe is still required, the
+metadata checkpoint remains blocked, and acquisition remains unauthorized.

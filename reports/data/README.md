@@ -38,7 +38,13 @@ SDK objects. The observed Databento `0.81.0` `list_unit_prices` response is a li
 of maps of feed mode to schema to unit price; the production sanitizer normalizes
 it (and the earlier canonical/dict forms) into one `{mode, schemas}` block per
 mode, preserving duplicate modes for downstream rejection and failing closed on
-malformed responses.
+malformed responses. On failure the isolated child returns a sanitized,
+versioned `UnitPriceFailureDiagnostic` (failing stage, stable failure code,
+bounded price-free structural summary, structural fingerprint, child exit code).
+The summary and fingerprint capture only value types, mapping/schema key names,
+lengths, and truncation flags — never prices, scalar values, credentials, or
+`repr()` of arbitrary objects — so probe evidence stays free of prices and
+account data while remaining diagnosable.
 
 Cost-fallback checkpoint backups live under
 `reports/data/execution/cost_fallback/` as ignored `.local.json` files. They are

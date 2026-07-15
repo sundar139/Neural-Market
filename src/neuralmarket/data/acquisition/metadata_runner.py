@@ -33,7 +33,19 @@ from neuralmarket.data.acquisition.cost_estimation import (
 from neuralmarket.data.acquisition.estimation import MetadataEstimate
 from neuralmarket.data.acquisition.providers import DatabentoMetadataProvider
 from neuralmarket.data.acquisition.requests import AcquisitionRequest
+from neuralmarket.data.acquisition.unit_price_diagnostics import (
+    UnitPriceFailureCode,
+    UnitPriceFailureDiagnostic,
+    UnitPriceFailureStage,
+    build_diagnostic,
+    classify_parsing_code,
+    classify_sanitization_code,
+    structural_fingerprint,
+    summarize_response_shape,
+)
 from neuralmarket.data.errors import CostEstimationError
+
+_UNIT_PRICE_TARGET_SCHEMA = "cbbo-1m"
 
 ESTIMATOR_VERSION = "pilot-metadata-process-v1"
 Endpoint = Literal["record-count", "billable-size", "cost"]
@@ -575,13 +587,86 @@ def _unit_price_child(
     retrieved_at_utc: str,
     expires_at_utc: str,
 ) -> None:
-    """Fetch one dataset's unit prices in a child and emit a sanitized snapshot."""
+    """Fetch one dataset's unit prices in a child and emit snapshot or diagnostic."""
     import databento as db
 
     provider = DatabentoMetadataProvider(db.Historical())
     try:
-        raw = provider.list_unit_prices(dataset=dataset)
+        try:
+            raw = provider.list_unit_prices(dataset=dataset)
+        except BaseException as exc:
+            diagnostic = build_diagnostic(
+                stage=UnitPriceFailureStage.PROVIDER_CALL,
+                code=UnitPriceFailureCode.PROVIDER_ERROR,
+                dataset=dataset,
+                feed_mode=ACQUISITION_FEED_MODE,
+                schema=_UNIT_PRICE_TARGET_SCHEMA,
+                failure_type=type(exc).__name__,
+            )
+            output.put(("failure", diagnostic.model_dump(mode="json")))
+            return
+        output.put(
+            process_unit_price_response(
+                raw,
+                dataset=dataset,
+                client_version=client_version,
+                retrieved_at_utc=retrieved_at_utc,
+                expires_at_utc=expires_at_utc,
+            )
+        )
+    finally:
+        provider.close()
+
+
+def process_unit_price_response(
+    raw: object,
+    *,
+    dataset: str,
+    client_version: str,
+    retrieved_at_utc: str,
+    expires_at_utc: str,
+) -> tuple[str, dict[str, Any]]:
+    """Summarize, sanitize, and parse a raw response into a snapshot or diagnostic.
+
+    Returns ``("snapshot", snapshot_dict)`` on success or
+    ``("failure", diagnostic_dict)`` on any expected/unexpected failure, tagging
+    the failing stage and a stable structural code. Parser behavior is unchanged;
+    this only observes and classifies it.
+    """
+    summary = summarize_response_shape(raw)
+    fingerprint = structural_fingerprint(summary)
+
+    def _fail(
+        stage: UnitPriceFailureStage, code: UnitPriceFailureCode, failure_type: str | None
+    ) -> tuple[str, dict[str, Any]]:
+        diagnostic = build_diagnostic(
+            stage=stage,
+            code=code,
+            dataset=dataset,
+            feed_mode=ACQUISITION_FEED_MODE,
+            schema=_UNIT_PRICE_TARGET_SCHEMA,
+            failure_type=failure_type,
+            summary=summary,
+            fingerprint=fingerprint,
+        )
+        return ("failure", diagnostic.model_dump(mode="json"))
+
+    try:
         blocks = _sanitize_unit_price_response(raw)
+    except CostEstimationError as exc:
+        return _fail(
+            UnitPriceFailureStage.SANITIZATION,
+            classify_sanitization_code(raw),
+            type(exc).__name__,
+        )
+    except Exception as exc:
+        return _fail(
+            UnitPriceFailureStage.SANITIZATION,
+            UnitPriceFailureCode.UNEXPECTED_INTERNAL_ERROR,
+            type(exc).__name__,
+        )
+
+    try:
         snapshot = parse_unit_price_snapshot(
             blocks,
             dataset=dataset,
@@ -590,11 +675,21 @@ def _unit_price_child(
             retrieved_at_utc=retrieved_at_utc,
             expires_at_utc=expires_at_utc,
         )
-        output.put(("snapshot", snapshot.__dict__))
-    except BaseException as exc:
-        output.put(("failure", {"message": type(exc).__name__}))
-    finally:
-        provider.close()
+    except CostEstimationError as exc:
+        return _fail(
+            UnitPriceFailureStage.SNAPSHOT_PARSING,
+            classify_parsing_code(
+                blocks, feed_mode=ACQUISITION_FEED_MODE, schema=_UNIT_PRICE_TARGET_SCHEMA
+            ),
+            type(exc).__name__,
+        )
+    except Exception as exc:
+        return _fail(
+            UnitPriceFailureStage.SNAPSHOT_PARSING,
+            UnitPriceFailureCode.UNEXPECTED_INTERNAL_ERROR,
+            type(exc).__name__,
+        )
+    return ("snapshot", dict(snapshot.__dict__))
 
 
 def _mode_block(mode: object, schemas: object) -> dict[str, Any]:
@@ -653,8 +748,10 @@ class IsolatedUnitPriceResult(BaseModel):
 
     snapshot: UnitPriceSnapshot | None = None
     failure_type: str | None = None
+    diagnostic: UnitPriceFailureDiagnostic | None = None
     child_terminated: bool = False
     child_joined: bool
+    child_exit_code: int | None = None
     remaining_children: int
 
 
@@ -710,21 +807,48 @@ def run_isolated_unit_price_request(
         item.name.startswith("neuralmarket-unitprice-")
         for item in multiprocessing.active_children()
     )
+    exit_code = child.exitcode
     if terminated:
         return IsolatedUnitPriceResult(
             failure_type="unit_price_hard_timeout",
+            diagnostic=build_diagnostic(
+                stage=UnitPriceFailureStage.CHILD_TIMEOUT,
+                code=UnitPriceFailureCode.CHILD_TIMEOUT,
+                dataset=dataset,
+                feed_mode=ACQUISITION_FEED_MODE,
+                schema=_UNIT_PRICE_TARGET_SCHEMA,
+            ),
             child_terminated=True,
             child_joined=not child.is_alive(),
+            child_exit_code=exit_code,
             remaining_children=active,
         )
-    if failure is not None or snapshot_payload is None:
+    if failure is not None:
+        diagnostic = UnitPriceFailureDiagnostic.model_validate(failure)
         return IsolatedUnitPriceResult(
-            failure_type=str((failure or {}).get("message", "unit_price_child_failed")),
+            failure_type=diagnostic.failure_type or diagnostic.failure_code.value,
+            diagnostic=diagnostic,
             child_joined=not child.is_alive(),
+            child_exit_code=exit_code,
+            remaining_children=active,
+        )
+    if snapshot_payload is None:
+        return IsolatedUnitPriceResult(
+            failure_type="unit_price_child_failed",
+            diagnostic=build_diagnostic(
+                stage=UnitPriceFailureStage.CHILD_TRANSPORT,
+                code=UnitPriceFailureCode.CHILD_NO_RESULT,
+                dataset=dataset,
+                feed_mode=ACQUISITION_FEED_MODE,
+                schema=_UNIT_PRICE_TARGET_SCHEMA,
+            ),
+            child_joined=not child.is_alive(),
+            child_exit_code=exit_code,
             remaining_children=active,
         )
     return IsolatedUnitPriceResult(
         snapshot=UnitPriceSnapshot(**snapshot_payload),
         child_joined=not child.is_alive(),
+        child_exit_code=exit_code,
         remaining_children=active,
     )
