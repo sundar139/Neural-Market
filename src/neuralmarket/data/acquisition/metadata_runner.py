@@ -10,7 +10,7 @@ import os
 import queue
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -33,6 +33,7 @@ from neuralmarket.data.acquisition.cost_estimation import (
 from neuralmarket.data.acquisition.estimation import MetadataEstimate
 from neuralmarket.data.acquisition.providers import DatabentoMetadataProvider
 from neuralmarket.data.acquisition.requests import AcquisitionRequest
+from neuralmarket.data.errors import CostEstimationError
 
 ESTIMATOR_VERSION = "pilot-metadata-process-v1"
 Endpoint = Literal["record-count", "billable-size", "cost"]
@@ -596,17 +597,52 @@ def _unit_price_child(
         provider.close()
 
 
+def _mode_block(mode: object, schemas: object) -> dict[str, Any]:
+    """Build one canonical ``{mode, schemas}`` block, failing closed on malformed input.
+
+    Structure and representation only: each SDK price is normalized to its string
+    form (the real ``list_unit_prices`` response carries JSON floats), so the
+    canonical block round-trips through the child boundary as decimal strings.
+    Price *validity* (positive, finite, decimal, non-bool) is decided downstream
+    by :func:`parse_unit_price_snapshot`, never here.
+    """
+    if not isinstance(mode, str) or not mode.strip():
+        raise CostEstimationError(f"unit-price feed mode must be a nonempty string: {mode!r}")
+    if not isinstance(schemas, Mapping) or not schemas:
+        raise CostEstimationError(f"unit-price schemas for {mode!r} must be a nonempty mapping")
+    return {"mode": mode, "schemas": {str(schema): str(price) for schema, price in schemas.items()}}
+
+
 def _sanitize_unit_price_response(raw: object) -> list[dict[str, Any]]:
-    """Normalize a Databento unit-price response into sanitized mode blocks."""
+    """Normalize a Databento unit-price response into sanitized mode blocks.
+
+    Supported shapes (anything else fails closed):
+
+    * a top-level mapping ``{mode: {schema: price}}``;
+    * a list of canonical blocks ``[{"mode": m, "schemas": {...}}, ...]``;
+    * a list of real SDK maps ``[{mode: {schema: price}}, ...]`` (databento
+      ``0.81.0``), where each item's keys are feed-mode names.
+
+    Each feed mode becomes one block; duplicate modes are preserved (never
+    merged) so downstream ambiguity checks can reject them, and block ordering is
+    deterministic. A malformed entry fails the entire response rather than
+    yielding only the valid subset.
+    """
     blocks: list[dict[str, Any]] = []
-    if isinstance(raw, dict):
+    if isinstance(raw, Mapping):
         for mode, schemas in raw.items():
-            if isinstance(schemas, dict):
-                blocks.append({"mode": str(mode), "schemas": dict(schemas)})
+            blocks.append(_mode_block(mode, schemas))
     elif isinstance(raw, list):
         for item in raw:
-            if isinstance(item, dict) and "mode" in item and "schemas" in item:
-                blocks.append({"mode": str(item["mode"]), "schemas": dict(item["schemas"])})
+            if not isinstance(item, Mapping):
+                raise CostEstimationError("unit-price list entry is not a mapping")
+            if "mode" in item and "schemas" in item:
+                blocks.append(_mode_block(item["mode"], item["schemas"]))
+            else:
+                for mode, schemas in item.items():
+                    blocks.append(_mode_block(mode, schemas))
+    else:
+        raise CostEstimationError("unit-price response is not a mapping or list")
     return blocks
 
 

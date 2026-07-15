@@ -29,6 +29,17 @@ hash, authorization hash, manual portal status, artifact hash, and any immediate
 superseded reconciliation hash; they must not contain portal HTML, screenshots,
 API keys, card data, or market records.
 
+Live metadata-preflight evidence lives under
+`reports/data/execution/metadata_preflight/` as ignored `.local.*` files:
+byte-for-byte checkpoint backups plus sanitized unit-price probe results
+(dataset, selected feed mode, schema, decimal price, hashes, child exit/cleanup).
+They never contain API keys, authorization headers, account identifiers, or raw
+SDK objects. The observed Databento `0.81.0` `list_unit_prices` response is a list
+of maps of feed mode to schema to unit price; the production sanitizer normalizes
+it (and the earlier canonical/dict forms) into one `{mode, schemas}` block per
+mode, preserving duplicate modes for downstream rejection and failing closed on
+malformed responses.
+
 Cost-fallback checkpoint backups live under
 `reports/data/execution/cost_fallback/` as ignored `.local.json` files. They are
 byte-for-byte copies of the metadata checkpoint taken before derived-cost work

@@ -117,3 +117,26 @@ the cross-validation sample counts (`pilot_cross_validation_sample_count = 1`,
 `full_acquisition_minimum_sample_count = 2` — full development acquisition
 requires at least two compatible provider comparisons). Conservative costs govern
 the per-request, total, and drift gates.
+
+### Databento unit-price response shape
+
+The installed Databento SDK (`0.81.0`) returns
+`metadata.list_unit_prices(dataset)` as a **list of maps of feed mode to schema
+to unit price**, e.g. `[{"historical-streaming": {"cbbo-1m": 2.0}}]`, where each
+map's keys are feed-mode names and prices are JSON floats. A single list item may
+carry several modes. `_sanitize_unit_price_response` normalizes this — plus the
+earlier canonical `[{"mode": ..., "schemas": {...}}]` list form and the top-level
+`{mode: {schema: price}}` mapping — into one canonical
+`{"mode": ..., "schemas": {schema: price-string}}` block per feed mode. It
+transforms structure and representation only (SDK floats become decimal strings);
+`parse_unit_price_snapshot` still decides price validity (positive, finite,
+non-bool). Duplicate feed-mode blocks are **preserved, never merged**, so the
+parser's ambiguity check can reject them, and block order is deterministic. A
+malformed or mixed response (a non-mapping entry, an empty or non-mapping schema
+map, an empty mode name) fails the whole response closed rather than returning a
+partial subset.
+
+This correction was developed and validated entirely offline against fixtures
+that model the observed SDK shape. A new live unit-price probe is still required
+before the production metadata checkpoint may be resumed, and market-data
+acquisition remains unauthorized.
