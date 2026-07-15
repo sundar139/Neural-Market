@@ -57,7 +57,12 @@ pre-resume checkpoint backups plus sanitized resume stdout/stderr, cost rollups,
 and checkpoint-validation reports. `--resume` is fail-closed and a stale
 checkpoint resumes only with `--allow-stale-checkpoint-sha256` matching its exact
 bytes (bypasses age only). None of this evidence contains credentials, raw
-responses, or market data.
+responses, or market data. The tracked summary of the completed 75/75
+metadata preflight (two hash-bound continuations, one derived-cost fallback,
+all financial gates passing) is
+[`resilient_metadata_preflight_completion.md`](resilient_metadata_preflight_completion.md);
+the protocol record is
+[`../protocol/research_protocol_amendment_010.md`](../protocol/research_protocol_amendment_010.md).
 
 Cost-fallback checkpoint backups live under
 `reports/data/execution/cost_fallback/` as ignored `.local.json` files. They are
