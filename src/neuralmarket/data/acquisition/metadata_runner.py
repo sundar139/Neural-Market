@@ -708,20 +708,51 @@ def _mode_block(mode: object, schemas: object) -> dict[str, Any]:
     return {"mode": mode, "schemas": {str(schema): str(price) for schema, price in schemas.items()}}
 
 
+def _sanitize_list_item(item: Mapping[Any, Any]) -> list[dict[str, Any]]:
+    """Normalize one list item into one or more canonical mode blocks, fail-closed.
+
+    Recognizes, in order: the confirmed SDK form ``{"mode", "unit_prices"}``, the
+    canonical form ``{"mode", "schemas"}``, and the direct mode-map form
+    ``{<mode>: {schema: price}}``. An item declaring both ``schemas`` and
+    ``unit_prices`` is ambiguous, a ``mode``/``unit_prices`` item with unexpected
+    sibling keys is unsupported, and a ``mode`` or ``unit_prices`` without a valid
+    pairing is malformed; each fails closed.
+    """
+    has_mode = "mode" in item
+    has_schemas = "schemas" in item
+    has_unit_prices = "unit_prices" in item
+    if has_mode and has_schemas and has_unit_prices:
+        raise CostEstimationError("unit-price item declares both 'schemas' and 'unit_prices'")
+    if has_mode and (has_schemas or has_unit_prices):
+        wrapper = "schemas" if has_schemas else "unit_prices"
+        extra = set(item.keys()) - {"mode", wrapper}
+        if extra:
+            raise CostEstimationError(
+                f"unit-price item has unsupported sibling keys: {sorted(map(str, extra))!r}"
+            )
+        return [_mode_block(item["mode"], item[wrapper])]
+    if has_mode or has_unit_prices:
+        raise CostEstimationError(
+            "unit-price item has 'mode'/'unit_prices' without a valid mode/schemas pairing"
+        )
+    return [_mode_block(mode, schemas) for mode, schemas in item.items()]
+
+
 def _sanitize_unit_price_response(raw: object) -> list[dict[str, Any]]:
     """Normalize a Databento unit-price response into sanitized mode blocks.
 
     Supported shapes (anything else fails closed):
 
     * a top-level mapping ``{mode: {schema: price}}``;
+    * a list of confirmed SDK items ``[{"mode": m, "unit_prices": {...}}, ...]``
+      (databento ``0.81.0``);
     * a list of canonical blocks ``[{"mode": m, "schemas": {...}}, ...]``;
-    * a list of real SDK maps ``[{mode: {schema: price}}, ...]`` (databento
-      ``0.81.0``), where each item's keys are feed-mode names.
+    * a list of direct mode maps ``[{mode: {schema: price}}, ...]``.
 
     Each feed mode becomes one block; duplicate modes are preserved (never
     merged) so downstream ambiguity checks can reject them, and block ordering is
     deterministic. A malformed entry fails the entire response rather than
-    yielding only the valid subset.
+    yielding only the valid subset. The raw input is never mutated.
     """
     blocks: list[dict[str, Any]] = []
     if isinstance(raw, Mapping):
@@ -731,11 +762,7 @@ def _sanitize_unit_price_response(raw: object) -> list[dict[str, Any]]:
         for item in raw:
             if not isinstance(item, Mapping):
                 raise CostEstimationError("unit-price list entry is not a mapping")
-            if "mode" in item and "schemas" in item:
-                blocks.append(_mode_block(item["mode"], item["schemas"]))
-            else:
-                for mode, schemas in item.items():
-                    blocks.append(_mode_block(mode, schemas))
+            blocks.extend(_sanitize_list_item(item))
     else:
         raise CostEstimationError("unit-price response is not a mapping or list")
     return blocks

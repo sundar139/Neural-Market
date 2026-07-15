@@ -187,6 +187,27 @@ def _mode_issue(mode: object, schemas: object) -> UnitPriceFailureCode | None:
     return None
 
 
+def _list_item_code(item: Mapping[Any, Any]) -> UnitPriceFailureCode | None:
+    """Mirror ``_sanitize_list_item`` to name the failure of one list item."""
+    has_mode = "mode" in item
+    has_schemas = "schemas" in item
+    has_unit_prices = "unit_prices" in item
+    if has_mode and has_schemas and has_unit_prices:
+        return UnitPriceFailureCode.MIXED_RESPONSE_FORMS
+    if has_mode and (has_schemas or has_unit_prices):
+        wrapper = "schemas" if has_schemas else "unit_prices"
+        if set(item.keys()) - {"mode", wrapper}:
+            return UnitPriceFailureCode.UNSUPPORTED_MAPPING_ENTRY
+        return _mode_issue(item["mode"], item[wrapper])
+    if has_mode or has_unit_prices:
+        return UnitPriceFailureCode.INVALID_CANONICAL_BLOCK
+    for mode, schemas in item.items():
+        code = _mode_issue(mode, schemas)
+        if code is not None:
+            return code
+    return None
+
+
 def classify_sanitization_code(raw: object) -> UnitPriceFailureCode:
     """Name the first structural reason a raw response fails sanitization."""
     if isinstance(raw, Mapping):
@@ -201,15 +222,9 @@ def classify_sanitization_code(raw: object) -> UnitPriceFailureCode:
         for item in raw:
             if not isinstance(item, Mapping):
                 return UnitPriceFailureCode.SEQUENCE_ITEM_NOT_MAPPING
-            if "mode" in item and "schemas" in item:
-                code = _mode_issue(item["mode"], item["schemas"])
-                if code is not None:
-                    return UnitPriceFailureCode.INVALID_CANONICAL_BLOCK
-            else:
-                for mode, schemas in item.items():
-                    code = _mode_issue(mode, schemas)
-                    if code is not None:
-                        return code
+            code = _list_item_code(item)
+            if code is not None:
+                return code
         return UnitPriceFailureCode.UNEXPECTED_INTERNAL_ERROR
     return UnitPriceFailureCode.UNSUPPORTED_TOP_LEVEL_TYPE
 

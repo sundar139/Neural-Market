@@ -286,3 +286,57 @@ def test_child_timeout() -> None:
     assert result.diagnostic.failure_stage is UnitPriceFailureStage.CHILD_TIMEOUT
     assert result.child_terminated is True
     assert result.remaining_children == 0
+
+
+# --- Confirmed {"mode","unit_prices"} form classification --------------------
+
+
+def test_confirmed_form_sanitization_codes() -> None:
+    sanitize_stage = UnitPriceFailureStage.SANITIZATION
+    cases = {
+        UnitPriceFailureCode.INVALID_CANONICAL_BLOCK: [{"unit_prices": {CBBO: 2.0}}],
+        UnitPriceFailureCode.EMPTY_MODE_NAME: [{"mode": "", "unit_prices": {CBBO: 2.0}}],
+        UnitPriceFailureCode.SCHEMAS_NOT_MAPPING: [{"mode": FEED_MODE, "unit_prices": "x"}],
+        UnitPriceFailureCode.SCHEMAS_EMPTY: [{"mode": FEED_MODE, "unit_prices": {}}],
+        UnitPriceFailureCode.MIXED_RESPONSE_FORMS: [
+            {"mode": FEED_MODE, "schemas": {CBBO: 2.0}, "unit_prices": {CBBO: 2.0}}
+        ],
+        UnitPriceFailureCode.UNSUPPORTED_MAPPING_ENTRY: [
+            {"mode": FEED_MODE, "unit_prices": {CBBO: 2.0}, "note": "x"}
+        ],
+    }
+    for code, raw in cases.items():
+        diag = _fail(raw)
+        assert diag.failure_stage is sanitize_stage
+        assert diag.failure_code is code
+
+
+def test_confirmed_mode_only_is_invalid_canonical_block() -> None:
+    diag = _fail([{"mode": FEED_MODE}])
+    assert diag.failure_code is UnitPriceFailureCode.INVALID_CANONICAL_BLOCK
+
+
+def test_confirmed_target_mode_missing() -> None:
+    diag = _fail([{"mode": "historical-download", "unit_prices": {CBBO: 2.0}}])
+    assert diag.failure_stage is UnitPriceFailureStage.SNAPSHOT_PARSING
+    assert diag.failure_code is UnitPriceFailureCode.TARGET_MODE_MISSING
+
+
+def test_confirmed_target_price_invalid_hides_value() -> None:
+    diag = _fail([{"mode": FEED_MODE, "unit_prices": {CBBO: "-987654.321"}}])
+    assert diag.failure_code is UnitPriceFailureCode.TARGET_PRICE_INVALID
+    assert "987654.321" not in json.dumps(diag.model_dump(mode="json"))
+
+
+def test_confirmed_fingerprint_price_invariant() -> None:
+    a = summarize_response_shape([{"mode": FEED_MODE, "unit_prices": {CBBO: 2.0}}])
+    b = summarize_response_shape([{"mode": FEED_MODE, "unit_prices": {CBBO: 9999.99}}])
+    assert structural_fingerprint(a) == structural_fingerprint(b)
+
+
+def test_confirmed_wrapper_and_schema_key_change_fingerprint() -> None:
+    confirmed = summarize_response_shape([{"mode": FEED_MODE, "unit_prices": {CBBO: 2.0}}])
+    canonical = summarize_response_shape([{"mode": FEED_MODE, "schemas": {CBBO: 2.0}}])
+    other_schema = summarize_response_shape([{"mode": FEED_MODE, "unit_prices": {"trades": 2.0}}])
+    assert structural_fingerprint(confirmed) != structural_fingerprint(canonical)
+    assert structural_fingerprint(confirmed) != structural_fingerprint(other_schema)

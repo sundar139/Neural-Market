@@ -169,3 +169,27 @@ comparing responses across probes.
 Parser acceptance/rejection was deliberately left **unchanged**; diagnostics only
 observe and classify it. One new controlled live probe is still required, the
 metadata checkpoint remains blocked, and acquisition remains unauthorized.
+
+### Confirmed Databento 0.81.0 response contract
+
+The final diagnostic probe confirmed the real `list_unit_prices` shape: a list of
+items `{"mode": <string>, "unit_prices": {<schema>: <price>}}` (12 OPRA schemas
+per mode). The sanitizer now recognizes this alongside the earlier forms and
+normalizes `unit_prices` to the canonical `schemas` block — the mode name and
+every schema key are preserved and each price passes through the same
+representation normalization (`str(price)`), so the confirmed float prices survive
+to `parse_unit_price_snapshot`, which remains the sole authority on price
+validity. `unit_prices` is mapped to `schemas` purely to reach one canonical
+internal block shape; nothing else about parsing, mode/schema selection, Decimal
+validation, duplicate-mode rejection, or hashing changed.
+
+Wrapper disambiguation is strict and fail-closed: an item with `mode` + `schemas`
+is canonical; `mode` + `unit_prices` is the confirmed form; an item declaring
+**both** `schemas` and `unit_prices` is ambiguous; a `mode`/`unit_prices` item
+with any unexpected sibling key, a `unit_prices` without `mode`, or a `mode`
+without a wrapper all fail closed. Duplicate feed modes are still preserved (never
+merged) so the parser rejects the ambiguity. The correction was implemented and
+tested entirely offline; **one new controlled live probe is still required**
+before the metadata checkpoint may be resumed, and acquisition remains
+unauthorized. This milestone did not run a live probe — do not assume the live
+call now passes.

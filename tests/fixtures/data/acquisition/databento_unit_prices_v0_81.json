@@ -1,0 +1,31 @@
+[
+  {
+    "mode": "historical-streaming",
+    "unit_prices": {
+      "cmbp-1": 1.0,
+      "cbbo-1s": 1.0,
+      "cbbo-1m": 2.0,
+      "tcbbo": 1.0,
+      "trades": 1.0,
+      "ohlcv-1s": 1.0,
+      "ohlcv-1m": 1.0,
+      "ohlcv-1h": 1.0,
+      "ohlcv-1d": 1.0,
+      "statistics": 1.0,
+      "status": 1.0,
+      "definition": 1.0
+    }
+  },
+  {
+    "mode": "historical-download",
+    "unit_prices": {
+      "cbbo-1m": 3.0
+    }
+  },
+  {
+    "mode": "another-nontarget-mode",
+    "unit_prices": {
+      "cbbo-1m": 4.0
+    }
+  }
+]

@@ -9,8 +9,10 @@ plus the previously supported shapes, entirely offline.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -25,6 +27,7 @@ from neuralmarket.data.acquisition.metadata_runner import (
     _sanitize_unit_price_response,
     derive_cost_endpoint_result,
     endpoint_response_hash,
+    process_unit_price_response,
     run_isolated_unit_price_request,
 )
 from neuralmarket.data.acquisition.requests import AcquisitionRequest
@@ -34,6 +37,7 @@ pytestmark = pytest.mark.unit
 
 CBBO = "cbbo-1m"
 DATASET = "OPRA.PILLAR"
+FEED_MODE = ACQUISITION_FEED_MODE
 ACCOUNT = "pilot-databento-historical-v1"
 REF_BILLABLE = 5209600
 REF_COST = "0.009703636169"
@@ -270,3 +274,178 @@ def test_derived_fallback_succeeds_with_real_shape_snapshot() -> None:
     assert Decimal(str(result.raw_cost_usd)) == raw
     assert Decimal(str(result.conservative_cost_usd)) == raw * Decimal("1.25")
     assert result.response_hash == endpoint_response_hash("cost", str(raw))
+
+
+# --- Confirmed Databento 0.81.0 form: {"mode", "unit_prices"} -----------------
+
+_FIXTURE = (
+    Path(__file__).resolve().parents[3]
+    / "fixtures/data/acquisition/databento_unit_prices_v0_81.json"
+)
+
+
+def _confirmed() -> list[dict[str, Any]]:
+    return json.loads(_FIXTURE.read_text(encoding="utf-8"))
+
+
+def test_confirmed_single_item_sanitizes_and_parses() -> None:
+    raw = [{"mode": FEED_MODE, "unit_prices": {CBBO: 2.0}}]
+    blocks = _sanitize_unit_price_response(raw)
+    assert blocks == [{"mode": FEED_MODE, "schemas": {CBBO: "2.0"}}]
+    assert _parse(blocks).price_for(CBBO) == Decimal("2.0")
+
+
+def test_confirmed_three_item_sequence_selects_target() -> None:
+    raw = _confirmed()
+    blocks = _sanitize_unit_price_response(raw)
+    assert [b["mode"] for b in blocks] == [
+        FEED_MODE,
+        "historical-download",
+        "another-nontarget-mode",
+    ]
+    snapshot = _parse(blocks)
+    assert snapshot.feed_mode == FEED_MODE
+    assert snapshot.price_for(CBBO) == Decimal("2.0")
+    # All 12 schemas preserved for the target mode.
+    assert len(snapshot.schema_prices) == 12
+    assert snapshot.price_for("definition") == Decimal("1.0")
+
+
+def test_confirmed_form_does_not_mutate_raw() -> None:
+    raw = _confirmed()
+    before = json.dumps(raw, sort_keys=True)
+    _sanitize_unit_price_response(raw)
+    assert json.dumps(raw, sort_keys=True) == before
+    assert "unit_prices" in raw[0] and "schemas" not in raw[0]
+
+
+def test_confirmed_form_hash_stable_for_equivalent_input() -> None:
+    a = _parse(_sanitize_unit_price_response([{"mode": FEED_MODE, "unit_prices": {CBBO: 2.0}}]))
+    b = _parse(_sanitize_unit_price_response([{"mode": FEED_MODE, "schemas": {CBBO: "2.0"}}]))
+    assert a.snapshot_hash == b.snapshot_hash
+
+
+def test_confirmed_duplicate_mode_rejected() -> None:
+    raw = [
+        {"mode": FEED_MODE, "unit_prices": {CBBO: 2.0}},
+        {"mode": FEED_MODE, "unit_prices": {CBBO: 3.0}},
+    ]
+    blocks = _sanitize_unit_price_response(raw)
+    assert len(blocks) == 2
+    with pytest.raises(CostEstimationError, match="duplicate"):
+        _parse(blocks)
+
+
+def test_confirmed_missing_target_mode_rejected() -> None:
+    raw = [{"mode": "historical-download", "unit_prices": {CBBO: 3.0}}]
+    with pytest.raises(CostEstimationError, match="no 'historical-streaming'"):
+        _parse(_sanitize_unit_price_response(raw))
+
+
+def test_confirmed_missing_target_schema_builds_but_lookup_fails() -> None:
+    raw = [{"mode": FEED_MODE, "unit_prices": {"trades": 1.0}}]
+    snapshot = _parse(_sanitize_unit_price_response(raw))
+    with pytest.raises(CostEstimationError):
+        snapshot.price_for(CBBO)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        [{"mode": FEED_MODE, "unit_prices": {}}],  # empty unit_prices
+        [{"mode": FEED_MODE, "unit_prices": "x"}],  # nonmapping unit_prices
+        [{"mode": "", "unit_prices": {CBBO: 2.0}}],  # empty mode
+        [{"unit_prices": {CBBO: 2.0}}],  # mode missing
+        [{"mode": FEED_MODE}],  # wrapper missing
+        [{"mode": FEED_MODE, "schemas": {CBBO: 2.0}, "unit_prices": {CBBO: 2.0}}],  # both
+        [{"mode": FEED_MODE, "unit_prices": {CBBO: 2.0}, "note": "x"}],  # unknown sibling
+    ],
+)
+def test_confirmed_malformed_forms_fail_closed(raw: Any) -> None:
+    with pytest.raises(CostEstimationError):
+        _sanitize_unit_price_response(raw)
+
+
+@pytest.mark.parametrize("price", [True, "0", "-2.0", "nan", "inf", "-inf"])
+def test_confirmed_invalid_prices_rejected_downstream(price: Any) -> None:
+    raw = [{"mode": FEED_MODE, "unit_prices": {CBBO: price}}]
+    with pytest.raises(CostEstimationError):
+        _parse(_sanitize_unit_price_response(raw))
+
+
+def _confirmed_worker(output, dataset, client_version, retrieved_at_utc, expires_at_utc) -> None:
+    from neuralmarket.data.acquisition import metadata_runner
+
+    output.put(
+        metadata_runner.process_unit_price_response(
+            [{"mode": "historical-streaming", "unit_prices": {"cbbo-1m": 2.0}}],
+            dataset=dataset,
+            client_version=client_version,
+            retrieved_at_utc=retrieved_at_utc,
+            expires_at_utc=expires_at_utc,
+        )
+    )
+
+
+def test_confirmed_child_integration() -> None:
+    result = run_isolated_unit_price_request(
+        dataset=DATASET,
+        client_version="0.81.0",
+        retrieved_at_utc="2026-07-15T02:00:00+00:00",
+        expires_at_utc="2026-07-16T02:00:00+00:00",
+        timeout_seconds=10,
+        worker=_confirmed_worker,
+    )
+    assert result.snapshot is not None
+    assert result.diagnostic is None
+    assert result.snapshot.feed_mode == FEED_MODE
+    assert result.snapshot.price_for(CBBO) == Decimal("2.0")
+    assert result.child_joined is True
+    assert result.child_terminated is False
+    assert result.child_exit_code == 0
+    assert result.remaining_children == 0
+
+
+def test_confirmed_form_produces_no_failure_diagnostic() -> None:
+    kind, _payload = process_unit_price_response(
+        _confirmed(),
+        dataset=DATASET,
+        client_version="0.81.0",
+        retrieved_at_utc="2026-07-15T02:00:00+00:00",
+        expires_at_utc="2026-07-16T02:00:00+00:00",
+    )
+    assert kind == "snapshot"
+
+
+def test_confirmed_form_derived_fallback() -> None:
+    snapshot = _parse(_sanitize_unit_price_response(_confirmed()))
+    billable = MetadataEndpointResult(
+        value=BLK_BILLABLE,
+        completed_at=datetime.now(UTC).isoformat(),
+        response_hash=endpoint_response_hash("billable-size", BLK_BILLABLE),
+    )
+    samples = [
+        ProviderCostSample(
+            dataset=DATASET,
+            schema=CBBO,
+            feed_mode=ACQUISITION_FEED_MODE,
+            account_pricing_context=ACCOUNT,
+            billable_size_bytes=REF_BILLABLE,
+            provider_cost_usd=Decimal(REF_COST),
+        )
+    ]
+    result = derive_cost_endpoint_result(
+        request=_opra_request(),
+        billable_size_result=billable,
+        snapshot=snapshot,
+        samples=samples,
+        account_pricing_context=ACCOUNT,
+        failure_http_status=504,
+        failure_category=None,
+        now_utc=datetime.now(UTC).isoformat(),
+    )
+    raw = Decimal(BLK_BILLABLE) * Decimal("2.0") / Decimal(2**30)
+    assert result.cost_source == "derived_response"
+    assert Decimal(str(result.unit_price_usd_per_gib)) == Decimal("2.0")
+    assert Decimal(str(result.raw_cost_usd)) == raw
+    assert Decimal(str(result.conservative_cost_usd)) == raw * Decimal("1.25")

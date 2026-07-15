@@ -44,7 +44,12 @@ bounded price-free structural summary, structural fingerprint, child exit code).
 The summary and fingerprint capture only value types, mapping/schema key names,
 lengths, and truncation flags — never prices, scalar values, credentials, or
 `repr()` of arbitrary objects — so probe evidence stays free of prices and
-account data while remaining diagnosable.
+account data while remaining diagnosable. The confirmed Databento `0.81.0` shape
+is a list of `{"mode": <str>, "unit_prices": {schema: price}}` items; the
+sanitizer normalizes `unit_prices` to the canonical `schemas` block, preserves
+duplicate modes for downstream rejection, and fails closed on ambiguous
+(`schemas` + `unit_prices`) or malformed wrappers. Downstream Decimal/mode/schema
+validation is unchanged.
 
 Cost-fallback checkpoint backups live under
 `reports/data/execution/cost_fallback/` as ignored `.local.json` files. They are
