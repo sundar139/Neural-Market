@@ -63,3 +63,40 @@ therefore passes only supported request keywords, validates the DBNStore-like
 response shape, and classifies post-response serialization/persistence failures
 without enabling automatic retry. Any future retry still requires fresh explicit
 authorization and portal attestation.
+
+## Resilient usage-based cost fallback
+
+Cost estimation follows a fail-closed hierarchy: (1) Databento
+`metadata.get_cost`; (2) a derived estimate from `metadata.get_billable_size`
+and `metadata.list_unit_prices`; (3) an operator-attested portal quote; (4)
+block execution. Levels 1 and 2 are implemented in
+`neuralmarket.data.acquisition.cost_estimation`.
+
+The derived cost is
+
+```
+derived_cost_usd = Decimal(billable_size_bytes)
+                   * Decimal(unit_price_usd_per_gib)
+                   / Decimal(1_073_741_824)
+```
+
+using the exact binary GiB divisor `2**30` (never `1e9`) with `Decimal`
+throughout; rounding is presentation-only. The unit-price snapshot is bound to
+the `historical-streaming` feed mode — the same streaming path
+`timeseries.get_range` uses — because the successful reference `get_cost`
+reproduces exactly at 2.0 USD/GiB in that mode; the cheaper `historical` batch
+mode maps to unauthorized batch submission.
+
+A derived estimate is permitted only after `get_cost` exhausts its bounded
+attempts with HTTP 500/502/503/504 or a provider/network timeout. HTTP
+400/401/403/404/409/429, entitlement, authentication, invalid symbol/schema/
+range, and request-contract errors all continue to fail closed. Before use, the
+method is cross-validated against at least one successful same-dataset,
+same-schema, same-mode, same-account provider `get_cost` (absolute error ≤ 1e-9
+USD, relative error ≤ 1e-6); with no compatible comparison the fallback stays
+disabled. Each derived estimate stores a raw value and a conservative value
+`raw × 1.25`; the conservative value drives every per-request cap, total cap,
+drift gate, and authorization binding. Provider-returned costs are never
+altered. Each estimate binds the request-specification, billable-size response,
+unit-price snapshot, and cross-validation evidence hashes plus the calculation
+version into an immutable `estimate_hash`.

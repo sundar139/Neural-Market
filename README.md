@@ -100,6 +100,14 @@ accounting: uncertain billing blocks automatic retry, stale attempts are surface
 by recovery, and manual portal reconciliation/supersession is applied only from
 ignored local artifacts without provider activity.
 
+Cost estimation is fail-closed with a conservative derived fallback: when
+`metadata.get_cost` exhausts its bounded attempts on a provider-side 5xx or
+timeout, a derived estimate from `get_billable_size` and `list_unit_prices`
+(billing divisor exactly `2**30`, all `Decimal`) may be used only after
+cross-validation against a successful same-context provider quote, and every
+spending gate then uses the conservative (×1.25) amount. See
+[pilot acquisition](docs/data/pilot_acquisition.md).
+
 ## Data and secrets
 
 Raw licensed vendor data is never committed; generated data is tracked with DVC

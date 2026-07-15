@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://neuralmarket/data_contracts/metadata_cost_snapshot.schema.json",
+  "title": "MetadataCostSnapshot",
+  "description": "A fresh, hash-bound Databento unit-price snapshot for one dataset and feed mode, plus the derived cost estimate it backs. Monetary values are decimal strings; the divisor is exactly 2**30 bytes per billing GiB.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "dataset",
+    "feed_mode",
+    "databento_client_version",
+    "retrieved_at_utc",
+    "expires_at_utc",
+    "schema_prices",
+    "snapshot_hash"
+  ],
+  "properties": {
+    "dataset": {
+      "type": "string",
+      "description": "Databento dataset code, e.g. OPRA.PILLAR."
+    },
+    "feed_mode": {
+      "type": "string",
+      "description": "Bound feed mode; the paid path uses historical-streaming.",
+      "enum": ["historical", "historical-streaming"]
+    },
+    "databento_client_version": {
+      "type": "string"
+    },
+    "retrieved_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_at_utc": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "schema_prices": {
+      "type": "object",
+      "description": "Schema-to-unit-price mapping in USD per billing GiB, as decimal strings.",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[0-9]+(\\.[0-9]+)?$"
+      }
+    },
+    "snapshot_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Canonical SHA-256 binding dataset, feed mode, client version, timestamps, schema prices, and calculation version."
+    }
+  }
+}

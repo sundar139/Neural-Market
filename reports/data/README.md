@@ -29,6 +29,12 @@ hash, authorization hash, manual portal status, artifact hash, and any immediate
 superseded reconciliation hash; they must not contain portal HTML, screenshots,
 API keys, card data, or market records.
 
+Cost-fallback checkpoint backups live under
+`reports/data/execution/cost_fallback/` as ignored `.local.json` files. They are
+byte-for-byte copies of the metadata checkpoint taken before derived-cost work,
+carrying the same dependency hashes, request identities, and safe timing events,
+and never credentials, response bodies, or market data.
+
 Paid-failure diagnostics live under `reports/data/execution/diagnostics/` as
 ignored `.local.json`, `.local.sqlite`, and `.local.patch` files. They may record
 sanitized request parameters, local adapter source locations, Databento client
