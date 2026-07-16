@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "neuralmarket:contract:pilot_purchase_authorization:1.0",
+  "title": "Pilot purchase-authorization review artifact",
+  "description": "Human purchase decision for the January 2019 pilot, bound to the completed metadata checkpoint and frozen plan. This review-layer artifact gates preparation of the execution-layer pilot_authorization artifact; it never stores credentials, account identifiers, or provider responses.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "template_only",
+    "authorized",
+    "consumed",
+    "repository_head",
+    "plan_hash",
+    "completed_checkpoint_sha256",
+    "request_manifest_sha256",
+    "source_manifest_hash",
+    "split_manifest_hash",
+    "acquisition_policy_hash",
+    "configuration_compatibility",
+    "databento_client_version",
+    "raw_total_usd",
+    "conservative_total_usd",
+    "authorized_ceiling_usd",
+    "scope",
+    "created_at",
+    "expires_at",
+    "authorized_by",
+    "authorization_statement",
+    "review_hash"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "pilot-purchase-authorization-v1"
+    },
+    "template_only": {
+      "type": "boolean"
+    },
+    "authorized": {
+      "type": "boolean"
+    },
+    "consumed": {
+      "type": "boolean"
+    },
+    "repository_head": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "plan_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "completed_checkpoint_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "request_manifest_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "source_manifest_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "split_manifest_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "acquisition_policy_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "configuration_compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["checkpoint_stored_pilot_config_hash", "current_config_sha256", "compatible"],
+      "properties": {
+        "checkpoint_stored_pilot_config_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "current_config_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "compatible": {
+          "type": "boolean"
+        }
+      }
+    },
+    "databento_client_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "raw_total_usd": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$"
+    },
+    "conservative_total_usd": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$"
+    },
+    "authorized_ceiling_usd": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9]+\\.[0-9]+$"
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pilot_month",
+        "datasets",
+        "schemas",
+        "symbols",
+        "window_start",
+        "window_end",
+        "logical_request_count"
+      ],
+      "properties": {
+        "pilot_month": {
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}$"
+        },
+        "datasets": {
+          "type": "array",
+          "items": {"type": "string"},
+          "minItems": 1
+        },
+        "schemas": {
+          "type": "array",
+          "items": {"type": "string"},
+          "minItems": 1
+        },
+        "symbols": {
+          "type": "array",
+          "items": {"type": "string"},
+          "minItems": 1
+        },
+        "window_start": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "window_end": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "logical_request_count": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "authorized_by": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "authorization_statement": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "review_hash": {
+      "type": ["string", "null"],
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  }
+}

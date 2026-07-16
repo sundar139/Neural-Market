@@ -64,6 +64,15 @@ all financial gates passing) is
 the protocol record is
 [`../protocol/research_protocol_amendment_010.md`](../protocol/research_protocol_amendment_010.md).
 
+Purchase-authorization review artifacts live under
+`reports/data/execution/authorization/` as ignored `.local.*` templates and
+(later) completed manual artifacts. The human review packet is
+[`pilot_purchase_authorization_packet.md`](pilot_purchase_authorization_packet.md);
+the design record is
+[`../protocol/research_protocol_amendment_011.md`](../protocol/research_protocol_amendment_011.md).
+Templates carry `template_only=true`/`authorized=false`/`attested=false`, no
+credentials, and cannot pass the offline purchase-review gate.
+
 Cost-fallback checkpoint backups live under
 `reports/data/execution/cost_fallback/` as ignored `.local.json` files. They are
 byte-for-byte copies of the metadata checkpoint taken before derived-cost work
