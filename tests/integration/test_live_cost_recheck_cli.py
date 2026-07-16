@@ -39,7 +39,7 @@ class _FakeProvider:
 
 def _ok(cost: str) -> IsolatedMetadataResult:
     return IsolatedMetadataResult(
-        endpoint_values={"cost": float(cost)},
+        endpoint_values={"cost": cost},
         events=[],
         child_pid=1,
         child_exitcode=0,
@@ -223,6 +223,37 @@ def test_recheck_cost_complete_resume_needs_no_key_or_provider(
     assert result.exit_code == 0, result.output
     assert "no resume work is required" in result.output.lower()
     assert json.loads(final.read_text(encoding="utf-8"))["provider_call_inventory"]["get_cost"] == 0
+
+
+def test_recheck_cost_complete_resume_keeps_failed_spending_gate(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    checkpoint, manifest, sha = _prepare(monkeypatch, tmp_path, cost="0.20")
+    source = tmp_path / "over-cap.json"
+    initial = runner.invoke(
+        app, _args(checkpoint, manifest, sha, source, tmp_path / "over-cap-attempts.json")
+    )
+    assert initial.exit_code == 1
+    monkeypatch.delenv("DATABENTO_API_KEY")
+    monkeypatch.setattr(
+        data_module,
+        "_pilot_metadata_provider_factory",
+        lambda: pytest.fail("complete resume must not construct provider"),
+    )
+    final = tmp_path / "over-cap-noop.json"
+    resumed = runner.invoke(
+        app,
+        [
+            *_args(checkpoint, manifest, sha, final, tmp_path / "over-cap-noop-attempts.json"),
+            "--resume-from",
+            str(source),
+        ],
+    )
+    assert resumed.exit_code == 1
+    assert "no resume work is required" in resumed.output.lower()
+    evidence = json.loads(final.read_text(encoding="utf-8"))
+    assert evidence["authorization_ready"] is False
+    assert evidence["provider_call_inventory"]["get_cost"] == 0
 
 
 def test_recheck_cost_invalid_resume_rejected_before_provider(

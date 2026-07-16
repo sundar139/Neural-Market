@@ -514,6 +514,26 @@ def test_invalid_completed_quote_rejected(change: str) -> None:
         )
 
 
+def test_legacy_completed_quote_without_provenance_is_rejected() -> None:
+    plan = _plan()
+    payload = _evidence(_run(quoter=lambda request, attempt, timeout: _ok()))
+    payload["schema_version"] = "pilot-fresh-cost-recheck-v1"
+    for quote in payload["quotes"]:
+        quote.pop("request_specification_sha256")
+        quote.pop("quote_source")
+        quote.pop("provider_response_sha256")
+        quote.pop("provider_observed_at")
+    with pytest.raises(CostRecheckError, match="lacks provider provenance"):
+        validate_resume_evidence(
+            payload,
+            requests=plan,
+            checkpoint_sha256="e" * 64,
+            plan_hash=PLAN_HASH,
+            request_manifest_sha256="8" * 64,
+            source_evidence_sha256="f" * 64,
+        )
+
+
 def test_repeated_504_remains_resumable() -> None:
     plan = _plan()
     target = plan[-1].request_id

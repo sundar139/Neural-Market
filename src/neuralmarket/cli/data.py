@@ -2096,7 +2096,7 @@ def pilot_recheck_cost(
             sort_keys=True,
         )
     )
-    if not result.authorization_ready and not no_resume_work:
+    if not result.authorization_ready:
         raise typer.Exit(code=1)
 
 

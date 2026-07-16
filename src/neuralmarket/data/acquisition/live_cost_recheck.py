@@ -242,23 +242,14 @@ def validate_resume_evidence(
                 _quote_cost(cost)
             except CostRecheckError as exc:
                 raise CostRecheckError("resume evidence completed quote value is invalid") from exc
-            if version == "pilot-cost-recheck-v2":
-                if quote_source != "provider_response":
-                    raise CostRecheckError(
-                        "resume evidence completed quote lacks provider provenance"
-                    )
-                expected_response = _provider_response_sha256(request_id, specification, cost)
-                if response_sha != expected_response:
-                    raise CostRecheckError("resume evidence provider quote identity mismatch")
-                provider_observed_at = _aware_timestamp(
-                    provider_observed_at, "provider observation timestamp"
-                )
-            else:
-                quote_source = "provider_response"
-                response_sha = _provider_response_sha256(request_id, specification, cost)
-                provider_observed_at = _aware_timestamp(
-                    payload.get("observed_at"), "observation timestamp"
-                )
+            if version != "pilot-cost-recheck-v2" or quote_source != "provider_response":
+                raise CostRecheckError("resume evidence completed quote lacks provider provenance")
+            expected_response = _provider_response_sha256(request_id, specification, cost)
+            if response_sha != expected_response:
+                raise CostRecheckError("resume evidence provider quote identity mismatch")
+            provider_observed_at = _aware_timestamp(
+                provider_observed_at, "provider observation timestamp"
+            )
         elif (
             cost is not None
             or quote_source not in {None, "unavailable"}
