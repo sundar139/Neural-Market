@@ -120,6 +120,7 @@ def _run(
     requests=None,
     max_attempts: int = 2,
     resume=None,
+    now: datetime = NOW,
 ) -> Any:
     return recheck_costs(
         requests=requests if requests is not None else _plan(),
@@ -128,7 +129,7 @@ def _run(
         plan_hash=PLAN_HASH,
         request_manifest_sha256="8" * 64,
         sdk_version="0.81.0",
-        now=NOW,
+        now=now,
         schema_lister=lister if lister is not None else _lister(),
         quoter=quoter,
         timeout_seconds=30.0,
@@ -254,6 +255,18 @@ def test_one_failed_quote_makes_incomplete_no_fallback() -> None:
     assert len(bad) == 1 and bad[0].cost_usd is None  # no derived substitution
 
 
+def test_fresh_incomplete_22_of_25_never_authorizes() -> None:
+    targets = {request.request_id for request in _plan()[-3:]}
+
+    result = _run(
+        quoter=lambda request, attempt, timeout: _fail() if request.request_id in targets else _ok()
+    )
+
+    assert result.provider_quote_count == 22
+    assert result.unavailable_quote_count == 3
+    assert result.authorization_ready is False
+
+
 def test_two_attempt_maximum() -> None:
     calls = {"n": 0}
 
@@ -315,11 +328,42 @@ def test_total_and_drift_gate_fails_over_ceiling() -> None:
     assert result.authorization_ready is False
 
 
-def test_freshness_is_30_minutes() -> None:
+def test_freshness_is_60_minutes() -> None:
     result = _run(quoter=lambda r, a, t: _ok())
     observed = datetime.fromisoformat(result.observed_at)
     expires = datetime.fromisoformat(result.expires_at)
-    assert (expires - observed).total_seconds() == 1800
+    assert (expires - observed).total_seconds() == 3600
+
+
+@pytest.mark.parametrize(
+    ("age_minutes", "expected_ready"),
+    [(24, True), (59, True), (61, False)],
+    ids=["24-minutes", "59-minutes", "over-60-minutes"],
+)
+def test_complete_resume_keeps_earliest_observation_age(
+    age_minutes: int, expected_ready: bool
+) -> None:
+    plan = _plan()
+    first = _run(quoter=lambda request, attempt, timeout: _ok())
+    resume = validate_resume_evidence(
+        _evidence(first),
+        requests=plan,
+        checkpoint_sha256="e" * 64,
+        plan_hash=PLAN_HASH,
+        request_manifest_sha256="8" * 64,
+        source_evidence_sha256="f" * 64,
+    )
+
+    result = _run(
+        quoter=lambda *args: pytest.fail("complete evidence must not quote"),
+        lister=lambda dataset: pytest.fail("complete evidence must not list schemas"),
+        resume=resume,
+        now=NOW + timedelta(minutes=age_minutes),
+    )
+
+    assert result.observed_at == first.observed_at
+    assert result.expires_at == first.expires_at
+    assert result.authorization_ready is expected_ready
 
 
 def test_deltas_reported() -> None:

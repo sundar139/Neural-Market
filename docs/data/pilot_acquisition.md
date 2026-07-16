@@ -247,3 +247,14 @@ env-based key, calls only approved metadata methods, and never runs
 `timeseries.get_range`, batch, live, acquisition, or authorization. It is a
 separate, reusable pre-authorization check that does **not** replace the manual
 portal attestation (see research protocol amendment 012).
+
+Quote evidence is fresh for 60 minutes from its earliest provider observation.
+For resumed evidence, `expires_at` remains that earliest observation plus 60
+minutes; resume completion never resets quote age. This window covers the
+measured serial 25-request quote workflow plus human portal and authorization
+review. Revisit it if the request plan or retry policy grows materially.
+
+Authorization review must explicitly select the evidence path; never infer a
+“latest” file or fall back to its source evidence. The operator records the
+exact selected path, full SHA-256, status, provider quote count,
+`authorization_ready`, and `expires_at` before preparing authorization.

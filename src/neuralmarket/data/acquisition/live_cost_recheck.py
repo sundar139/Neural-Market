@@ -36,8 +36,9 @@ from neuralmarket.data.acquisition.requests import (
     validate_canonical_pilot_plan,
 )
 
-#: Fresh quote is reviewed alongside the 30-minute manual portal attestation.
-RECHECK_FRESHNESS = timedelta(minutes=30)
+# Ponytail: 60 minutes covers the current 25-request serial quote and review flow.
+# Revisit when plan size or bounded retry duration increases materially.
+RECHECK_FRESHNESS = timedelta(minutes=60)
 #: Bounded attempts per request (mirrors the metadata timeout policy).
 DEFAULT_MAX_ATTEMPTS = 2
 
