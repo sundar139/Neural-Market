@@ -234,8 +234,16 @@ Every quote is a direct provider response — no derived unit-price fallback is
 substituted for a failure, so a failed quote makes the run `incomplete` with
 `authorization_ready=false` and partial evidence preserved. Costs use
 `Decimal(str(cost))`; each quote is isolated in a spawn child with at most two
-attempts and deterministic cleanup. The command constructs one `databento`
-client via the env-based key, calls only approved metadata methods, and never
-runs `timeseries.get_range`, batch, live, acquisition, or authorization. It is a
+attempts and deterministic cleanup. Resume incomplete evidence with the same
+command and `--resume-from <evidence.json>`; validation happens before provider
+construction, completed provider quotes remain unchanged, and only unavailable
+request IDs reach `metadata.get_cost`. Complete evidence is a successful no-op
+that needs neither an API key nor a provider client. Attempt history and resume
+counts live in the single evidence JSON; `--attempt-manifest` remains optional
+for compatibility.
+
+When work remains, the command constructs one `databento` client via the
+env-based key, calls only approved metadata methods, and never runs
+`timeseries.get_range`, batch, live, acquisition, or authorization. It is a
 separate, reusable pre-authorization check that does **not** replace the manual
 portal attestation (see research protocol amendment 012).

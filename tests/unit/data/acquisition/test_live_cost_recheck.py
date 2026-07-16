@@ -7,8 +7,10 @@ built deterministically from the tracked pilot config.
 
 from __future__ import annotations
 
+import json
 import sys
-from datetime import UTC, datetime
+from dataclasses import asdict, replace
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -19,12 +21,14 @@ from neuralmarket.data.acquisition.live_cost_recheck import (
     CostRecheckError,
     RequestQuote,
     recheck_costs,
+    validate_resume_evidence,
 )
 from neuralmarket.data.acquisition.metadata_runner import (
     IsolatedMetadataResult,
     MetadataOperationEvent,
 )
 from neuralmarket.data.acquisition.requests import build_pilot_request_plan, load_pilot_config
+from neuralmarket.data.redaction import classify_json_secret_candidates
 
 pytestmark = pytest.mark.unit
 
@@ -34,6 +38,9 @@ NOW = datetime(2026, 7, 16, 12, 0, 0, tzinfo=UTC)
 PRIOR_RAW = Decimal("0.460514456032759765625")
 PRIOR_CONS = Decimal("0.46298506855869970703125")
 TRACKED = Decimal("0.460514456033")
+PLAN_HASH = (
+    "5ee6126ca9e27e3d1909c58b4e555526d5894dcd9ea129faf8d6159973aff1fe"  # pragma: allowlist secret
+)
 
 _SUPPORTED = {
     "ARCX.PILLAR": ["definition", "ohlcv-1d", "statistics", "trades", "mbp-1"],
@@ -54,7 +61,7 @@ def _plan() -> list[Any]:
 
 def _ok(cost: str = "0.01") -> IsolatedMetadataResult:
     return IsolatedMetadataResult(
-        endpoint_values={"cost": float(cost)},
+        endpoint_values={"cost": cost},
         events=[],
         child_pid=1,
         child_exitcode=0,
@@ -112,12 +119,13 @@ def _run(
     lister=None,
     requests=None,
     max_attempts: int = 2,
+    resume=None,
 ) -> Any:
     return recheck_costs(
         requests=requests if requests is not None else _plan(),
         repository_head="0" * 40,
         checkpoint_sha256="e" * 64,
-        plan_hash="5ee6126ca9e27e3d1909c58b4e555526d5894dcd9ea129faf8d6159973aff1fe",
+        plan_hash=PLAN_HASH,
         request_manifest_sha256="8" * 64,
         sdk_version="0.81.0",
         now=NOW,
@@ -128,7 +136,12 @@ def _run(
         prior_conservative_total_usd=PRIOR_CONS,
         tracked_total_usd=TRACKED,
         max_attempts=max_attempts,
+        resume=resume,
     )
+
+
+def _evidence(result: Any) -> dict[str, Any]:
+    return json.loads(json.dumps({"schema_version": "pilot-cost-recheck-v2", **asdict(result)}))
 
 
 def test_exact_frozen_reconstruction_and_no_cross_product() -> None:
@@ -382,3 +395,172 @@ def test_quote_dataclass_is_frozen() -> None:
     )
     with pytest.raises((AttributeError, TypeError, ValueError)):
         q.cost_usd = "9.99"  # type: ignore[misc]
+
+
+def test_resume_quotes_only_unavailable_and_preserves_completed_quotes() -> None:
+    plan = _plan()
+    target = plan[-1].request_id
+    first = _run(
+        quoter=lambda request, attempt, timeout: _fail()
+        if request.request_id == target
+        else _ok("0.0100")
+    )
+    preserved = next(quote for quote in first.quotes if quote.status == "quoted")
+    resume = validate_resume_evidence(
+        _evidence(first),
+        requests=plan,
+        checkpoint_sha256="e" * 64,
+        plan_hash=PLAN_HASH,
+        request_manifest_sha256="8" * 64,
+        source_evidence_sha256="f" * 64,
+    )
+    called: list[str] = []
+
+    def quoter(request, attempt, timeout):
+        called.append(request.request_id)
+        return _ok("0.02")
+
+    result = _run(quoter=quoter, resume=resume)
+    final = next(quote for quote in result.quotes if quote.request_id == preserved.request_id)
+    assert called == [target]
+    assert final == preserved
+    assert final.cost_usd == "0.0100"
+    assert result.completed_request_refetch_count == 0
+    assert result.preserved_completed_quote_count == 24
+    assert result.resume_target_count == 1
+    assert result.status == "complete"
+
+
+def test_complete_resume_is_noop() -> None:
+    plan = _plan()
+    first = _run(quoter=lambda request, attempt, timeout: _ok())
+    resume = validate_resume_evidence(
+        _evidence(first),
+        requests=plan,
+        checkpoint_sha256="e" * 64,
+        plan_hash=PLAN_HASH,
+        request_manifest_sha256="8" * 64,
+        source_evidence_sha256="f" * 64,
+    )
+    result = _run(
+        quoter=lambda *args: pytest.fail("complete evidence must not quote"),
+        lister=lambda dataset: pytest.fail("complete evidence must not list schemas"),
+        resume=resume,
+    )
+    assert result.provider_call_inventory["get_cost"] == 0
+    assert result.provider_call_inventory["list_schemas"] == 0
+    assert result.resume_target_count == 0
+
+
+def test_resume_does_not_refresh_preserved_quote_expiry() -> None:
+    plan = _plan()
+    first = _run(quoter=lambda request, attempt, timeout: _ok())
+    resume = validate_resume_evidence(
+        _evidence(first),
+        requests=plan,
+        checkpoint_sha256="e" * 64,
+        plan_hash=PLAN_HASH,
+        request_manifest_sha256="8" * 64,
+        source_evidence_sha256="f" * 64,
+    )
+    expired = replace(resume, expires_at=(NOW - timedelta(seconds=1)).isoformat())
+    result = _run(
+        quoter=lambda *args: pytest.fail("complete evidence must not quote"), resume=expired
+    )
+    assert result.observed_at == expired.observed_at
+    assert result.expires_at == expired.expires_at
+    assert result.authorization_ready is False
+
+
+@pytest.mark.parametrize("change", ["unknown", "changed"])
+def test_invalid_resume_request_rejected(change: str) -> None:
+    plan = _plan()
+    payload = _evidence(_run(quoter=lambda request, attempt, timeout: _ok()))
+    if change == "unknown":
+        payload["quotes"][0]["request_id"] = "f" * 16
+    else:
+        payload["quotes"][0]["dataset"] = "OTHER.DATASET"
+    with pytest.raises(CostRecheckError, match="resume evidence"):
+        validate_resume_evidence(
+            payload,
+            requests=plan,
+            checkpoint_sha256="e" * 64,
+            plan_hash=PLAN_HASH,
+            request_manifest_sha256="8" * 64,
+            source_evidence_sha256="f" * 64,
+        )
+
+
+@pytest.mark.parametrize("change", ["duplicate", "nonfinite", "derived", "response_hash"])
+def test_invalid_completed_quote_rejected(change: str) -> None:
+    plan = _plan()
+    payload = _evidence(_run(quoter=lambda request, attempt, timeout: _ok()))
+    if change == "duplicate":
+        payload["quotes"][1]["request_id"] = payload["quotes"][0]["request_id"]
+    elif change == "nonfinite":
+        payload["quotes"][0]["cost_usd"] = "NaN"
+    elif change == "derived":
+        payload["quotes"][0]["quote_source"] = "derived_response"
+    else:
+        payload["quotes"][0]["provider_response_sha256"] = "0" * 64
+    with pytest.raises(CostRecheckError, match="resume evidence"):
+        validate_resume_evidence(
+            payload,
+            requests=plan,
+            checkpoint_sha256="e" * 64,
+            plan_hash=PLAN_HASH,
+            request_manifest_sha256="8" * 64,
+            source_evidence_sha256="f" * 64,
+        )
+
+
+def test_repeated_504_remains_resumable() -> None:
+    plan = _plan()
+    target = plan[-1].request_id
+    first = _run(
+        quoter=lambda request, attempt, timeout: _fail() if request.request_id == target else _ok()
+    )
+    resume = validate_resume_evidence(
+        _evidence(first),
+        requests=plan,
+        checkpoint_sha256="e" * 64,
+        plan_hash=PLAN_HASH,
+        request_manifest_sha256="8" * 64,
+        source_evidence_sha256="f" * 64,
+    )
+    repeated = _run(quoter=lambda request, attempt, timeout: _fail(), resume=resume)
+    assert repeated.status == "incomplete"
+    assert repeated.unavailable_quote_count == 1
+    assert repeated.resume_target_count == 1
+    assert repeated.resume_attempt_count == 2
+    validate_resume_evidence(
+        _evidence(repeated),
+        requests=plan,
+        checkpoint_sha256="e" * 64,
+        plan_hash=PLAN_HASH,
+        request_manifest_sha256="8" * 64,
+        source_evidence_sha256="a" * 64,
+    )
+
+
+def test_structured_hashes_are_nonsecret_but_unknown_and_credentials_block() -> None:
+    value = "a" * 64
+    safe = classify_json_secret_candidates(
+        {"checkpoint_sha256": value, "request_id": "b" * 16, "host": "databento.com"}
+    )
+    assert {candidate.classification for candidate in safe} == {"confirmed_nonsecret_identifier"}
+    for field in ("notes", "api_key", "token", "authorization", "password"):
+        candidates = classify_json_secret_candidates({field: value})
+        assert len(candidates) == 1
+        assert candidates[0].classification in {"possible_secret", "confirmed_secret"}
+        assert value not in repr(candidates[0])
+
+
+def test_same_hash_in_safe_and_unknown_fields_remains_blocking() -> None:
+    value = "c" * 64
+    candidates = classify_json_secret_candidates({"checkpoint_sha256": value, "free_text": value})
+    assert all(
+        candidate.classification != "confirmed_nonsecret_identifier" for candidate in candidates
+    )
+    uppercase = classify_json_secret_candidates({"checkpoint_sha256": "A" * 64})
+    assert uppercase[0].classification == "possible_secret"

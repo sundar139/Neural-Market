@@ -9,6 +9,7 @@ import json
 import subprocess
 import uuid
 from collections.abc import Callable, Iterable
+from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -130,7 +131,7 @@ from neuralmarket.data.manifests import (
 from neuralmarket.data.normalization.parquet import normalize_dbn_store_to_parquet
 from neuralmarket.data.normalization.provenance import provenance_columns_for
 from neuralmarket.data.raw.integrity import verify_checksum
-from neuralmarket.data.redaction import redact
+from neuralmarket.data.redaction import redact, validate_no_unresolved_json_secrets
 from neuralmarket.data.sources.base import (
     CostPeriod,
     QualificationResult,
@@ -1897,8 +1898,15 @@ def pilot_recheck_cost(
         help="Exact 64-lowercase-hex SHA-256 the completed checkpoint bytes must match.",
     ),
     output: Path = typer.Option(..., "--output", help="Local fresh-cost evidence path."),
-    attempt_manifest: Path = typer.Option(
-        ..., "--attempt-manifest", help="Local per-attempt sanitized quote history path."
+    attempt_manifest: Path | None = typer.Option(
+        None,
+        "--attempt-manifest",
+        help="Optional legacy copy of per-attempt history; evidence already contains it.",
+    ),
+    resume_from: Path | None = typer.Option(
+        None,
+        "--resume-from",
+        help="Validated incomplete or complete cost evidence to resume.",
     ),
     source_manifest: Path = typer.Option(
         _DEFAULT_SOURCE_MANIFEST, "--source-manifest", help="Path to the accepted source manifest."
@@ -1919,7 +1927,11 @@ def pilot_recheck_cost(
     pricing changes). Quotes only the frozen 25-request plan, validates each
     dataset's schemas, and never acquires data or authorizes a purchase.
     """
-    from neuralmarket.data.acquisition.live_cost_recheck import CostRecheckError, recheck_costs
+    from neuralmarket.data.acquisition.live_cost_recheck import (
+        CostRecheckError,
+        recheck_costs,
+        validate_resume_evidence,
+    )
 
     configure_logging("INFO")
     root = find_repository_root()
@@ -1930,7 +1942,10 @@ def pilot_recheck_cost(
     split_manifest = _resolve_under_root(root, split_manifest)
     policy_manifest = _resolve_under_root(root, policy_manifest)
     output = _resolve_under_root(root, output)
-    attempt_manifest = _resolve_under_root(root, attempt_manifest)
+    attempt_manifest = (
+        _resolve_under_root(root, attempt_manifest) if attempt_manifest is not None else None
+    )
+    resume_from = _resolve_under_root(root, resume_from) if resume_from is not None else None
 
     if not is_valid_sha256(expected_checkpoint_sha256):
         raise typer.BadParameter("--expected-checkpoint-sha256 must be 64 lowercase hex")
@@ -1980,11 +1995,34 @@ def pilot_recheck_cost(
     frozen_plan_hash = str(manifest_payload.get("plan_hash", ""))
     request_manifest_sha = _sha256_file(request_manifest)
 
-    _load_dotenv(root)
-    if not __import__("os").environ.get("DATABENTO_API_KEY"):
-        raise typer.Exit(code=2)
+    resume_state = None
+    if resume_from is not None:
+        try:
+            resume_payload = load_acquisition_json(resume_from)
+            validate_no_unresolved_json_secrets(resume_payload)
+            resume_state = validate_resume_evidence(
+                resume_payload,
+                requests=requests,
+                checkpoint_sha256=actual_sha,
+                plan_hash=frozen_plan_hash,
+                request_manifest_sha256=request_manifest_sha,
+                source_evidence_sha256=_sha256_file(resume_from),
+            )
+        except (CostRecheckError, PlanValidationError, ValueError) as exc:
+            _logger.error(
+                "Resume evidence rejected before provider construction: %s", redact(str(exc))
+            )
+            raise typer.Exit(code=1) from exc
 
-    provider = _pilot_metadata_provider_factory()
+    resume_required = resume_state is None or any(
+        quote.status == "unavailable" for quote in resume_state.quotes
+    )
+    provider = None
+    if resume_required:
+        _load_dotenv(root)
+        if not __import__("os").environ.get("DATABENTO_API_KEY"):
+            raise typer.Exit(code=2)
+        provider = _pilot_metadata_provider_factory()
     run_id = uuid.uuid4().hex
     try:
         result = recheck_costs(
@@ -1995,7 +2033,9 @@ def pilot_recheck_cost(
             request_manifest_sha256=request_manifest_sha,
             sdk_version=checkpoint_client_version(),
             now=datetime.now(UTC),
-            schema_lister=_pilot_schema_lister(provider),
+            schema_lister=(
+                _pilot_schema_lister(provider) if provider is not None else lambda dataset: []
+            ),
             quoter=_pilot_cost_quoter(
                 run_id=run_id, request_count=len(requests), requests=requests
             ),
@@ -2004,63 +2044,33 @@ def pilot_recheck_cost(
             prior_conservative_total_usd=Decimal("0.46298506855869970703125"),
             tracked_total_usd=Decimal("0.460514456033"),
             max_attempts=pilot_config.metadata_execution.maximum_timeout_attempts,
+            resume=resume_state,
         )
     except CostRecheckError as exc:
         _logger.error("Fresh cost recheck failed closed: %s", exc)
         raise typer.Exit(code=1) from exc
     finally:
-        provider.close()
+        if provider is not None:
+            provider.close()
 
-    evidence = {
-        "schema_version": "pilot-fresh-cost-recheck-v1",
-        "status": result.status,
-        "authorization_ready": result.authorization_ready,
-        "observed_at": result.observed_at,
-        "expires_at": result.expires_at,
-        "sdk_version": result.sdk_version,
-        "repository_head": result.repository_head,
-        "checkpoint_sha256": result.checkpoint_sha256,
-        "plan_hash": result.plan_hash,
-        "request_manifest_sha256": result.request_manifest_sha256,
-        "provider_quote_count": result.provider_quote_count,
-        "unavailable_quote_count": result.unavailable_quote_count,
-        "fresh_raw_total_usd": result.fresh_raw_total_usd,
-        "fresh_conservative_total_usd": result.fresh_conservative_total_usd,
-        "prior_raw_total_usd": result.prior_raw_total_usd,
-        "prior_conservative_total_usd": result.prior_conservative_total_usd,
-        "absolute_delta_usd": result.absolute_delta_usd,
-        "relative_delta": result.relative_delta,
-        "largest_request_usd": result.largest_request_usd,
-        "within_total_cap": result.within_total_cap,
-        "within_per_request_cap": result.within_per_request_cap,
-        "within_drift_ceiling": result.within_drift_ceiling,
-        "schema_validation": result.schema_validation,
-        "provider_call_inventory": result.provider_call_inventory,
-        "quotes": [
-            {
-                "request_id": q.request_id,
-                "dataset": q.dataset,
-                "schema": q.schema,
-                "symbols": list(q.symbols),
-                "stype_in": q.stype_in,
-                "start": q.start,
-                "end": q.end,
-                "status": q.status,
-                "cost_usd": q.cost_usd,
-                "attempts": q.attempts,
-                "last_failure_class": q.last_failure_class,
-                "last_http_status": q.last_http_status,
-                "remaining_children": q.remaining_children,
-            }
-            for q in result.quotes
-        ],
-        "purchase_authorized": False,
-    }
+    evidence = {"schema_version": "pilot-cost-recheck-v2", **asdict(result)}
+    evidence["purchase_authorized"] = False
+    validate_no_unresolved_json_secrets(evidence)
     write_acquisition_json(output, evidence)
-    write_acquisition_json(
-        attempt_manifest,
-        {"schema_version": "pilot-fresh-cost-attempts-v1", "attempts": result.attempt_history},
-    )
+    if attempt_manifest is not None:
+        write_acquisition_json(
+            attempt_manifest,
+            {"schema_version": "pilot-fresh-cost-attempts-v1", "attempts": result.attempt_history},
+        )
+
+    no_resume_work = resume_state is not None and result.resume_target_count == 0
+    resume_command = None
+    if result.unavailable_quote_count:
+        resume_command = (
+            f'neuralmarket data pilot recheck-cost --checkpoint "{checkpoint}" '
+            f'--expected-checkpoint-sha256 {actual_sha} --request-manifest "{request_manifest}" '
+            f'--output "{output}" --resume-from "{output}"'
+        )
 
     typer.echo(
         json.dumps(
@@ -2068,18 +2078,25 @@ def pilot_recheck_cost(
                 "status": result.status,
                 "authorization_ready": result.authorization_ready,
                 "provider_quote_count": result.provider_quote_count,
+                "derived_quote_count": 0,
+                "portal_quote_count": 0,
                 "unavailable_quote_count": result.unavailable_quote_count,
+                "completed_request_refetch_count": result.completed_request_refetch_count,
+                "resume_target_count": result.resume_target_count,
+                "resume_attempt_count": result.resume_attempt_count,
                 "fresh_conservative_total_usd": result.fresh_conservative_total_usd,
                 "largest_request_usd": result.largest_request_usd,
                 "within_total_cap": result.within_total_cap,
                 "within_per_request_cap": result.within_per_request_cap,
                 "within_drift_ceiling": result.within_drift_ceiling,
+                "resume_command": resume_command,
+                "message": "No resume work is required." if no_resume_work else None,
                 "output": str(output),
             },
             sort_keys=True,
         )
     )
-    if not result.authorization_ready:
+    if not result.authorization_ready and not no_resume_work:
         raise typer.Exit(code=1)
 
 
