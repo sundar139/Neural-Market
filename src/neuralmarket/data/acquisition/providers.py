@@ -44,6 +44,10 @@ class DatabentoMetadataProvider:
         """Return the approved historical unit-price listing for a dataset."""
         return self._metadata.list_unit_prices(**kwargs)
 
+    def list_schemas(self, **kwargs: object) -> object:
+        """Return the dataset-specific schema listing (metadata-only)."""
+        return self._metadata.list_schemas(**kwargs)
+
     def get_record_count(self, **kwargs: object) -> object:
         """Return a metadata-only record count."""
         return self._metadata.get_record_count(**kwargs)

@@ -6,7 +6,9 @@ import hashlib
 import hmac
 import importlib.metadata
 import json
-from collections.abc import Callable
+import subprocess
+import uuid
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -1278,6 +1280,20 @@ def _sha256_file(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _git_head(root: Path) -> str:
+    """Return the current commit SHA, or ``"unknown"`` outside a git checkout."""
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
+    return result.stdout.strip()
+
+
 def _resolve_checkpoint_state(
     *,
     checkpoint: Path,
@@ -1831,6 +1847,240 @@ def pilot_prepare(
             sort_keys=True,
         )
     )
+
+
+def _pilot_schema_lister(provider: DatabentoMetadataProvider) -> Callable[[str], list[str]]:
+    """Return a per-dataset schema lister backed by one metadata provider."""
+
+    def lister(dataset: str) -> list[str]:
+        raw = provider.list_schemas(dataset=dataset)
+        return [str(schema) for schema in cast(Iterable[Any], raw)]
+
+    return lister
+
+
+def _pilot_cost_quoter(
+    *, run_id: str, request_count: int, requests: list[AcquisitionRequest]
+) -> Callable[[AcquisitionRequest, int, float], Any]:
+    """Return a per-request quoter that isolates each get_cost call in a child."""
+
+    def quoter(request: AcquisitionRequest, attempt: int, timeout_seconds: float) -> Any:
+        return _run_isolated_metadata(
+            request=request,
+            run_id=run_id,
+            request_index=requests.index(request) + 1,
+            request_count=request_count,
+            attempt=attempt,
+            timeout_seconds=timeout_seconds,
+            only_endpoint="cost",
+        )
+
+    return quoter
+
+
+@pilot_app.command("recheck-cost")
+def pilot_recheck_cost(
+    config: Path = typer.Option(
+        _DEFAULT_PILOT_CONFIG, "--config", help="Path to the pilot-execution YAML config."
+    ),
+    checkpoint: Path = typer.Option(
+        ..., "--checkpoint", help="Path to the completed metadata checkpoint."
+    ),
+    request_manifest: Path = typer.Option(
+        _DEFAULT_REQUEST_MANIFEST,
+        "--request-manifest",
+        help="Path to the frozen pilot request-plan manifest.",
+    ),
+    expected_checkpoint_sha256: str = typer.Option(
+        ...,
+        "--expected-checkpoint-sha256",
+        help="Exact 64-lowercase-hex SHA-256 the completed checkpoint bytes must match.",
+    ),
+    output: Path = typer.Option(..., "--output", help="Local fresh-cost evidence path."),
+    attempt_manifest: Path = typer.Option(
+        ..., "--attempt-manifest", help="Local per-attempt sanitized quote history path."
+    ),
+    source_manifest: Path = typer.Option(
+        _DEFAULT_SOURCE_MANIFEST, "--source-manifest", help="Path to the accepted source manifest."
+    ),
+    split_manifest: Path = typer.Option(
+        _DEFAULT_SPLIT_MANIFEST, "--split-manifest", help="Path to the sealed split manifest."
+    ),
+    policy_manifest: Path = typer.Option(
+        _DEFAULT_POLICY_MANIFEST,
+        "--policy-manifest",
+        help="Path to the accepted acquisition policy manifest.",
+    ),
+) -> None:
+    """Fresh-quote the exact frozen pilot requests via metadata.get_cost.
+
+    Provider-only, fail-closed cost recheck to run immediately before a manual
+    purchase authorization (and again whenever authorization, scope, SDK, or
+    pricing changes). Quotes only the frozen 25-request plan, validates each
+    dataset's schemas, and never acquires data or authorizes a purchase.
+    """
+    from neuralmarket.data.acquisition.live_cost_recheck import CostRecheckError, recheck_costs
+
+    configure_logging("INFO")
+    root = find_repository_root()
+    config = _resolve_under_root(root, config)
+    checkpoint = _resolve_under_root(root, checkpoint)
+    request_manifest = _resolve_under_root(root, request_manifest)
+    source_manifest = _resolve_under_root(root, source_manifest)
+    split_manifest = _resolve_under_root(root, split_manifest)
+    policy_manifest = _resolve_under_root(root, policy_manifest)
+    output = _resolve_under_root(root, output)
+    attempt_manifest = _resolve_under_root(root, attempt_manifest)
+
+    if not is_valid_sha256(expected_checkpoint_sha256):
+        raise typer.BadParameter("--expected-checkpoint-sha256 must be 64 lowercase hex")
+    if not checkpoint.exists():
+        _logger.error("Checkpoint not found: %s", checkpoint)
+        raise typer.Exit(code=1)
+    actual_sha = _sha256_file(checkpoint)
+    if actual_sha != expected_checkpoint_sha256:
+        _logger.error("Checkpoint SHA-256 mismatch; refusing.")
+        raise typer.Exit(code=1)
+
+    try:
+        pilot_config = load_pilot_config(config)
+        source_payload = load_manifest(source_manifest)
+        split_payload = load_manifest(split_manifest)
+        verify_manifests(source_payload, split_payload)
+        policy_payload = load_acquisition_json(policy_manifest)
+        verify_policy_hash(policy_payload)
+        source_hash = _required_manifest_hash(source_payload, "source manifest")
+        split_hash = _required_manifest_hash(split_payload, "split manifest")
+        policy_hash = _required_manifest_hash(policy_payload, "acquisition policy")
+        requests = build_pilot_request_plan(pilot_config)
+    except ConfigurationError as exc:
+        _logger.error("Configuration error: %s", exc)
+        raise typer.Exit(code=2) from exc
+    except (ManifestValidationError, PlanValidationError, ValueError) as exc:
+        _logger.error("Pilot dependency or plan validation failed: %s", exc)
+        raise typer.Exit(code=1) from exc
+
+    expected_checkpoint: dict[str, object] = {
+        "source_manifest_hash": source_hash,
+        "split_manifest_hash": split_hash,
+        "acquisition_policy_hash": policy_hash,
+        "calendar_version": _distribution_version("exchange-calendars"),
+        "databento_client_version": checkpoint_client_version(),
+        "estimator_version": "pilot-metadata-process-v1",
+        "ordered_request_specification_hashes": [item.request_hash for item in requests],
+    }
+    try:
+        # Frozen-scope agreement: the checkpoint must bind exactly this plan.
+        load_checkpoint(checkpoint, expected=expected_checkpoint, maximum_age_minutes=10**9)
+    except ValueError as exc:
+        _logger.error("Checkpoint rejected against frozen plan: %s", exc)
+        raise typer.Exit(code=1) from exc
+
+    manifest_payload = load_acquisition_json(request_manifest)
+    frozen_plan_hash = str(manifest_payload.get("plan_hash", ""))
+    request_manifest_sha = _sha256_file(request_manifest)
+
+    _load_dotenv(root)
+    if not __import__("os").environ.get("DATABENTO_API_KEY"):
+        raise typer.Exit(code=2)
+
+    provider = _pilot_metadata_provider_factory()
+    run_id = uuid.uuid4().hex
+    try:
+        result = recheck_costs(
+            requests=requests,
+            repository_head=_git_head(root),
+            checkpoint_sha256=actual_sha,
+            plan_hash=frozen_plan_hash,
+            request_manifest_sha256=request_manifest_sha,
+            sdk_version=checkpoint_client_version(),
+            now=datetime.now(UTC),
+            schema_lister=_pilot_schema_lister(provider),
+            quoter=_pilot_cost_quoter(
+                run_id=run_id, request_count=len(requests), requests=requests
+            ),
+            timeout_seconds=float(pilot_config.metadata_execution.hard_request_timeout_seconds),
+            prior_raw_total_usd=Decimal("0.460514456032759765625"),
+            prior_conservative_total_usd=Decimal("0.46298506855869970703125"),
+            tracked_total_usd=Decimal("0.460514456033"),
+            max_attempts=pilot_config.metadata_execution.maximum_timeout_attempts,
+        )
+    except CostRecheckError as exc:
+        _logger.error("Fresh cost recheck failed closed: %s", exc)
+        raise typer.Exit(code=1) from exc
+    finally:
+        provider.close()
+
+    evidence = {
+        "schema_version": "pilot-fresh-cost-recheck-v1",
+        "status": result.status,
+        "authorization_ready": result.authorization_ready,
+        "observed_at": result.observed_at,
+        "expires_at": result.expires_at,
+        "sdk_version": result.sdk_version,
+        "repository_head": result.repository_head,
+        "checkpoint_sha256": result.checkpoint_sha256,
+        "plan_hash": result.plan_hash,
+        "request_manifest_sha256": result.request_manifest_sha256,
+        "provider_quote_count": result.provider_quote_count,
+        "unavailable_quote_count": result.unavailable_quote_count,
+        "fresh_raw_total_usd": result.fresh_raw_total_usd,
+        "fresh_conservative_total_usd": result.fresh_conservative_total_usd,
+        "prior_raw_total_usd": result.prior_raw_total_usd,
+        "prior_conservative_total_usd": result.prior_conservative_total_usd,
+        "absolute_delta_usd": result.absolute_delta_usd,
+        "relative_delta": result.relative_delta,
+        "largest_request_usd": result.largest_request_usd,
+        "within_total_cap": result.within_total_cap,
+        "within_per_request_cap": result.within_per_request_cap,
+        "within_drift_ceiling": result.within_drift_ceiling,
+        "schema_validation": result.schema_validation,
+        "provider_call_inventory": result.provider_call_inventory,
+        "quotes": [
+            {
+                "request_id": q.request_id,
+                "dataset": q.dataset,
+                "schema": q.schema,
+                "symbols": list(q.symbols),
+                "stype_in": q.stype_in,
+                "start": q.start,
+                "end": q.end,
+                "status": q.status,
+                "cost_usd": q.cost_usd,
+                "attempts": q.attempts,
+                "last_failure_class": q.last_failure_class,
+                "last_http_status": q.last_http_status,
+                "remaining_children": q.remaining_children,
+            }
+            for q in result.quotes
+        ],
+        "purchase_authorized": False,
+    }
+    write_acquisition_json(output, evidence)
+    write_acquisition_json(
+        attempt_manifest,
+        {"schema_version": "pilot-fresh-cost-attempts-v1", "attempts": result.attempt_history},
+    )
+
+    typer.echo(
+        json.dumps(
+            {
+                "status": result.status,
+                "authorization_ready": result.authorization_ready,
+                "provider_quote_count": result.provider_quote_count,
+                "unavailable_quote_count": result.unavailable_quote_count,
+                "fresh_conservative_total_usd": result.fresh_conservative_total_usd,
+                "largest_request_usd": result.largest_request_usd,
+                "within_total_cap": result.within_total_cap,
+                "within_per_request_cap": result.within_per_request_cap,
+                "within_drift_ceiling": result.within_drift_ceiling,
+                "output": str(output),
+            },
+            sort_keys=True,
+        )
+    )
+    if not result.authorization_ready:
+        raise typer.Exit(code=1)
 
 
 @pilot_app.command("verify")

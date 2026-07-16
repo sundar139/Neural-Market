@@ -101,6 +101,17 @@ execution-layer gates) before any paid call.
   exceed the authorized balance, and the drift ceiling caps validated
   totals at `0.69077… USD`.
 
+## 5b. Fresh cost recheck before you authorize
+
+Before completing the authorization, run `data pilot recheck-cost` (see research
+protocol amendment 012). It re-quotes the exact frozen 25 requests through
+Databento's `metadata.get_cost`, validates each dataset's schemas, and confirms
+the fresh provider total still passes the gates (largest ≤ $1.00, total ≤ $5.00,
+conservative ≤ `0.6907716840495`). It is provider-only (no fallback), authorizes
+nothing, and does not replace the portal attestation. If the fresh total exceeds
+your chosen amount or the drift ceiling, reconsider the amount within the range —
+do not raise it silently.
+
 ## 6. Current state
 
 - Metadata preflight complete (75/75, 25/25); checkpoint validated against

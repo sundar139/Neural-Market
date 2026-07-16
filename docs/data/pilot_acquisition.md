@@ -217,3 +217,25 @@ hash or a hand-verified prior hash whose only field difference is the deadline
 implemented and tested offline; a separate authorized live milestone is still
 required to resume and complete the checkpoint, and acquisition remains
 unauthorized.
+
+## Fresh provider cost recheck (`data pilot recheck-cost`)
+
+Before a manual purchase authorization, `data pilot recheck-cost` obtains a
+fresh `metadata.get_cost` quote for the **exact frozen 25-request plan** and
+compares it against the completed preflight totals and the spending gates. It
+uses `metadata.get_cost` (not the naive `dataset x schema` cross-product loop):
+the frozen plan is the sole source of quoted combinations, each request keeps
+its recorded symbology (`parent` for `SPY.OPT`, `raw_symbol` for `SPY`) and its
+exact start/end (the 600 s closing-quote windows, never a whole month). Schemas
+are validated per dataset via one `metadata.list_schemas` call each; an
+unsupported frozen schema fails before any quote.
+
+Every quote is a direct provider response — no derived unit-price fallback is
+substituted for a failure, so a failed quote makes the run `incomplete` with
+`authorization_ready=false` and partial evidence preserved. Costs use
+`Decimal(str(cost))`; each quote is isolated in a spawn child with at most two
+attempts and deterministic cleanup. The command constructs one `databento`
+client via the env-based key, calls only approved metadata methods, and never
+runs `timeseries.get_range`, batch, live, acquisition, or authorization. It is a
+separate, reusable pre-authorization check that does **not** replace the manual
+portal attestation (see research protocol amendment 012).
