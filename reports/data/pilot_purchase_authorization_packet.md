@@ -58,7 +58,9 @@ templates in `reports/data/execution/authorization/` (ignored, local):
    yourself, view the cost estimate for this exact scope, and record the
    portal-displayed estimate, observation time, and your confirmation.
    Valid for **30 minutes** from observation. The agent never invents,
-   scrapes, or automates this value.
+   scrapes, or automates this value. The attestation carries an explicit
+   `repository_head` that must match the authorization and the runner; the
+   template ships with its fields as JSON `null` until you complete them.
 2. **Purchase authorization**
    (`pilot_purchase_authorization_template.local.json` →
    `pilot_purchase_authorization.local.json`): set the ceiling, timestamps

@@ -350,6 +350,27 @@ def review_purchase_package(
             compute_portal_attestation_hash(attestation), att_hash
         ):
             r.append(Rejection("hash_tampered", "attestation_hash does not match the payload"))
+        # Explicit three-way repository binding: attestation must match the
+        # expected review context AND the purchase authorization. (Authorization
+        # vs expected is already checked in the immutable-bindings loop above.)
+        att_head = attestation.get("repository_head")
+        auth_head = authorization.get("repository_head")
+        if not isinstance(att_head, str) or not hmac.compare_digest(
+            att_head, expected.repository_head
+        ):
+            r.append(
+                Rejection(
+                    "repository_head_mismatch",
+                    "attestation repository_head does not match the expected review context",
+                )
+            )
+        elif isinstance(auth_head, str) and not hmac.compare_digest(att_head, auth_head):
+            r.append(
+                Rejection(
+                    "repository_head_mismatch",
+                    "attestation and authorization repository_head disagree",
+                )
+            )
         for fieldname, want, code in (
             (
                 "completed_checkpoint_sha256",

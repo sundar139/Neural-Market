@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "neuralmarket:contract:pilot_purchase_authorization:1.0",
+  "$id": "neuralmarket:contract:pilot_purchase_authorization:1.1",
   "title": "Pilot purchase-authorization review artifact",
-  "description": "Human purchase decision for the January 2019 pilot, bound to the completed metadata checkpoint and frozen plan. This review-layer artifact gates preparation of the execution-layer pilot_authorization artifact; it never stores credentials, account identifiers, or provider responses.",
+  "description": "Human purchase decision for the January 2019 pilot, bound to the completed metadata checkpoint and frozen plan. Template artifacts carry true JSON null for fields the operator has not yet supplied; completed artifacts require valid non-null values. This review-layer artifact gates preparation of the execution-layer pilot_authorization artifact; it never stores credentials, account identifiers, or provider responses.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -151,11 +151,11 @@
       }
     },
     "created_at": {
-      "type": "string",
+      "type": ["string", "null"],
       "format": "date-time"
     },
     "expires_at": {
-      "type": "string",
+      "type": ["string", "null"],
       "format": "date-time"
     },
     "authorized_by": {
@@ -170,5 +170,36 @@
       "type": ["string", "null"],
       "pattern": "^[0-9a-f]{64}$"
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["template_only"],
+        "properties": {"template_only": {"const": true}}
+      },
+      "then": {
+        "properties": {
+          "authorized": {"const": false},
+          "consumed": {"const": false},
+          "authorized_ceiling_usd": {"type": "null"},
+          "authorization_statement": {"type": "null"},
+          "authorized_by": {"type": "null"},
+          "created_at": {"type": "null"},
+          "expires_at": {"type": "null"},
+          "review_hash": {"type": "null"}
+        }
+      },
+      "else": {
+        "properties": {
+          "authorized": {"const": true},
+          "authorized_ceiling_usd": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"},
+          "authorization_statement": {"type": "string", "minLength": 1},
+          "authorized_by": {"type": "string", "minLength": 1},
+          "created_at": {"type": "string", "format": "date-time"},
+          "expires_at": {"type": "string", "format": "date-time"},
+          "review_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    }
+  ]
 }

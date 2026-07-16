@@ -109,6 +109,7 @@ def _valid_attestation() -> dict[str, Any]:
         "schema_version": "pilot-portal-attestation-v1",
         "template_only": False,
         "attested": True,
+        "repository_head": HEAD,
         "dataset_scope": ["ARCX.PILLAR", "OPRA.PILLAR"],
         "schema_scope": ["cbbo-1m", "definition", "ohlcv-1d", "statistics"],
         "symbol_scope": ["SPY", "SPY.OPT"],
@@ -359,3 +360,194 @@ def test_json_artifact_schema_rejection(tmp_path: Path) -> None:
             schema_relative="data_contracts/pilot_purchase_authorization.schema.json",
             kind="authorization",
         )
+
+
+# --- Conditional template/completed schema state + repository binding ---------
+
+import jsonschema  # noqa: E402
+
+_ROOT = Path(__file__).resolve().parents[4]
+
+
+def _schema(name: str) -> dict[str, Any]:
+    return json.loads((_ROOT / "data_contracts" / name).read_text(encoding="utf-8"))
+
+
+AUTH_SCHEMA = "pilot_purchase_authorization.schema.json"
+ATT_SCHEMA = "pilot_portal_attestation.schema.json"
+
+
+def _template_auth() -> dict[str, Any]:
+    return {
+        "schema_version": "pilot-purchase-authorization-v1",
+        "template_only": True,
+        "authorized": False,
+        "consumed": False,
+        "repository_head": HEAD,
+        "plan_hash": PLAN,
+        "completed_checkpoint_sha256": CKPT,
+        "request_manifest_sha256": REQMAN,
+        "source_manifest_hash": SRC,
+        "split_manifest_hash": SPLIT,
+        "acquisition_policy_hash": POLICY,
+        "configuration_compatibility": {
+            "checkpoint_stored_pilot_config_hash": STORED_CONFIG,
+            "current_config_sha256": CURRENT_CONFIG,
+            "compatible": True,
+        },
+        "databento_client_version": "0.81.0",
+        "raw_total_usd": str(RAW),
+        "conservative_total_usd": str(CONSERVATIVE),
+        "authorized_ceiling_usd": None,
+        "scope": {
+            "pilot_month": "2019-01",
+            "datasets": ["ARCX.PILLAR", "OPRA.PILLAR"],
+            "schemas": ["cbbo-1m", "definition", "ohlcv-1d", "statistics"],
+            "symbols": ["SPY", "SPY.OPT"],
+            "window_start": "2019-01-02T00:00:00+00:00",
+            "window_end": "2019-02-01T00:00:00+00:00",
+            "logical_request_count": 25,
+        },
+        "created_at": None,
+        "expires_at": None,
+        "authorized_by": None,
+        "authorization_statement": None,
+        "review_hash": None,
+    }
+
+
+def _template_att() -> dict[str, Any]:
+    return {
+        "schema_version": "pilot-portal-attestation-v1",
+        "template_only": True,
+        "attested": False,
+        "repository_head": HEAD,
+        "dataset_scope": ["ARCX.PILLAR", "OPRA.PILLAR"],
+        "schema_scope": ["cbbo-1m", "definition", "ohlcv-1d", "statistics"],
+        "symbol_scope": ["SPY", "SPY.OPT"],
+        "window_start": "2019-01-02T00:00:00+00:00",
+        "window_end": "2019-02-01T00:00:00+00:00",
+        "portal_estimate_usd": None,
+        "currency": "USD",
+        "observed_at": None,
+        "expires_at": None,
+        "completed_checkpoint_sha256": CKPT,
+        "request_manifest_sha256": REQMAN,
+        "operator_confirmation": None,
+        "attestation_hash": None,
+    }
+
+
+def test_purchase_template_null_fields_schema_valid() -> None:
+    jsonschema.validate(_template_auth(), _schema(AUTH_SCHEMA))
+
+
+def test_portal_template_null_fields_schema_valid() -> None:
+    jsonschema.validate(_template_att(), _schema(ATT_SCHEMA))
+
+
+def test_portal_template_includes_repository_head() -> None:
+    assert _template_att()["repository_head"] == HEAD
+    bad = _template_att()
+    del bad["repository_head"]
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, _schema(ATT_SCHEMA))
+
+
+def test_purchase_template_remains_non_authorizing(tmp_path: Path) -> None:
+    assert "template_only" in _codes(_review(_template_auth(), _valid_attestation(), tmp_path))
+
+
+def test_portal_template_remains_non_attesting(tmp_path: Path) -> None:
+    assert "template_only" in _codes(_review(_valid_authorization(), _template_att(), tmp_path))
+
+
+def test_completed_authorization_null_timestamp_schema_invalid() -> None:
+    bad = {**_valid_authorization(), "template_only": False, "created_at": None}
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, _schema(AUTH_SCHEMA))
+
+
+def test_completed_authorization_null_statement_schema_invalid() -> None:
+    bad = {**_valid_authorization(), "authorization_statement": None}
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, _schema(AUTH_SCHEMA))
+
+
+def test_completed_attestation_null_estimate_schema_invalid() -> None:
+    bad = {**_valid_attestation(), "portal_estimate_usd": None}
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, _schema(ATT_SCHEMA))
+
+
+def test_completed_attestation_null_timestamp_schema_invalid() -> None:
+    bad = {**_valid_attestation(), "observed_at": None}
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, _schema(ATT_SCHEMA))
+
+
+def test_template_with_authorized_true_schema_invalid() -> None:
+    bad = {**_template_auth(), "authorized": True}
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(bad, _schema(AUTH_SCHEMA))
+
+
+def test_completed_authorization_epoch_sentinel_rejected(tmp_path: Path) -> None:
+    epoch = "1970-01-01T00:00:00+00:00"
+    auth = _rehash({**_valid_authorization(), "created_at": epoch, "expires_at": epoch})
+    codes = _codes(_review(auth, _valid_attestation(), tmp_path))
+    assert "invalid_timestamps" in codes or "authorization_expired" in codes
+
+
+def test_matching_repository_bindings_pass(tmp_path: Path) -> None:
+    result = _review(_valid_authorization(), _valid_attestation(), tmp_path)
+    assert result.ok, [f"{rej.code}: {rej.detail}" for rej in result.rejections]
+
+
+def test_purchase_portal_head_mismatch_rejected(tmp_path: Path) -> None:
+    att = dict(_valid_attestation())
+    att["repository_head"] = "a" * 40
+    att["attestation_hash"] = compute_portal_attestation_hash(att)
+    assert "repository_head_mismatch" in _codes(_review(_valid_authorization(), att, tmp_path))
+
+
+def test_portal_context_head_mismatch_rejected(tmp_path: Path) -> None:
+    # Attestation binds a different (but internally consistent) HEAD than expected.
+    att = dict(_valid_attestation())
+    att["repository_head"] = "b" * 40
+    att["attestation_hash"] = compute_portal_attestation_hash(att)
+    auth = _rehash({**_valid_authorization(), "repository_head": "b" * 40})
+    codes = _codes(_review(auth, att, tmp_path))
+    assert "repository_head_mismatch" in codes
+
+
+def test_purchase_context_head_mismatch_rejected(tmp_path: Path) -> None:
+    auth = _rehash({**_valid_authorization(), "repository_head": "c" * 40})
+    assert "repository_head_mismatch" in _codes(_review(auth, _valid_attestation(), tmp_path))
+
+
+def test_attestation_over_30min_validity_rejected(tmp_path: Path) -> None:
+    att = dict(_valid_attestation())
+    att["observed_at"] = (NOW - timedelta(minutes=5)).isoformat()
+    att["expires_at"] = (NOW + timedelta(minutes=40)).isoformat()
+    att["attestation_hash"] = compute_portal_attestation_hash(att)
+    assert "validity_too_long" in _codes(_review(_valid_authorization(), att, tmp_path))
+
+
+def test_authorization_over_24h_validity_rejected(tmp_path: Path) -> None:
+    auth = _rehash(
+        {
+            **_valid_authorization(),
+            "created_at": (NOW - timedelta(hours=1)).isoformat(),
+            "expires_at": (NOW + timedelta(hours=30)).isoformat(),
+        }
+    )
+    assert "validity_too_long" in _codes(_review(auth, _valid_attestation(), tmp_path))
+
+
+def test_future_dated_portal_observation_rejected(tmp_path: Path) -> None:
+    att = dict(_valid_attestation())
+    att["observed_at"] = (NOW + timedelta(minutes=5)).isoformat()
+    att["expires_at"] = (NOW + timedelta(minutes=25)).isoformat()
+    att["attestation_hash"] = compute_portal_attestation_hash(att)
+    assert "future_dated" in _codes(_review(_valid_authorization(), att, tmp_path))

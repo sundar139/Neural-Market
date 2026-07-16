@@ -33,6 +33,30 @@ not replace them. New tracked contracts:
   scope (never invented or scraped by tooling), hash-bound to the same
   checkpoint and request manifest.
 
+### Contract hardening (v1.1 schemas)
+
+Both schemas were subsequently hardened:
+
+- **True null template state.** Template artifacts now carry actual JSON
+  `null` for operator-supplied fields (ceiling, statement, operator label,
+  timestamps, self-hash for the authorization; estimate, confirmation,
+  timestamps, self-hash for the attestation), replacing the earlier
+  epoch-timestamp sentinels. `if/then/else` conditioned on `template_only`
+  enforces this: `template_only=true` requires those fields to be `null`
+  and the decision flags false; `template_only=false` requires valid
+  non-null values (fixed-point Decimal strings, non-empty statement/label,
+  date-time timestamps, lowercase 64-hex self-hash). A completed artifact
+  with a null required field, or a template with a filled field, is
+  schema-invalid.
+- **Explicit portal repository binding.** The portal attestation now
+  carries a required `repository_head` (`^[0-9a-f]{40}$`) in both states.
+- **Three-way HEAD agreement.** The validator now requires the repository
+  binding to agree across the purchase authorization, the portal
+  attestation, and the expected review context (the runner binds the same
+  HEAD it passes into the expected context). Any disagreement yields a
+  `repository_head_mismatch` rejection. Epoch-sentinel timestamps on a
+  completed artifact fail as `invalid_timestamps`/`authorization_expired`.
+
 Validator: `neuralmarket.data.acquisition.purchase_review` — pure offline,
 no provider import, returns structured secret-free rejection reasons.
 Rules: ceiling ∈ [conservative total, drift ceiling] and ≤ $5.00 hard cap;

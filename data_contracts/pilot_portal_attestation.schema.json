@@ -1,14 +1,15 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "neuralmarket:contract:pilot_portal_attestation:1.0",
+  "$id": "neuralmarket:contract:pilot_portal_attestation:1.1",
   "title": "Pilot portal cost attestation",
-  "description": "Short-lived manual operator record of the Databento portal's displayed cost estimate for the bound pilot scope. Complements (does not replace) the execution-layer portal_limit_attestation. Never stores portal cookies, account identifiers, credentials, or screenshots.",
+  "description": "Short-lived manual operator record of the Databento portal's displayed cost estimate for the bound pilot scope. Template artifacts carry true JSON null for fields the operator has not yet supplied; completed artifacts require valid non-null values. Explicitly binds to the approved repository revision. Complements (does not replace) the execution-layer portal_limit_attestation. Never stores portal cookies, account identifiers, credentials, or screenshots.",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schema_version",
     "template_only",
     "attested",
+    "repository_head",
     "dataset_scope",
     "schema_scope",
     "symbol_scope",
@@ -32,6 +33,10 @@
     },
     "attested": {
       "type": "boolean"
+    },
+    "repository_head": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
     },
     "dataset_scope": {
       "type": "array",
@@ -87,5 +92,33 @@
       "type": ["string", "null"],
       "pattern": "^[0-9a-f]{64}$"
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["template_only"],
+        "properties": {"template_only": {"const": true}}
+      },
+      "then": {
+        "properties": {
+          "attested": {"const": false},
+          "portal_estimate_usd": {"type": "null"},
+          "operator_confirmation": {"type": "null"},
+          "observed_at": {"type": "null"},
+          "expires_at": {"type": "null"},
+          "attestation_hash": {"type": "null"}
+        }
+      },
+      "else": {
+        "properties": {
+          "attested": {"const": true},
+          "portal_estimate_usd": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"},
+          "operator_confirmation": {"type": "string", "minLength": 1},
+          "observed_at": {"type": "string", "format": "date-time"},
+          "expires_at": {"type": "string", "format": "date-time"},
+          "attestation_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+        }
+      }
+    }
+  ]
 }
