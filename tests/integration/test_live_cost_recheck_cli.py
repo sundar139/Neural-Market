@@ -96,6 +96,15 @@ def _args(checkpoint: Path, manifest: Path, sha: str, out: Path, attempts: Path)
     ]
 
 
+def test_next_resume_output_uses_first_absent_suffix(tmp_path: Path) -> None:
+    source = tmp_path / "quote.local.json"
+    first = tmp_path / "quote_resume1.local.json"
+    first.touch()
+
+    assert data_module._next_resume_output(source) == tmp_path / "quote_resume2.local.json"
+    assert data_module._next_resume_output(first) == tmp_path / "quote_resume2.local.json"
+
+
 def test_recheck_cost_complete_and_ready(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     checkpoint, manifest, sha = _prepare(monkeypatch, tmp_path, cost="0.01")
     out = tmp_path / "evidence.json"
@@ -167,6 +176,11 @@ def test_recheck_cost_resume_quotes_only_unavailable(
     monkeypatch.setattr(data_module, "_run_isolated_metadata", initial_quote)
     initial = runner.invoke(app, _args(checkpoint, manifest, sha, first, first_attempts))
     assert initial.exit_code == 1
+    resume_output = first.with_name("first_resume1.json")
+    resume_command = json.loads(initial.stdout)["resume_command"]
+    assert f'--output "{resume_output}"' in resume_command
+    assert f'--resume-from "{first}"' in resume_command
+    assert not resume_output.exists()
     payload = json.loads(first.read_text(encoding="utf-8"))
     preserved = next(quote for quote in payload["quotes"] if quote["status"] == "quoted")
     target = next(
@@ -195,6 +209,48 @@ def test_recheck_cost_resume_quotes_only_unavailable(
     assert evidence["preserved_completed_quote_count"] == 24
     assert evidence["final_provider_quote_count"] == 25
     assert evidence["source_evidence_sha256"] == hashlib.sha256(first.read_bytes()).hexdigest()
+
+
+def test_recheck_cost_rejects_same_resume_output_before_provider(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    checkpoint, manifest, sha = _prepare(monkeypatch, tmp_path, cost="0.01")
+    source = tmp_path / "source.json"
+    target: list[str] = []
+
+    def initial_quote(**kwargs):
+        request_id = kwargs["request"].request_id
+        if not target:
+            target.append(request_id)
+        return _fail() if request_id == target[0] else _ok("0.01")
+
+    monkeypatch.setattr(data_module, "_run_isolated_metadata", initial_quote)
+    initial = runner.invoke(
+        app, _args(checkpoint, manifest, sha, source, tmp_path / "source-attempts.json")
+    )
+    assert initial.exit_code == 1
+    source_sha = hashlib.sha256(source.read_bytes()).hexdigest()
+    monkeypatch.setattr(
+        data_module, "_load_dotenv", lambda root: pytest.fail("must reject before key lookup")
+    )
+    monkeypatch.setattr(
+        data_module,
+        "_pilot_metadata_provider_factory",
+        lambda: pytest.fail("must reject before provider construction"),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            *_args(checkpoint, manifest, sha, source, tmp_path / "never-attempts.json"),
+            "--resume-from",
+            str(source),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Resume output must differ from the source evidence path." in caplog.text
+    assert hashlib.sha256(source.read_bytes()).hexdigest() == source_sha
 
 
 def test_recheck_cost_complete_resume_needs_no_key_or_provider(

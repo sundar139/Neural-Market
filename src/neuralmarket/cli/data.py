@@ -1091,6 +1091,18 @@ def _resolve_under_root(root: Path, path: Path) -> Path:
     return path if path.is_absolute() else root / path
 
 
+def _next_resume_output(path: Path) -> Path:
+    suffix = "".join(path.suffixes)
+    stem = path.name.removesuffix(suffix)
+    base, marker, number = stem.rpartition("_resume")
+    if marker and number.isdigit():
+        stem = base
+    index = 1
+    while (candidate := path.with_name(f"{stem}_resume{index}{suffix}")).exists():
+        index += 1
+    return candidate
+
+
 def _pilot_plan_hash_metadata(manifest_payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "estimated_total_cost_usd": manifest_payload["estimated_total_cost_usd"],
@@ -1947,6 +1959,9 @@ def pilot_recheck_cost(
     )
     resume_from = _resolve_under_root(root, resume_from) if resume_from is not None else None
 
+    if resume_from is not None and output.resolve() == resume_from.resolve():
+        _logger.error("Resume output must differ from the source evidence path.")
+        raise typer.Exit(code=1)
     if not is_valid_sha256(expected_checkpoint_sha256):
         raise typer.BadParameter("--expected-checkpoint-sha256 must be 64 lowercase hex")
     if not checkpoint.exists():
@@ -2066,10 +2081,11 @@ def pilot_recheck_cost(
     no_resume_work = resume_state is not None and result.resume_target_count == 0
     resume_command = None
     if result.unavailable_quote_count:
+        resume_output = _next_resume_output(output)
         resume_command = (
             f'neuralmarket data pilot recheck-cost --checkpoint "{checkpoint}" '
             f'--expected-checkpoint-sha256 {actual_sha} --request-manifest "{request_manifest}" '
-            f'--output "{output}" --resume-from "{output}"'
+            f'--output "{resume_output}" --resume-from "{output}"'
         )
 
     typer.echo(
