@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import neuralmarket.data.acquisition.recovery as recovery_module
 from neuralmarket.data.acquisition.authorization import (
     CONFIRMATION_PHRASE,
     AuthorizationError,
@@ -219,6 +220,87 @@ def test_uncheckpointed_wal_fails_closed(tmp_path: Path) -> None:
         )
 
 
+def test_journal_change_during_preparation_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _, journal, reconciliation, _ = _prepare(tmp_path)
+    real_connect = sqlite3.connect
+
+    def racing_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+        connection = real_connect(*args, **kwargs)
+        with real_connect(journal) as writer:
+            writer.execute(
+                "UPDATE requests SET state = 'uncertain_billing' WHERE request_id = ?",
+                (_REQUEST_ID,),
+            )
+        return connection
+
+    monkeypatch.setattr(recovery_module.sqlite3, "connect", racing_connect)
+    with pytest.raises(RecoveryPlanError, match="changed during recovery preparation"):
+        prepare_recovery_plan(
+            parent_plan_path=Path("data/manifests/pilot_request_plan_v1.json"),
+            journal_path=journal,
+            reconciliation_path=reconciliation,
+            request_id=_REQUEST_ID,
+        )
+
+
+def test_unsupported_journal_schema_fails_closed(tmp_path: Path) -> None:
+    _, journal, reconciliation, _ = _prepare(tmp_path)
+    _update(journal, "UPDATE schema_meta SET version = 8")
+
+    with pytest.raises(RecoveryPlanError, match="journal schema version"):
+        prepare_recovery_plan(
+            parent_plan_path=Path("data/manifests/pilot_request_plan_v1.json"),
+            journal_path=journal,
+            reconciliation_path=reconciliation,
+            request_id=_REQUEST_ID,
+        )
+
+
+def test_non_consumed_reservation_fails_closed(tmp_path: Path) -> None:
+    _, journal, reconciliation, _ = _prepare(tmp_path)
+    _update(journal, "UPDATE authorization_reservations SET state = 'reserved'")
+
+    with pytest.raises(RecoveryPlanError, match="reservation binding mismatch"):
+        prepare_recovery_plan(
+            parent_plan_path=Path("data/manifests/pilot_request_plan_v1.json"),
+            journal_path=journal,
+            reconciliation_path=reconciliation,
+            request_id=_REQUEST_ID,
+        )
+
+
+def test_inconsistent_reconciled_execution_fails_closed(tmp_path: Path) -> None:
+    _, journal, reconciliation, _ = _prepare(tmp_path)
+    _update(journal, "UPDATE execution_attempts SET blocking_request = 'other-request'")
+
+    with pytest.raises(RecoveryPlanError, match="reconciled execution state mismatch"):
+        prepare_recovery_plan(
+            parent_plan_path=Path("data/manifests/pilot_request_plan_v1.json"),
+            journal_path=journal,
+            reconciliation_path=reconciliation,
+            request_id=_REQUEST_ID,
+        )
+
+
+def test_broken_reconciliation_chain_fails_closed(tmp_path: Path) -> None:
+    _, journal, reconciliation, _ = _prepare(tmp_path)
+    _update(
+        journal,
+        "UPDATE billing_reconciliations SET supersedes_reconciliation_hash = NULL "
+        "WHERE supersession_sequence = 2",
+    )
+
+    with pytest.raises(RecoveryPlanError, match="reconciliation chain mismatch"):
+        prepare_recovery_plan(
+            parent_plan_path=Path("data/manifests/pilot_request_plan_v1.json"),
+            journal_path=journal,
+            reconciliation_path=reconciliation,
+            request_id=_REQUEST_ID,
+        )
+
+
 def test_missing_reconciliation_fails_closed(tmp_path: Path) -> None:
     _, journal, reconciliation, _ = _prepare(tmp_path)
     _update(journal, "DELETE FROM billing_reconciliations")
@@ -308,7 +390,7 @@ def test_wrong_prior_execution_id_fails_closed(tmp_path: Path) -> None:
         (_PARENT_PLAN,),
     )
 
-    with pytest.raises(RecoveryPlanError, match="prior execution is missing"):
+    with pytest.raises(RecoveryPlanError, match="reservation binding mismatch"):
         prepare_recovery_plan(
             parent_plan_path=Path("data/manifests/pilot_request_plan_v1.json"),
             journal_path=journal,

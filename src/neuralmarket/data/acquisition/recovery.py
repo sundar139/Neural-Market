@@ -9,8 +9,11 @@ separate explicit action taken elsewhere.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -22,7 +25,11 @@ from neuralmarket.data.acquisition.billing_reconciliation import (
     BillingReconciliationArtifact,
     load_reconciliation_artifact,
 )
-from neuralmarket.data.acquisition.journal import JournalEntry, RequestJournal
+from neuralmarket.data.acquisition.journal import (
+    JOURNAL_SCHEMA_VERSION,
+    JournalEntry,
+    RequestJournal,
+)
 from neuralmarket.data.acquisition.requests import (
     AcquisitionRequest,
     plan_hash,
@@ -97,17 +104,35 @@ class RecoveryPlan(BaseModel):
         return self
 
 
-def _read_only_connection(path: Path) -> sqlite3.Connection:
-    """Open an existing SQLite journal without initialization or migration."""
+def _journal_snapshot(path: Path) -> tuple[bytes, bool, int, bytes]:
+    """Fingerprint journal state without opening SQLite."""
     wal_path = path.with_name(f"{path.name}-wal")
-    if wal_path.exists() and wal_path.stat().st_size:
+    main_before = hashlib.sha256(path.read_bytes()).digest()
+    wal_exists = wal_path.exists()
+    wal = wal_path.read_bytes() if wal_exists else b""
+    main_after = hashlib.sha256(path.read_bytes()).digest()
+    if main_before != main_after:
+        raise RecoveryPlanError("journal changed during recovery preparation")
+    return main_after, wal_exists, len(wal), hashlib.sha256(wal).digest()
+
+
+@contextmanager
+def _read_only_connection(path: Path) -> Iterator[sqlite3.Connection]:
+    """Open an existing SQLite journal without initialization or migration."""
+    before = _journal_snapshot(path)
+    if before[2]:
         raise RecoveryPlanError("journal has uncheckpointed WAL state")
     connection = sqlite3.connect(
         f"{path.resolve().as_uri()}?mode=ro&immutable=1",
         uri=True,
     )
     connection.row_factory = sqlite3.Row
-    return connection
+    try:
+        yield connection
+    finally:
+        connection.close()
+        if _journal_snapshot(path) != before:
+            raise RecoveryPlanError("journal changed during recovery preparation")
 
 
 def _one_row(
@@ -153,6 +178,9 @@ def _validate_recovery_state(
     reconciliation: BillingReconciliationArtifact,
 ) -> tuple[str, str]:
     with _read_only_connection(journal_path) as connection:
+        schema_rows = connection.execute("SELECT version FROM schema_meta").fetchall()
+        if len(schema_rows) != 1 or int(schema_rows[0][0]) != JOURNAL_SCHEMA_VERSION:
+            raise RecoveryPlanError("journal schema version is not supported")
         consumed = _one_row(
             connection,
             "SELECT * FROM consumed_authorizations WHERE plan_hash = ?",
@@ -163,6 +191,20 @@ def _validate_recovery_state(
         prior_authorization_hash = str(consumed["authorization_hash"])
         if not prior_execution_id:
             raise RecoveryPlanError("consumed parent authorization has no execution ID")
+
+        reservation = _one_row(
+            connection,
+            "SELECT * FROM authorization_reservations WHERE authorization_hash = ?",
+            (prior_authorization_hash,),
+            "parent authorization reservation",
+        )
+        if (
+            reservation["plan_hash"] != parent_plan_hash
+            or reservation["execution_id"] != prior_execution_id
+            or reservation["state"] != "consumed"
+            or reservation["consumed_at"] != consumed["consumed_at"]
+        ):
+            raise RecoveryPlanError("parent authorization reservation binding mismatch")
 
         execution = _one_row(
             connection,
@@ -175,6 +217,18 @@ def _validate_recovery_state(
             or execution["authorization_hash"] != prior_authorization_hash
         ):
             raise RecoveryPlanError("prior execution binding mismatch")
+        expected_execution = {
+            "status": "blocked_reconciled_not_billed",
+            "blocking_request": request.request_id,
+            "blocking_state": "block_uncertain_billing",
+            "requests_completed": 0,
+            "requests_uncertain": 0,
+            "paid_request_calls": 1,
+            "downloaded_records": 0,
+            "manual_action_required": 0,
+        }
+        if any(execution[field] != value for field, value in expected_execution.items()):
+            raise RecoveryPlanError("reconciled execution state mismatch")
 
         row = _one_row(
             connection,
@@ -204,22 +258,39 @@ def _validate_recovery_state(
         if any(row[field] is not None for field in artifact_fields):
             raise RecoveryPlanError("recovery request has registered artifacts")
 
-        effective = _one_row(
-            connection,
+        reconciliation_rows = connection.execute(
             "SELECT * FROM billing_reconciliations "
             "WHERE execution_id = ? AND request_id = ? "
-            "ORDER BY supersession_sequence DESC, applied_at DESC LIMIT 1",
+            "ORDER BY supersession_sequence, applied_at",
             (prior_execution_id, request.request_id),
-            "effective reconciliation",
-        )
+        ).fetchall()
+        if not reconciliation_rows:
+            raise RecoveryPlanError("effective reconciliation is missing")
+        previous_hash: str | None = None
+        for sequence, item in enumerate(reconciliation_rows, start=1):
+            if (
+                item["supersession_sequence"] != sequence
+                or item["supersedes_reconciliation_hash"] != previous_hash
+            ):
+                raise RecoveryPlanError("reconciliation chain mismatch")
+            previous_hash = str(item["artifact_hash"])
+        effective = reconciliation_rows[-1]
         required = {
             "artifact_hash": reconciliation.artifact_hash,
             "plan_hash": parent_plan_hash,
             "authorization_hash": prior_authorization_hash,
             "portal_review_status": "NOT_BILLED",
+            "observed_usage_usd": reconciliation.observed_usage_usd,
             "billing_resolution": _RECOVERY_RESOLUTION,
             "retry_eligible": 1,
             "manual_action_required": 0,
+            "reviewed_by": reconciliation.reviewed_by,
+            "reviewed_at": reconciliation.reviewed_at,
+            "review_method": reconciliation.review_method,
+            "supersedes_reconciliation_hash": reconciliation.supersedes_reconciliation_hash,
+            "supersession_reason": reconciliation.supersession_reason,
+            "supersession_evidence_method": reconciliation.supersession_evidence_method,
+            "supersession_sequence": reconciliation.supersession_sequence,
         }
         if any(effective[field] != value for field, value in required.items()):
             raise RecoveryPlanError(
