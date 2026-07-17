@@ -1,3 +1,4 @@
+import inspect
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -71,7 +72,26 @@ class _StrictTimeseries:
         self.calls: list[dict[str, object]] = []
         self._store = _FakeStore() if store is None else store
 
-    def get_range(self, **kwargs: object) -> object:
+    def get_range(
+        self,
+        *,
+        dataset: object,
+        start: object,
+        end: object,
+        symbols: object,
+        schema: object,
+        stype_in: object,
+        stype_out: object,
+    ) -> object:
+        kwargs = {
+            "dataset": dataset,
+            "start": start,
+            "end": end,
+            "symbols": symbols,
+            "schema": schema,
+            "stype_in": stype_in,
+            "stype_out": stype_out,
+        }
         assert set(kwargs) == self._expected_keys
         assert kwargs["dataset"] == "ARCX.PILLAR"
         assert kwargs["schema"] == "definition"
@@ -131,6 +151,13 @@ def test_paid_adapter_uses_exact_first_request_databento_contract(tmp_path: Path
     assert result.record_count == 1
     assert len(client.timeseries.calls) == 1
     assert not list(tmp_path.glob("*.provider.partial"))
+
+
+def test_paid_adapter_kwargs_bind_to_installed_databento_contract() -> None:
+    from databento.historical.api.timeseries import TimeseriesHttpAPI
+
+    signature = inspect.signature(TimeseriesHttpAPI.get_range)
+    signature.bind(None, **dict.fromkeys(_StrictTimeseries._expected_keys))
 
 
 def test_paid_adapter_rejects_draft_before_client_call() -> None:
