@@ -258,3 +258,11 @@ Authorization review must explicitly select the evidence path; never infer a
 “latest” file or fall back to its source evidence. The operator records the
 exact selected path, full SHA-256, status, provider quote count,
 `authorization_ready`, and `expires_at` before preparing authorization.
+
+The portal observation never relabels that API quote as a portal value. New
+completed portal attestations set `portal_estimate_status=displayed` with the
+exact fixed-point `portal_estimate_usd`, or `not_displayed` with
+`portal_estimate_usd=null`. Historical numeric v1 attestations without the
+status keep their original displayed-estimate meaning. In every case the
+separate API quote remains the request-level estimate, and the manual portal
+limit observation remains required.

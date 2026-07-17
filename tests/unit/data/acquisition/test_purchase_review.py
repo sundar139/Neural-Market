@@ -128,6 +128,16 @@ def _valid_attestation() -> dict[str, Any]:
     return payload
 
 
+def _attestation_with_estimate(status: object, value: object) -> dict[str, Any]:
+    payload = {
+        **_valid_attestation(),
+        "portal_estimate_status": status,
+        "portal_estimate_usd": value,
+    }
+    payload["attestation_hash"] = compute_portal_attestation_hash(payload)
+    return payload
+
+
 def _review(auth: dict[str, Any] | None, att: dict[str, Any] | None, tmp: Path, **kw: Any):
     assert auth is not None
     return review_purchase_package(
@@ -474,10 +484,104 @@ def test_completed_authorization_null_statement_schema_invalid() -> None:
         jsonschema.validate(bad, _schema(AUTH_SCHEMA))
 
 
-def test_completed_attestation_null_estimate_schema_invalid() -> None:
+def test_historical_numeric_portal_attestation_remains_schema_valid() -> None:
+    jsonschema.validate(_valid_attestation(), _schema(ATT_SCHEMA))
+
+
+def test_displayed_portal_estimate_schema_valid() -> None:
+    jsonschema.validate(
+        _attestation_with_estimate("displayed", "0.47"),
+        _schema(ATT_SCHEMA),
+    )
+
+
+def test_not_displayed_portal_estimate_schema_valid() -> None:
+    jsonschema.validate(
+        _attestation_with_estimate("not_displayed", None),
+        _schema(ATT_SCHEMA),
+    )
+
+
+@pytest.mark.parametrize("status", ["displayed", "not_displayed"])
+def test_template_portal_attestation_rejects_estimate_status(status: str) -> None:
+    template = _template_att()
+    template["portal_estimate_status"] = status
+
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(template, _schema(ATT_SCHEMA))
+
+
+@pytest.mark.parametrize(
+    ("status", "value"),
+    [("displayed", None), ("not_displayed", "0.47")],
+)
+def test_portal_estimate_status_value_mismatch_schema_invalid(status: str, value: object) -> None:
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(
+            _attestation_with_estimate(status, value),
+            _schema(ATT_SCHEMA),
+        )
+
+
+def test_null_portal_estimate_without_status_schema_invalid() -> None:
     bad = {**_valid_attestation(), "portal_estimate_usd": None}
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(bad, _schema(ATT_SCHEMA))
+
+
+@pytest.mark.parametrize("value", [0.47, -0.01, "-0.01", "NaN", "Infinity"])
+def test_displayed_portal_estimate_rejects_non_decimal_values(value: object) -> None:
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(
+            _attestation_with_estimate("displayed", value),
+            _schema(ATT_SCHEMA),
+        )
+
+
+def test_purchase_review_accepts_not_displayed_portal_estimate(tmp_path: Path) -> None:
+    attestation = _attestation_with_estimate("not_displayed", None)
+
+    result = _review(_valid_authorization(), attestation, tmp_path)
+
+    assert result.ok, [f"{rej.code}: {rej.detail}" for rej in result.rejections]
+    assert attestation["portal_estimate_usd"] is None
+
+
+def test_purchase_review_accepts_displayed_portal_estimate(tmp_path: Path) -> None:
+    result = _review(
+        _valid_authorization(),
+        _attestation_with_estimate("displayed", "0.47"),
+        tmp_path,
+    )
+
+    assert result.ok, [f"{rej.code}: {rej.detail}" for rej in result.rejections]
+
+
+@pytest.mark.parametrize(
+    ("status", "value"),
+    [
+        (None, None),
+        (None, "0.47"),
+        ("displayed", None),
+        ("displayed", 0.47),
+        ("displayed", "-0.01"),
+        ("displayed", "NaN"),
+        ("displayed", "Infinity"),
+        ("not_displayed", "0.47"),
+        ("unknown", None),
+        (["displayed"], "0.47"),
+    ],
+)
+def test_purchase_review_rejects_inconsistent_portal_estimate(
+    tmp_path: Path, status: object, value: object
+) -> None:
+    result = _review(
+        _valid_authorization(),
+        _attestation_with_estimate(status, value),
+        tmp_path,
+    )
+
+    assert "invalid_portal_estimate" in _codes(result)
 
 
 def test_completed_attestation_null_timestamp_schema_invalid() -> None:

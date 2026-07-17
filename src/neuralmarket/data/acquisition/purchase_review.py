@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import re
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -386,9 +387,21 @@ def review_purchase_package(
             got = attestation.get(fieldname)
             if not isinstance(got, str) or not hmac.compare_digest(got, want):
                 r.append(Rejection(code, f"attestation {fieldname} does not match live evidence"))
-        if _decimal(attestation.get("portal_estimate_usd")) is None:
+        estimate_status = attestation.get("portal_estimate_status")
+        estimate = attestation.get("portal_estimate_usd")
+        displayed = "portal_estimate_status" not in attestation or estimate_status == "displayed"
+        valid_estimate = (
+            isinstance(estimate, str) and re.fullmatch(r"[0-9]+\.[0-9]+", estimate) is not None
+        )
+        if not (
+            (displayed and valid_estimate)
+            or (estimate_status == "not_displayed" and estimate is None)
+        ):
             r.append(
-                Rejection("missing_portal_estimate", "portal-displayed estimate is not recorded")
+                Rejection(
+                    "invalid_portal_estimate",
+                    "portal estimate status and value are inconsistent",
+                )
             )
         if not isinstance(attestation.get("operator_confirmation"), str):
             r.append(
