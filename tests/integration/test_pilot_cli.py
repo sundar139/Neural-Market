@@ -636,6 +636,166 @@ def test_pilot_reconcile_billing_cli_applies_supersession_without_provider(tmp_p
 
 
 @pytest.mark.integration
+def test_prepare_recovery_plan_cli_is_offline_read_only_and_one_request(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    parent_hash = (
+        "9654fe1c2dfe98946560e27c6f51f110"  # pragma: allowlist secret
+        "038613060461fdf75936edf1a7d0ae77"  # pragma: allowlist secret
+    )
+    authorization_hash = (
+        "db2cde39f5a5e96c7301b9d289fc0c8"  # pragma: allowlist secret
+        "e5412b60d2b69faae30f12a7b99dd885e"  # pragma: allowlist secret
+    )
+    execution_id = "132078783c31dcab22cb90d95c967c9c"  # pragma: allowlist secret
+    request_id = "2750995e515e4f1a"  # pragma: allowlist secret
+    request_hash = (
+        "b8b0a410ace7a8a5d710b8bc04e37560"  # pragma: allowlist secret
+        "ab7b08ceb9aa316a4a3334b6b0980d7a"  # pragma: allowlist secret
+    )
+    now = datetime.now(UTC).isoformat()
+    journal_path = tmp_path / "journal.sqlite"
+    with RequestJournal(journal_path) as journal:
+        journal.upsert(
+            JournalEntry(
+                request_id=request_id,
+                request_hash=request_hash,
+                state="uncertain_billing",
+                attempt_count=1,
+                estimated_cost_usd="0.000112652779",
+                actual_billed_cost_usd=None,
+                raw_path=None,
+                raw_checksum=None,
+                normalized_path=None,
+                normalized_checksum=None,
+                failure_category="provider_error",
+                failure_message="paid historical provider operation failed",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        assert journal.reserve_authorization(
+            authorization_hash=authorization_hash,
+            plan_hash=parent_hash,
+            execution_id=execution_id,
+            reserved_at=now,
+        )
+        assert journal.consume_reserved_authorization(
+            authorization_hash=authorization_hash,
+            execution_id=execution_id,
+            consumed_at=now,
+        )
+        unknown = build_reconciliation_artifact(
+            execution_id=execution_id,
+            request_id=request_id,
+            plan_hash=parent_hash,
+            authorization_hash=authorization_hash,
+            portal_review_status="UNKNOWN",
+            observed_usage_usd="UNKNOWN",
+            journal_state_before="uncertain_billing",
+            execution_attempt_status_before="running",
+            reviewed_at=now,
+        )
+        data_module.apply_billing_reconciliation(journal=journal, artifact=unknown)
+        not_billed = build_reconciliation_artifact(
+            execution_id=execution_id,
+            request_id=request_id,
+            plan_hash=parent_hash,
+            authorization_hash=authorization_hash,
+            portal_review_status="NOT_BILLED",
+            observed_usage_usd="0.00",
+            journal_state_before="uncertain_billing",
+            execution_attempt_status_before="blocked_uncertain_billing",
+            reviewed_at=now,
+            supersedes_reconciliation_hash=unknown.artifact_hash,
+            supersession_reason="operator obtained definitive portal nonbilling evidence",
+            supersession_evidence_method="manual_databento_portal_review",
+            supersession_sequence=2,
+        )
+        data_module.apply_billing_reconciliation(journal=journal, artifact=not_billed)
+
+    reconciliation_path = tmp_path / "not_billed.json"
+    reconciliation_path.write_text(not_billed.model_dump_json(indent=2), encoding="utf-8")
+    output_path = tmp_path / "pilot_recovery_plan.local.json"
+    before = {path.name: path.read_bytes() for path in tmp_path.glob("journal.sqlite*")}
+    monkeypatch.setattr(
+        data_module,
+        "_raw_databento_client",
+        lambda: (_ for _ in ()).throw(AssertionError("Databento construction forbidden")),
+    )
+    monkeypatch.setattr(
+        data_module,
+        "_load_dotenv",
+        lambda root: (_ for _ in ()).throw(AssertionError("dotenv load forbidden")),
+    )
+
+    cli = runner.invoke(
+        app,
+        [
+            "data",
+            "pilot",
+            "prepare-recovery-plan",
+            "--request-id",
+            request_id,
+            "--journal",
+            str(journal_path),
+            "--reconciliation",
+            str(reconciliation_path),
+            "--output",
+            str(output_path),
+        ],
+    )
+
+    assert cli.exit_code == 0, cli.output
+    recovery = json.loads(output_path.read_text(encoding="utf-8"))
+    after = {path.name: path.read_bytes() for path in tmp_path.glob("journal.sqlite*")}
+    assert recovery["plan_hash"] != parent_hash
+    assert recovery["request_count"] == 1
+    assert [request["request_id"] for request in recovery["requests"]] == [request_id]
+    assert recovery["recovery"]["parent_plan_hash"] == parent_hash
+    assert recovery["recovery"]["prior_execution_id"] == execution_id
+    assert recovery["recovery"]["prior_authorization_hash"] == authorization_hash
+    assert recovery["recovery"]["reconciliation_artifact_hash"] == not_billed.artifact_hash
+    assert after == before
+    with sqlite3.connect(journal_path) as connection:
+        consumed = connection.execute(
+            "SELECT authorization_hash, execution_id FROM consumed_authorizations "
+            "WHERE plan_hash = ?",
+            (parent_hash,),
+        ).fetchone()
+    assert consumed == (authorization_hash, execution_id)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "output_name", ["journal.sqlite", "journal.sqlite-wal", "journal.sqlite-shm"]
+)
+def test_prepare_recovery_plan_cli_rejects_journal_output_collision(
+    tmp_path: Path, output_name: str
+) -> None:
+    journal_path = tmp_path / "journal.sqlite"
+    cli = runner.invoke(
+        app,
+        [
+            "data",
+            "pilot",
+            "prepare-recovery-plan",
+            "--request-id",
+            "request",
+            "--journal",
+            str(journal_path),
+            "--reconciliation",
+            str(tmp_path / "reconciliation.json"),
+            "--output",
+            str(tmp_path / output_name),
+        ],
+    )
+
+    assert cli.exit_code == 1
+    assert not journal_path.exists()
+
+
+@pytest.mark.integration
 def test_pilot_prepare_generates_manifest_and_stays_unauthorized(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -53,6 +53,26 @@ authorization and attestation before any later retry; `UNKNOWN` remains
 `uncertain_billing`. Reconciliation never contacts Databento and never changes a
 consumed authorization back to available.
 
+A confirmed-`NOT_BILLED` request is prepared for authorization through a distinct,
+deterministic one-request recovery plan; the consumed 25-request parent plan is never reset.
+The recovery identity preserves the original request payload and binds the parent
+plan hash, prior execution and authorization, request hash, and latest effective
+reconciliation artifact hash. Preparation opens a checkpointed journal through
+SQLite read-only immutable mode and fails closed on any nonempty WAL:
+
+```powershell
+& .\.venv\Scripts\neuralmarket.exe data pilot prepare-recovery-plan `
+    --request-id "<request-id>" `
+    --reconciliation "reports/data/execution/reconciliation/billing_reconciliation_not_billed_<execution>.local.json" `
+    --output "reports/data/execution/recovery/pilot_recovery_plan_<hash>.local.json"
+```
+
+This command does not load credentials, quote, authorize, consume, retry, or
+mutate the journal. A later implementation milestone must integrate this identity
+with the normal guarded quote, review, authorization, and executor paths. Only
+after that code is separately accepted may an operational milestone obtain a
+fresh quote, portal attestation, and one-time authorization for the distinct hash.
+
 Offline diagnosis of the first paid-provider failure found a deterministic
 adapter-contract defect before Databento could receive a valid request: the
 production `timeseries.get_range` call supplied an `encoding` keyword, but the

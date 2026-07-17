@@ -10,17 +10,290 @@ separate explicit action taken elsewhere.
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, model_validator
 
+from neuralmarket.data.acquisition.billing_reconciliation import (
+    BillingReconciliationArtifact,
+    load_reconciliation_artifact,
+)
 from neuralmarket.data.acquisition.journal import JournalEntry, RequestJournal
+from neuralmarket.data.acquisition.requests import (
+    AcquisitionRequest,
+    plan_hash,
+    plan_hash_metadata,
+    validate_canonical_pilot_plan,
+    verify_final_request,
+)
 from neuralmarket.data.acquisition.storage import PathSafetyError, resolve_under_data_root
 from neuralmarket.data.raw.integrity import verify_checksum
 
 _RAW_PRESENT_STATES = frozenset({"raw_validated", "normalized", "quality_validated"})
+_RECOVERY_STATE = "retry_eligible_after_manual_nonbilling_confirmation"
+_RECOVERY_RESOLUTION = "confirmed_not_billed"
+
+
+class RecoveryPlanError(ValueError):
+    """Raised when one-request recovery provenance is incomplete or ambiguous."""
+
+
+class RecoveryPlanProvenance(BaseModel):
+    """Immutable parent history required to authorize exactly one recovery."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    parent_plan_hash: str
+    prior_execution_id: str
+    prior_authorization_hash: str
+    request_id: str
+    request_hash: str
+    reconciliation_artifact_hash: str
+    required_prior_resolution: Literal["confirmed_not_billed"] = "confirmed_not_billed"
+    required_journal_state: Literal["retry_eligible_after_manual_nonbilling_confirmation"] = (
+        "retry_eligible_after_manual_nonbilling_confirmation"
+    )
+    automatic_retry_allowed: Literal[False] = False
+
+
+class RecoveryPlan(BaseModel):
+    """A normal one-request plan identity with explicit recovery provenance."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    manifest_version: Literal["pilot-recovery-plan-v1"] = "pilot-recovery-plan-v1"
+    plan_hash: str
+    bindings: dict[str, str]
+    estimated_total_cost_usd: str
+    estimated_maximum_single_request_usd: str
+    maximum_allowed_total_usd: str
+    maximum_allowed_single_request_usd: str
+    authorization: Literal["required"] = "required"
+    purchase_authorized: Literal[False] = False
+    request_count: Literal[1] = 1
+    recovery: RecoveryPlanProvenance
+    requests: tuple[AcquisitionRequest]
+
+    @model_validator(mode="after")
+    def _validate_identity(self) -> RecoveryPlan:
+        if len(self.requests) != 1:
+            raise ValueError("recovery plan must contain exactly one request")
+        request = self.requests[0]
+        if (
+            request.request_id != self.recovery.request_id
+            or request.request_hash != self.recovery.request_hash
+        ):
+            raise ValueError("recovery request provenance mismatch")
+        verify_final_request(request)
+        metadata = plan_hash_metadata(self.model_dump(mode="json", by_alias=True))
+        if plan_hash([request], self.bindings, metadata) != self.plan_hash:
+            raise ValueError("recovery plan hash mismatch")
+        if self.plan_hash == self.recovery.parent_plan_hash:
+            raise ValueError("recovery plan hash must differ from parent plan hash")
+        return self
+
+
+def _read_only_connection(path: Path) -> sqlite3.Connection:
+    """Open an existing SQLite journal without initialization or migration."""
+    wal_path = path.with_name(f"{path.name}-wal")
+    if wal_path.exists() and wal_path.stat().st_size:
+        raise RecoveryPlanError("journal has uncheckpointed WAL state")
+    connection = sqlite3.connect(
+        f"{path.resolve().as_uri()}?mode=ro&immutable=1",
+        uri=True,
+    )
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+def _one_row(
+    connection: sqlite3.Connection, query: str, parameters: tuple[object, ...], label: str
+) -> sqlite3.Row:
+    row = connection.execute(query, parameters).fetchone()
+    if row is None:
+        raise RecoveryPlanError(f"{label} is missing")
+    return cast(sqlite3.Row, row)
+
+
+def _zero_or_null(value: object) -> bool:
+    if value is None:
+        return True
+    try:
+        return Decimal(str(value)) == 0
+    except InvalidOperation:
+        return False
+
+
+def _validate_parent_plan(payload: dict[str, Any]) -> list[AcquisitionRequest]:
+    raw_requests = payload.get("requests")
+    if not isinstance(raw_requests, list):
+        raise RecoveryPlanError("parent plan requests are missing")
+    requests = [AcquisitionRequest.model_validate(item) for item in raw_requests]
+    validate_canonical_pilot_plan(requests)
+    for request in requests:
+        verify_final_request(request)
+    bindings = payload.get("bindings")
+    if not isinstance(bindings, dict):
+        raise RecoveryPlanError("parent plan bindings are missing")
+    computed = plan_hash(requests, bindings, plan_hash_metadata(payload))
+    if payload.get("plan_hash") != computed:
+        raise RecoveryPlanError("parent plan hash mismatch")
+    return requests
+
+
+def _validate_recovery_state(
+    *,
+    journal_path: Path,
+    parent_plan_hash: str,
+    request: AcquisitionRequest,
+    reconciliation: BillingReconciliationArtifact,
+) -> tuple[str, str]:
+    with _read_only_connection(journal_path) as connection:
+        consumed = _one_row(
+            connection,
+            "SELECT * FROM consumed_authorizations WHERE plan_hash = ?",
+            (parent_plan_hash,),
+            "parent authorization consumption",
+        )
+        prior_execution_id = str(consumed["execution_id"] or "")
+        prior_authorization_hash = str(consumed["authorization_hash"])
+        if not prior_execution_id:
+            raise RecoveryPlanError("consumed parent authorization has no execution ID")
+
+        execution = _one_row(
+            connection,
+            "SELECT * FROM execution_attempts WHERE execution_id = ?",
+            (prior_execution_id,),
+            "prior execution",
+        )
+        if (
+            execution["plan_hash"] != parent_plan_hash
+            or execution["authorization_hash"] != prior_authorization_hash
+        ):
+            raise RecoveryPlanError("prior execution binding mismatch")
+
+        row = _one_row(
+            connection,
+            "SELECT * FROM requests WHERE request_id = ?",
+            (request.request_id,),
+            "recovery request",
+        )
+        if row["request_hash"] != request.request_hash:
+            raise RecoveryPlanError("recovery request hash mismatch")
+        if int(row["attempt_count"]) < 1:
+            raise RecoveryPlanError("recovery request has no prior attempt")
+        if row["state"] != _RECOVERY_STATE:
+            raise RecoveryPlanError("recovery request is not retry eligible")
+        if not _zero_or_null(row["actual_billed_cost_usd"]):
+            raise RecoveryPlanError("recovery request has billed cost")
+        if row["request_completed_at"] is not None:
+            raise RecoveryPlanError("recovery request is completed")
+        artifact_fields = (
+            "raw_path",
+            "raw_checksum",
+            "raw_record_count",
+            "raw_byte_count",
+            "provider_response_id",
+            "normalized_path",
+            "normalized_checksum",
+        )
+        if any(row[field] is not None for field in artifact_fields):
+            raise RecoveryPlanError("recovery request has registered artifacts")
+
+        effective = _one_row(
+            connection,
+            "SELECT * FROM billing_reconciliations "
+            "WHERE execution_id = ? AND request_id = ? "
+            "ORDER BY supersession_sequence DESC, applied_at DESC LIMIT 1",
+            (prior_execution_id, request.request_id),
+            "effective reconciliation",
+        )
+        required = {
+            "artifact_hash": reconciliation.artifact_hash,
+            "plan_hash": parent_plan_hash,
+            "authorization_hash": prior_authorization_hash,
+            "portal_review_status": "NOT_BILLED",
+            "billing_resolution": _RECOVERY_RESOLUTION,
+            "retry_eligible": 1,
+            "manual_action_required": 0,
+        }
+        if any(effective[field] != value for field, value in required.items()):
+            raise RecoveryPlanError(
+                "selected reconciliation is not the effective NOT_BILLED record"
+            )
+        if (
+            reconciliation.execution_id != prior_execution_id
+            or reconciliation.request_id != request.request_id
+            or reconciliation.plan_hash != parent_plan_hash
+            or reconciliation.authorization_hash != prior_authorization_hash
+            or reconciliation.portal_review_status != "NOT_BILLED"
+            or reconciliation.billing_resolution != _RECOVERY_RESOLUTION
+            or Decimal(reconciliation.observed_usage_usd) != 0
+        ):
+            raise RecoveryPlanError("reconciliation provenance mismatch")
+    return prior_execution_id, prior_authorization_hash
+
+
+def prepare_recovery_plan(
+    *,
+    parent_plan_path: Path,
+    journal_path: Path,
+    reconciliation_path: Path,
+    request_id: str,
+) -> RecoveryPlan:
+    """Build one deterministic recovery identity from read-only authoritative state."""
+    payload = json.loads(parent_plan_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise RecoveryPlanError("parent plan must be an object")
+    parent_requests = _validate_parent_plan(payload)
+    matches = [request for request in parent_requests if request.request_id == request_id]
+    if len(matches) != 1:
+        raise RecoveryPlanError("recovery scope must select exactly one parent request")
+    request = matches[0]
+    reconciliation = load_reconciliation_artifact(reconciliation_path)
+    parent_plan_hash = str(payload["plan_hash"])
+    prior_execution_id, prior_authorization_hash = _validate_recovery_state(
+        journal_path=journal_path,
+        parent_plan_hash=parent_plan_hash,
+        request=request,
+        reconciliation=reconciliation,
+    )
+    provenance = RecoveryPlanProvenance(
+        parent_plan_hash=parent_plan_hash,
+        prior_execution_id=prior_execution_id,
+        prior_authorization_hash=prior_authorization_hash,
+        request_id=request.request_id,
+        request_hash=request.request_hash,
+        reconciliation_artifact_hash=reconciliation.artifact_hash,
+    )
+    cost = str(request.estimated_cost)
+    recovery_payload: dict[str, Any] = {
+        "estimated_total_cost_usd": cost,
+        "estimated_maximum_single_request_usd": cost,
+        "maximum_allowed_total_usd": payload["maximum_allowed_total_usd"],
+        "maximum_allowed_single_request_usd": payload["maximum_allowed_single_request_usd"],
+        "authorization": "required",
+        "purchase_authorized": False,
+        "recovery": provenance.model_dump(mode="json"),
+    }
+    bindings = cast(dict[str, str], payload["bindings"])
+    recovery_hash = plan_hash(
+        [request],
+        bindings,
+        plan_hash_metadata(recovery_payload),
+    )
+    if recovery_hash == parent_plan_hash:
+        raise RecoveryPlanError("recovery plan hash must differ from parent plan hash")
+    return RecoveryPlan(
+        plan_hash=recovery_hash,
+        bindings=bindings,
+        requests=(request,),
+        **recovery_payload,
+    )
 
 
 class RecoveryFinding(BaseModel):

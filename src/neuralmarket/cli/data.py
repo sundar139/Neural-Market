@@ -95,12 +95,17 @@ from neuralmarket.data.acquisition.providers import (
     create_databento_paid_provider,
     paid_provider_readiness,
 )
-from neuralmarket.data.acquisition.recovery import RecoveryReport, run_recovery
+from neuralmarket.data.acquisition.recovery import (
+    RecoveryReport,
+    prepare_recovery_plan,
+    run_recovery,
+)
 from neuralmarket.data.acquisition.requests import (
     AcquisitionRequest,
     build_pilot_request_plan,
     finalize_request,
     load_pilot_config,
+    plan_hash_metadata,
     verify_final_request,
 )
 from neuralmarket.data.acquisition.requests import (
@@ -1104,18 +1109,7 @@ def _next_resume_output(path: Path) -> Path:
 
 
 def _pilot_plan_hash_metadata(manifest_payload: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "estimated_total_cost_usd": manifest_payload["estimated_total_cost_usd"],
-        "estimated_maximum_single_request_usd": manifest_payload[
-            "estimated_maximum_single_request_usd"
-        ],
-        "maximum_allowed_total_usd": manifest_payload["maximum_allowed_total_usd"],
-        "maximum_allowed_single_request_usd": manifest_payload[
-            "maximum_allowed_single_request_usd"
-        ],
-        "authorization": manifest_payload["authorization"],
-        "purchase_authorized": manifest_payload["purchase_authorized"],
-    }
+    return plan_hash_metadata(manifest_payload)
 
 
 def _required_manifest_hash(payload: dict[str, Any], label: str) -> str:
@@ -2385,6 +2379,67 @@ def pilot_execute(
     typer.echo(json.dumps(report, sort_keys=True))
     if result.blocking_state is not None:
         raise typer.Exit(code=1)
+
+
+@pilot_app.command("prepare-recovery-plan")
+def pilot_prepare_recovery_plan(
+    request_id: str = typer.Option(..., "--request-id", help="The sole request to recover."),
+    reconciliation: Path = typer.Option(
+        ..., "--reconciliation", help="Confirmed-NOT_BILLED reconciliation artifact."
+    ),
+    output: Path = typer.Option(..., "--output", help="Ignored local recovery-plan output."),
+    parent_plan: Path = typer.Option(
+        _DEFAULT_REQUEST_MANIFEST,
+        "--parent-plan",
+        help="The consumed canonical pilot request plan.",
+    ),
+    journal_path: Path = typer.Option(
+        _DEFAULT_JOURNAL_PATH,
+        "--journal",
+        help="Canonical journal opened in SQLite read-only mode.",
+    ),
+) -> None:
+    """Prepare one deterministic recovery plan without provider or journal writes."""
+    root = find_repository_root()
+    parent_plan = _resolve_under_root(root, parent_plan)
+    journal_path = _resolve_under_root(root, journal_path)
+    reconciliation = _resolve_under_root(root, reconciliation)
+    output = _resolve_under_root(root, output)
+    protected_inputs = {
+        parent_plan.resolve(),
+        journal_path.resolve(),
+        Path(f"{journal_path}-wal").resolve(),
+        Path(f"{journal_path}-shm").resolve(),
+        reconciliation.resolve(),
+    }
+    if output.resolve() in protected_inputs:
+        _logger.error("Recovery-plan output must not overwrite an input or journal sidecar.")
+        raise typer.Exit(code=1)
+    try:
+        recovery = prepare_recovery_plan(
+            parent_plan_path=parent_plan,
+            journal_path=journal_path,
+            reconciliation_path=reconciliation,
+            request_id=request_id,
+        )
+    except (OSError, ValueError, BillingReconciliationError) as exc:
+        _logger.error("Recovery-plan preparation failed: %s", redact(str(exc)))
+        raise typer.Exit(code=1) from exc
+    write_acquisition_json(output, recovery.model_dump(mode="json", by_alias=True))
+    typer.echo(
+        json.dumps(
+            {
+                "status": "prepared",
+                "plan_hash": recovery.plan_hash,
+                "parent_plan_hash": recovery.recovery.parent_plan_hash,
+                "request_id": recovery.recovery.request_id,
+                "request_count": recovery.request_count,
+                "automatic_retry_allowed": False,
+                "output": str(output),
+            },
+            sort_keys=True,
+        )
+    )
 
 
 @pilot_app.command("recover")

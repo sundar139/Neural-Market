@@ -499,6 +499,25 @@ def plan_hash(
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def plan_hash_metadata(manifest_payload: dict[str, Any]) -> dict[str, Any]:
+    """Return the manifest fields covered by the canonical plan identity."""
+    metadata = {
+        "estimated_total_cost_usd": manifest_payload["estimated_total_cost_usd"],
+        "estimated_maximum_single_request_usd": manifest_payload[
+            "estimated_maximum_single_request_usd"
+        ],
+        "maximum_allowed_total_usd": manifest_payload["maximum_allowed_total_usd"],
+        "maximum_allowed_single_request_usd": manifest_payload[
+            "maximum_allowed_single_request_usd"
+        ],
+        "authorization": manifest_payload["authorization"],
+        "purchase_authorized": manifest_payload["purchase_authorized"],
+    }
+    if "recovery" in manifest_payload:
+        metadata["recovery"] = manifest_payload["recovery"]
+    return metadata
+
+
 def verify_final_request(request: AcquisitionRequest) -> None:
     """Reject a draft, tampered estimate, or tampered final request hash."""
     payload = request.model_dump(mode="json", by_alias=True)
