@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict
 
 from neuralmarket.data.acquisition.states import ALLOWED_TRANSITIONS
 
-JOURNAL_SCHEMA_VERSION = 8
+JOURNAL_SCHEMA_VERSION = 9
 
 _COLUMNS = (
     "request_id",
@@ -213,6 +213,9 @@ class RequestJournal:
                 "provider_response_id": "ALTER TABLE requests ADD COLUMN provider_response_id TEXT",
                 "request_started_at": "ALTER TABLE requests ADD COLUMN request_started_at TEXT",
                 "request_completed_at": "ALTER TABLE requests ADD COLUMN request_completed_at TEXT",
+                "actual_provider_cost_status": (
+                    "ALTER TABLE requests ADD COLUMN actual_provider_cost_status TEXT"
+                ),
             }.items():
                 if column not in request_columns:
                     self._connection.execute(statement)

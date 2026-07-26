@@ -708,7 +708,7 @@ def test_journal_change_during_preparation_fails_closed(
 
 def test_unsupported_journal_schema_fails_closed(tmp_path: Path) -> None:
     _, journal, reconciliation, _ = _prepare(tmp_path)
-    _update(journal, "UPDATE schema_meta SET version = 9")
+    _update(journal, "UPDATE schema_meta SET version = 10")
 
     with pytest.raises(RecoveryPlanError, match="journal schema version"):
         prepare_recovery_plan(

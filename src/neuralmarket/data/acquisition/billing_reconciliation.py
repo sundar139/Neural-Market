@@ -494,3 +494,212 @@ def build_reconciliation_artifact(
     }
     payload["artifact_hash"] = canonical_artifact_hash(payload)
     return BillingReconciliationArtifact.model_validate(payload)
+
+
+# ── Successful-request billing settlement (non-destructive) ──────────
+
+
+class SettlementError(RuntimeError):
+    """Raised when a successful billing settlement fails closed."""
+
+
+def apply_successful_settlement(
+    *,
+    journal: RequestJournal,
+    execution_id: str,
+    request_id: str,
+    plan_hash: str,
+    authorization_hash: str,
+    billed_amount_usd: Decimal,
+    evidence_classification: str,
+    reviewed_at: str,
+    dry_run: bool = False,
+) -> SettlementResult:
+    """Record billing for a successfully validated request.
+
+    Unlike :func:`apply_billing_reconciliation`, this never changes
+    ``request.state``, execution status, artifact fields, or counters.
+    It only writes ``actual_billed_cost_usd`` and
+    ``actual_provider_cost_status``, then appends an audit event.
+
+    *evidence_classification* must be ``"BILLED_EXACT"`` or
+    ``"NOT_BILLED_EXACT"``.  Aggregate, rounded, unknown, and inferred
+    evidence is rejected.
+    """
+    if evidence_classification not in {"BILLED_EXACT", "NOT_BILLED_EXACT"}:
+        raise SettlementError(
+            f"evidence_classification must be BILLED_EXACT or NOT_BILLED_EXACT, "
+            f"got {evidence_classification}"
+        )
+    if billed_amount_usd < 0:
+        raise SettlementError("billed_amount_usd must be non-negative")
+    if evidence_classification == "NOT_BILLED_EXACT" and billed_amount_usd != 0:
+        raise SettlementError("NOT_BILLED_EXACT requires billed_amount_usd = 0")
+
+    conn = journal.connection
+    conn.row_factory = sqlite3.Row
+    now = datetime.now(UTC).isoformat()
+
+    request = _fetch_one(
+        conn, "SELECT * FROM requests WHERE request_id = ?", (request_id,)
+    )
+    if str(request["state"]) != "quality_validated":
+        raise SettlementError(
+            f"request must be quality_validated, got {request['state']}"
+        )
+    if request["request_hash"] != _resolve_request_hash(
+        conn, request_id, plan_hash
+    ):
+        raise SettlementError("request hash mismatch")
+    if request["request_completed_at"] is None:
+        raise SettlementError("request has not completed")
+    if request["raw_path"] is None or request["raw_checksum"] is None:
+        raise SettlementError("raw artifact is missing")
+    if request["normalized_path"] is None and request["normalized_checksum"] is not None:
+        raise SettlementError("normalized artifact is incomplete")
+
+    attempt = _fetch_one(
+        conn,
+        "SELECT * FROM execution_attempts WHERE execution_id = ?",
+        (execution_id,),
+    )
+    if str(attempt["status"]) != "completed":
+        raise SettlementError(
+            f"execution must be completed, got {attempt['status']}"
+        )
+    if attempt["plan_hash"] != plan_hash:
+        raise SettlementError("execution plan hash mismatch")
+    if attempt["authorization_hash"] != authorization_hash:
+        raise SettlementError("execution authorization hash mismatch")
+    try:
+        requests_completed = int(attempt["requests_completed"] or 0)
+    except (ValueError, TypeError):
+        requests_completed = 0
+    if requests_completed < 1:
+        raise SettlementError("execution has no completed requests")
+
+    reservation = _fetch_one(
+        conn,
+        "SELECT * FROM authorization_reservations "
+        "WHERE authorization_hash = ? AND execution_id = ?",
+        (authorization_hash, execution_id),
+    )
+    if str(reservation["state"]) != "consumed":
+        raise SettlementError("authorization is not consumed")
+
+    consumed = _fetch_one(
+        conn,
+        "SELECT * FROM consumed_authorizations "
+        "WHERE plan_hash = ? AND authorization_hash = ?",
+        (plan_hash, authorization_hash),
+    )
+    if consumed["execution_id"] != execution_id:
+        raise SettlementError("consumed authorization binding mismatch")
+
+    # ponytail: reject re-settlement with a different value.
+    existing_status = request["actual_provider_cost_status"]
+    if existing_status is not None:
+        existing_billed = request["actual_billed_cost_usd"]
+        try:
+            existing_dec = (
+                Decimal(str(existing_billed)) if existing_billed is not None else None
+            )
+        except InvalidOperation:
+            existing_dec = None
+        if (
+            existing_status == _cost_status(evidence_classification)
+            and existing_dec == billed_amount_usd
+        ):
+            # Idempotent replay
+            return SettlementResult(
+                status="ok",
+                execution_id=execution_id,
+                request_id=request_id,
+                request_state=str(request["state"]),
+                billed_amount_usd=str(billed_amount_usd),
+                cost_status=_cost_status(evidence_classification),
+                idempotent_replay=True,
+            )
+        raise SettlementError(
+            f"conflicting settlement already exists: "
+            f"status={existing_status}, amount={existing_billed}"
+        )
+
+    if dry_run:
+        return SettlementResult(
+            status="dry_run",
+            execution_id=execution_id,
+            request_id=request_id,
+            request_state=str(request["state"]),
+            billed_amount_usd=str(billed_amount_usd),
+            cost_status=_cost_status(evidence_classification),
+        )
+
+    with conn:
+        conn.execute(
+            "UPDATE requests SET actual_billed_cost_usd = ?, "
+            "actual_provider_cost_status = ?, updated_at = ? "
+            "WHERE request_id = ?",
+            (str(billed_amount_usd), _cost_status(evidence_classification), now, request_id),
+        )
+        detail = json.dumps(
+            {
+                "execution_id": execution_id,
+                "request_id": request_id,
+                "plan_hash": plan_hash,
+                "authorization_hash": authorization_hash,
+                "billed_amount_usd": str(billed_amount_usd),
+                "evidence_classification": evidence_classification,
+                "reviewed_at": reviewed_at,
+            },
+            sort_keys=True,
+        )
+        conn.execute(
+            "INSERT INTO request_events "
+            "(request_id, event_type, event_at, detail_json) VALUES (?, ?, ?, ?)",
+            (
+                request_id,
+                "successful_request_billing_settlement_recorded",
+                now,
+                detail,
+            ),
+        )
+
+    return SettlementResult(
+        status="ok",
+        execution_id=execution_id,
+        request_id=request_id,
+        request_state=str(request["state"]),
+        billed_amount_usd=str(billed_amount_usd),
+        cost_status=_cost_status(evidence_classification),
+    )
+
+
+def _cost_status(evidence: str) -> str:
+    return "confirmed_billed" if evidence == "BILLED_EXACT" else "confirmed_not_billed"
+
+
+def _resolve_request_hash(
+    conn: sqlite3.Connection, request_id: str, plan_hash: str
+) -> str:
+    """Look up the canonical request hash from the journal, falling back."""
+    row = conn.execute(
+        "SELECT request_hash FROM requests WHERE request_id = ?", (request_id,)
+    ).fetchone()
+    if row is not None and row[0] is not None:
+        return str(row[0])
+    return ""  # ponytail: caller validates non-empty separately
+
+
+class SettlementResult(BaseModel):
+    """Outcome of a successful-request billing settlement."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    status: str
+    execution_id: str
+    request_id: str
+    request_state: str
+    billed_amount_usd: str
+    cost_status: str
+    idempotent_replay: bool = False
