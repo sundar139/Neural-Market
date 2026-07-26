@@ -13,7 +13,7 @@ import sqlite3
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Literal, cast
+from typing import Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
@@ -499,90 +499,201 @@ def build_reconciliation_artifact(
 # ── Successful-request billing settlement (non-destructive) ──────────
 
 
+_ACCEPTED_CLASSIFICATIONS: set[str] = {"BILLED_EXACT", "NOT_BILLED_EXACT"}
+
+
 class SettlementError(RuntimeError):
     """Raised when a successful billing settlement fails closed."""
+
+
+class SuccessfulSettlementArtifact(BaseModel):
+    """Immutable, self-hashed evidence of an exact request-level billing outcome."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    manifest_version: Literal["successful-request-billing-settlement-v1"] = (
+        "successful-request-billing-settlement-v1"
+    )
+    execution_id: str
+    request_id: str
+    request_hash: str
+    plan_hash: str
+    authorization_hash: str
+    raw_artifact_path: str
+    raw_artifact_sha256: str
+    normalized_artifact_path: str
+    normalized_artifact_sha256: str
+    quality_report_path: str
+    quality_report_sha256: str
+    evidence_classification: Literal["BILLED_EXACT", "NOT_BILLED_EXACT"]
+    billed_amount_usd: str
+    currency: Literal["USD"] = "USD"
+    provider_observed_at: str
+    reviewed_at: str
+    reviewed_by: Literal["neuralmarket_local_operator"] = "neuralmarket_local_operator"
+    review_method: Literal["manual_databento_provider_review"] = (
+        "manual_databento_provider_review"
+    )
+    provider_evidence_description: str
+    provider_evidence_reference: str
+    settlement_hash: str
+
+    @field_validator("billed_amount_usd")
+    @classmethod
+    def _validate_amount(cls, value: str) -> str:
+        try:
+            decimal = Decimal(value)
+        except InvalidOperation as exc:
+            raise ValueError("billed_amount_usd must be a decimal string") from exc
+        if not decimal.is_finite():
+            raise ValueError("billed_amount_usd must be finite")
+        if decimal < 0:
+            raise ValueError("billed_amount_usd must be non-negative")
+        return str(decimal)
+
+    @field_validator("provider_observed_at", "reviewed_at")
+    @classmethod
+    def _validate_timestamps(cls, value: str) -> str:
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError as exc:
+            raise ValueError("timestamp must be ISO 8601") from exc
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("timestamp must be timezone-aware")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_evidence(self) -> SuccessfulSettlementArtifact:
+        if self.evidence_classification == "BILLED_EXACT":
+            if Decimal(self.billed_amount_usd) <= 0:
+                raise ValueError("BILLED_EXACT requires billed_amount_usd > 0")
+        elif (
+            self.evidence_classification == "NOT_BILLED_EXACT"
+            and Decimal(self.billed_amount_usd) != 0
+        ):
+            raise ValueError("NOT_BILLED_EXACT requires billed_amount_usd = 0")
+        return self
+
+
+def _settlement_canonical(payload: dict[str, Any]) -> str:
+    unsigned = {k: v for k, v in payload.items() if k != "settlement_hash"}
+    canonical = json.dumps(unsigned, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def build_successful_settlement(
+    *,
+    execution_id: str,
+    request_id: str,
+    request_hash: str,
+    plan_hash: str,
+    authorization_hash: str,
+    raw_artifact_path: str,
+    raw_artifact_sha256: str,
+    normalized_artifact_path: str,
+    normalized_artifact_sha256: str,
+    quality_report_path: str,
+    quality_report_sha256: str,
+    evidence_classification: str,
+    billed_amount_usd: str,
+    provider_observed_at: str,
+    reviewed_at: str | None = None,
+    provider_evidence_description: str,
+    provider_evidence_reference: str,
+) -> SuccessfulSettlementArtifact:
+    """Build and self-hash a canonical settlement artifact."""
+    payload: dict[str, object] = {
+        "manifest_version": "successful-request-billing-settlement-v1",
+        "execution_id": execution_id,
+        "request_id": request_id,
+        "request_hash": request_hash,
+        "plan_hash": plan_hash,
+        "authorization_hash": authorization_hash,
+        "raw_artifact_path": raw_artifact_path,
+        "raw_artifact_sha256": raw_artifact_sha256,
+        "normalized_artifact_path": normalized_artifact_path,
+        "normalized_artifact_sha256": normalized_artifact_sha256,
+        "quality_report_path": quality_report_path,
+        "quality_report_sha256": quality_report_sha256,
+        "evidence_classification": evidence_classification,
+        "billed_amount_usd": billed_amount_usd,
+        "currency": "USD",
+        "provider_observed_at": provider_observed_at,
+        "reviewed_at": reviewed_at or datetime.now(UTC).isoformat(),
+        "reviewed_by": "neuralmarket_local_operator",
+        "review_method": "manual_databento_provider_review",
+        "provider_evidence_description": provider_evidence_description,
+        "provider_evidence_reference": provider_evidence_reference,
+    }
+    payload["settlement_hash"] = _settlement_canonical(payload)
+    return SuccessfulSettlementArtifact.model_validate(payload)
+
+
+def load_successful_settlement(path: Path) -> SuccessfulSettlementArtifact:
+    """Load and hash-validate a successful-settlement artifact from disk."""
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise SettlementError("settlement artifact must be a JSON object")
+    expected = _settlement_canonical(payload)
+    if payload.get("settlement_hash") != expected:
+        raise SettlementError("settlement artifact hash mismatch")
+    return SuccessfulSettlementArtifact.model_validate(payload)
 
 
 def apply_successful_settlement(
     *,
     journal: RequestJournal,
-    execution_id: str,
-    request_id: str,
-    plan_hash: str,
-    authorization_hash: str,
-    billed_amount_usd: Decimal,
-    evidence_classification: str,
-    reviewed_at: str,
+    artifact: SuccessfulSettlementArtifact,
     dry_run: bool = False,
 ) -> SettlementResult:
     """Record billing for a successfully validated request.
 
-    Unlike :func:`apply_billing_reconciliation`, this never changes
-    ``request.state``, execution status, artifact fields, or counters.
-    It only writes ``actual_billed_cost_usd`` and
-    ``actual_provider_cost_status``, then appends an audit event.
-
-    *evidence_classification* must be ``"BILLED_EXACT"`` or
-    ``"NOT_BILLED_EXACT"``.  Aggregate, rounded, unknown, and inferred
-    evidence is rejected.
+    Requires a self-hashed :class:`SuccessfulSettlementArtifact` whose
+    identity, artifact checksums, and quality-report checksums are
+    validated against the journal and disk before any write occurs.
+    Never changes ``request.state``, execution status, artifact fields,
+    or counters.
     """
-    if evidence_classification not in {"BILLED_EXACT", "NOT_BILLED_EXACT"}:
-        raise SettlementError(
-            f"evidence_classification must be BILLED_EXACT or NOT_BILLED_EXACT, "
-            f"got {evidence_classification}"
-        )
-    if billed_amount_usd < 0:
-        raise SettlementError("billed_amount_usd must be non-negative")
-    if evidence_classification == "NOT_BILLED_EXACT" and billed_amount_usd != 0:
-        raise SettlementError("NOT_BILLED_EXACT requires billed_amount_usd = 0")
-
     conn = journal.connection
     conn.row_factory = sqlite3.Row
     now = datetime.now(UTC).isoformat()
 
     request = _fetch_one(
-        conn, "SELECT * FROM requests WHERE request_id = ?", (request_id,)
+        conn, "SELECT * FROM requests WHERE request_id = ?", (artifact.request_id,)
     )
     if str(request["state"]) != "quality_validated":
-        raise SettlementError(
-            f"request must be quality_validated, got {request['state']}"
-        )
-    if request["request_hash"] != _resolve_request_hash(
-        conn, request_id, plan_hash
-    ):
+        raise SettlementError(f"request must be quality_validated, got {request['state']}")
+    if str(request["request_hash"]) != artifact.request_hash:
         raise SettlementError("request hash mismatch")
     if request["request_completed_at"] is None:
         raise SettlementError("request has not completed")
     if request["raw_path"] is None or request["raw_checksum"] is None:
         raise SettlementError("raw artifact is missing")
-    if request["normalized_path"] is None and request["normalized_checksum"] is not None:
-        raise SettlementError("normalized artifact is incomplete")
+    if request["normalized_path"] is None:
+        raise SettlementError("normalized artifact is missing")
 
     attempt = _fetch_one(
-        conn,
-        "SELECT * FROM execution_attempts WHERE execution_id = ?",
-        (execution_id,),
+        conn, "SELECT * FROM execution_attempts WHERE execution_id = ?",
+        (artifact.execution_id,),
     )
     if str(attempt["status"]) != "completed":
-        raise SettlementError(
-            f"execution must be completed, got {attempt['status']}"
-        )
-    if attempt["plan_hash"] != plan_hash:
+        raise SettlementError(f"execution must be completed, got {attempt['status']}")
+    if str(attempt["plan_hash"]) != artifact.plan_hash:
         raise SettlementError("execution plan hash mismatch")
-    if attempt["authorization_hash"] != authorization_hash:
+    if str(attempt["authorization_hash"]) != artifact.authorization_hash:
         raise SettlementError("execution authorization hash mismatch")
     try:
-        requests_completed = int(attempt["requests_completed"] or 0)
+        completed = int(attempt["requests_completed"] or 0)
     except (ValueError, TypeError):
-        requests_completed = 0
-    if requests_completed < 1:
+        completed = 0
+    if completed < 1:
         raise SettlementError("execution has no completed requests")
 
     reservation = _fetch_one(
         conn,
         "SELECT * FROM authorization_reservations "
         "WHERE authorization_hash = ? AND execution_id = ?",
-        (authorization_hash, execution_id),
+        (artifact.authorization_hash, artifact.execution_id),
     )
     if str(reservation["state"]) != "consumed":
         raise SettlementError("authorization is not consumed")
@@ -591,14 +702,52 @@ def apply_successful_settlement(
         conn,
         "SELECT * FROM consumed_authorizations "
         "WHERE plan_hash = ? AND authorization_hash = ?",
-        (plan_hash, authorization_hash),
+        (artifact.plan_hash, artifact.authorization_hash),
     )
-    if consumed["execution_id"] != execution_id:
+    if str(consumed["execution_id"]) != artifact.execution_id:
         raise SettlementError("consumed authorization binding mismatch")
 
-    # ponytail: reject re-settlement with a different value.
+    # ── disk artifact integrity ──────────────────────────────────
+    raw_path = Path(str(request["raw_path"]))
+    if str(raw_path) != str(Path(artifact.raw_artifact_path)):
+        raise SettlementError("raw artifact path mismatch (journal vs artifact)")
+    if not raw_path.is_file():
+        raise SettlementError("raw artifact file not found")
+    raw_sha = hashlib.sha256(raw_path.read_bytes()).hexdigest()
+    if raw_sha != str(request["raw_checksum"]):
+        raise SettlementError("raw checksum mismatch (disk vs journal)")
+    if raw_sha != artifact.raw_artifact_sha256:
+        raise SettlementError("raw checksum mismatch (disk vs artifact)")
+
+    norm_path = Path(str(request["normalized_path"]))
+    if str(norm_path) != str(Path(artifact.normalized_artifact_path)):
+        raise SettlementError("normalized artifact path mismatch (journal vs artifact)")
+    if not norm_path.is_file():
+        raise SettlementError("normalized artifact file not found")
+    norm_sha = hashlib.sha256(norm_path.read_bytes()).hexdigest()
+    if norm_sha != str(request["normalized_checksum"]):
+        raise SettlementError("normalized checksum mismatch (disk vs journal)")
+    if norm_sha != artifact.normalized_artifact_sha256:
+        raise SettlementError("normalized checksum mismatch (disk vs artifact)")
+
+    qr_path = Path(artifact.quality_report_path)
+    if not qr_path.is_file():
+        raise SettlementError("quality report file not found")
+    qr_sha = hashlib.sha256(qr_path.read_bytes()).hexdigest()
+    if qr_sha != artifact.quality_report_sha256:
+        raise SettlementError("quality report checksum mismatch")
+    qr_payload = json.loads(qr_path.read_text(encoding="utf-8"))
+    if not isinstance(qr_payload, dict):
+        raise SettlementError("quality report is not a JSON object")
+    if qr_payload.get("request_id") != artifact.request_id:
+        raise SettlementError("quality report request_id mismatch")
+    if qr_payload.get("status") != "passed":
+        raise SettlementError("quality report has not passed")
+
+    # ── idempotency / conflict guard ─────────────────────────────
     existing_status = request["actual_provider_cost_status"]
-    if existing_status is not None:
+    existing_hash = _existing_settlement_hash(conn, artifact.request_id)
+    if existing_status is not None or existing_hash is not None:
         existing_billed = request["actual_billed_cost_usd"]
         try:
             existing_dec = (
@@ -606,51 +755,66 @@ def apply_successful_settlement(
             )
         except InvalidOperation:
             existing_dec = None
+        expected_status = _cost_status(artifact.evidence_classification)
+        expected_amount = Decimal(artifact.billed_amount_usd)
         if (
-            existing_status == _cost_status(evidence_classification)
-            and existing_dec == billed_amount_usd
+            existing_status == expected_status
+            and existing_dec == expected_amount
+            and existing_hash == artifact.settlement_hash
         ):
-            # Idempotent replay
             return SettlementResult(
                 status="ok",
-                execution_id=execution_id,
-                request_id=request_id,
+                execution_id=artifact.execution_id,
+                request_id=artifact.request_id,
                 request_state=str(request["state"]),
-                billed_amount_usd=str(billed_amount_usd),
-                cost_status=_cost_status(evidence_classification),
+                billed_amount_usd=artifact.billed_amount_usd,
+                cost_status=expected_status,
+                settlement_hash=artifact.settlement_hash,
                 idempotent_replay=True,
             )
         raise SettlementError(
             f"conflicting settlement already exists: "
-            f"status={existing_status}, amount={existing_billed}"
+            f"status={existing_status}, amount={existing_billed}, hash={existing_hash}"
         )
 
     if dry_run:
         return SettlementResult(
             status="dry_run",
-            execution_id=execution_id,
-            request_id=request_id,
+            execution_id=artifact.execution_id,
+            request_id=artifact.request_id,
             request_state=str(request["state"]),
-            billed_amount_usd=str(billed_amount_usd),
-            cost_status=_cost_status(evidence_classification),
+            billed_amount_usd=artifact.billed_amount_usd,
+            cost_status=_cost_status(artifact.evidence_classification),
+            settlement_hash=artifact.settlement_hash,
         )
 
+    # ── apply (non-destructive) ──────────────────────────────────
+    status_value = _cost_status(artifact.evidence_classification)
     with conn:
         conn.execute(
             "UPDATE requests SET actual_billed_cost_usd = ?, "
             "actual_provider_cost_status = ?, updated_at = ? "
             "WHERE request_id = ?",
-            (str(billed_amount_usd), _cost_status(evidence_classification), now, request_id),
+            (artifact.billed_amount_usd, status_value, now, artifact.request_id),
         )
         detail = json.dumps(
             {
-                "execution_id": execution_id,
-                "request_id": request_id,
-                "plan_hash": plan_hash,
-                "authorization_hash": authorization_hash,
-                "billed_amount_usd": str(billed_amount_usd),
-                "evidence_classification": evidence_classification,
-                "reviewed_at": reviewed_at,
+                "settlement_hash": artifact.settlement_hash,
+                "execution_id": artifact.execution_id,
+                "request_id": artifact.request_id,
+                "request_hash": artifact.request_hash,
+                "plan_hash": artifact.plan_hash,
+                "authorization_hash": artifact.authorization_hash,
+                "evidence_classification": artifact.evidence_classification,
+                "billed_amount_usd": artifact.billed_amount_usd,
+                "currency": artifact.currency,
+                "provider_observed_at": artifact.provider_observed_at,
+                "reviewed_at": artifact.reviewed_at,
+                "reviewed_by": artifact.reviewed_by,
+                "review_method": artifact.review_method,
+                "raw_artifact_sha256": artifact.raw_artifact_sha256,
+                "normalized_artifact_sha256": artifact.normalized_artifact_sha256,
+                "quality_report_sha256": artifact.quality_report_sha256,
             },
             sort_keys=True,
         )
@@ -658,7 +822,7 @@ def apply_successful_settlement(
             "INSERT INTO request_events "
             "(request_id, event_type, event_at, detail_json) VALUES (?, ?, ?, ?)",
             (
-                request_id,
+                artifact.request_id,
                 "successful_request_billing_settlement_recorded",
                 now,
                 detail,
@@ -667,11 +831,12 @@ def apply_successful_settlement(
 
     return SettlementResult(
         status="ok",
-        execution_id=execution_id,
-        request_id=request_id,
+        execution_id=artifact.execution_id,
+        request_id=artifact.request_id,
         request_state=str(request["state"]),
-        billed_amount_usd=str(billed_amount_usd),
-        cost_status=_cost_status(evidence_classification),
+        billed_amount_usd=artifact.billed_amount_usd,
+        cost_status=status_value,
+        settlement_hash=artifact.settlement_hash,
     )
 
 
@@ -679,16 +844,26 @@ def _cost_status(evidence: str) -> str:
     return "confirmed_billed" if evidence == "BILLED_EXACT" else "confirmed_not_billed"
 
 
-def _resolve_request_hash(
-    conn: sqlite3.Connection, request_id: str, plan_hash: str
-) -> str:
-    """Look up the canonical request hash from the journal, falling back."""
+def _existing_settlement_hash(
+    conn: sqlite3.Connection, request_id: str
+) -> str | None:
     row = conn.execute(
-        "SELECT request_hash FROM requests WHERE request_id = ?", (request_id,)
+        "SELECT detail_json FROM request_events "
+        "WHERE request_id = ? AND event_type = ? "
+        "ORDER BY event_at DESC LIMIT 1",
+        (request_id, "successful_request_billing_settlement_recorded"),
     ).fetchone()
-    if row is not None and row[0] is not None:
-        return str(row[0])
-    return ""  # ponytail: caller validates non-empty separately
+    if row is None:
+        return None
+    try:
+        detail = json.loads(str(row[0]))
+    except json.JSONDecodeError:
+        return None
+    if isinstance(detail, dict):
+        h = detail.get("settlement_hash")
+        if isinstance(h, str) and len(h) == 64:
+            return h
+    return None
 
 
 class SettlementResult(BaseModel):
@@ -702,4 +877,5 @@ class SettlementResult(BaseModel):
     request_state: str
     billed_amount_usd: str
     cost_status: str
+    settlement_hash: str
     idempotent_replay: bool = False

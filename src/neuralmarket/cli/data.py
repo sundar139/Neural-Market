@@ -37,8 +37,11 @@ from neuralmarket.data.acquisition.authorization import (
 )
 from neuralmarket.data.acquisition.billing_reconciliation import (
     BillingReconciliationError,
+    SettlementError,
     apply_billing_reconciliation,
+    apply_successful_settlement,
     load_reconciliation_artifact,
+    load_successful_settlement,
 )
 from neuralmarket.data.acquisition.budget import to_decimal
 from neuralmarket.data.acquisition.checkpoint_compatibility import (
@@ -2744,5 +2747,69 @@ def pilot_reconcile_billing(
         raise typer.Exit(code=1) from exc
     payload = result.model_dump()
     payload["reconciliation_artifact_hash"] = artifact.artifact_hash
+    write_acquisition_json(output, payload)
+    typer.echo(json.dumps(payload, sort_keys=True))
+
+
+@pilot_app.command("settle-successful-billing")
+def pilot_settle_successful_billing(
+    settlement: Path = typer.Option(
+        ..., "--settlement", help="Self-hashed successful settlement artifact."
+    ),
+    journal_path: Path = typer.Option(
+        _DEFAULT_JOURNAL_PATH,
+        "--journal",
+        help="Path to the pilot acquisition journal SQLite file.",
+    ),
+    output: Path = typer.Option(..., "--output", help="Path to write settlement result."),
+    validate_only: bool = typer.Option(
+        False, "--validate-only", help="Validate without mutating journal."
+    ),
+    confirm_settlement_hash: str = typer.Option(
+        "",
+        "--confirm-settlement-hash",
+        help="Exact 64-char settlement hash required to apply.",
+    ),
+) -> None:
+    """Apply a successful-request billing settlement without provider activity.
+
+    Never changes request state, execution status, or artifact fields.
+    Requires a self-hashed settlement artifact whose identity, artifact
+    checksums, and quality-report checksums are validated against the
+    journal and disk before any write.
+    """
+    configure_logging("INFO")
+    root = find_repository_root()
+    settlement = _resolve_under_root(root, settlement)
+    journal_full_path = _resolve_under_root(root, journal_path)
+    output = _resolve_under_root(root, output)
+    try:
+        artifact = load_successful_settlement(settlement)
+    except (SettlementError, ValueError, OSError) as exc:
+        _logger.error("Settlement artifact rejected: %s", redact(str(exc)))
+        raise typer.Exit(code=1) from exc
+
+    if not validate_only:
+        if not is_valid_sha256(confirm_settlement_hash):
+            _logger.error(
+                "--confirm-settlement-hash must be a 64-character lowercase hex SHA-256"
+            )
+            raise typer.Exit(code=1)
+        if not hmac.compare_digest(confirm_settlement_hash, artifact.settlement_hash):
+            _logger.error("Settlement hash confirmation does not match artifact.")
+            raise typer.Exit(code=1)
+
+    try:
+        with RequestJournal(journal_full_path) as journal:
+            result = apply_successful_settlement(
+                journal=journal, artifact=artifact, dry_run=validate_only
+            )
+    except (SettlementError, BillingReconciliationError, ValueError, OSError) as exc:
+        typer.echo(
+            f"Successful billing settlement blocked: {redact(str(exc))}", err=True
+        )
+        raise typer.Exit(code=1) from exc
+    payload = result.model_dump()
+    payload["settlement_hash"] = artifact.settlement_hash
     write_acquisition_json(output, payload)
     typer.echo(json.dumps(payload, sort_keys=True))
