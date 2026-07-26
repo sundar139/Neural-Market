@@ -2791,9 +2791,7 @@ def pilot_settle_successful_billing(
 
     if not validate_only:
         if not is_valid_sha256(confirm_settlement_hash):
-            _logger.error(
-                "--confirm-settlement-hash must be a 64-character lowercase hex SHA-256"
-            )
+            _logger.error("--confirm-settlement-hash must be a 64-character lowercase hex SHA-256")
             raise typer.Exit(code=1)
         if not hmac.compare_digest(confirm_settlement_hash, artifact.settlement_hash):
             _logger.error("Settlement hash confirmation does not match artifact.")
@@ -2805,9 +2803,7 @@ def pilot_settle_successful_billing(
                 journal=journal, artifact=artifact, dry_run=validate_only
             )
     except (SettlementError, BillingReconciliationError, ValueError, OSError) as exc:
-        typer.echo(
-            f"Successful billing settlement blocked: {redact(str(exc))}", err=True
-        )
+        typer.echo(f"Successful billing settlement blocked: {redact(str(exc))}", err=True)
         raise typer.Exit(code=1) from exc
     payload = result.model_dump()
     payload["settlement_hash"] = artifact.settlement_hash

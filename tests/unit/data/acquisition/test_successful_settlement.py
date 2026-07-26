@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import hashlib
 import json
 import shutil
 import sqlite3
@@ -30,13 +32,13 @@ pytestmark = pytest.mark.unit
 _EXEC = "f3f1674285c421b0665359753d284591"  # pragma: allowlist secret
 _REQ = "2750995e515e4f1a"  # pragma: allowlist secret
 _REQ_HASH = (  # pragma: allowlist secret
-    "b8b0a410ace7a8a5d710b8bc04e37560ab7b08ceb9aa316a4a3334b6b0980d7a"
+    "b8b0a410ace7a8a5d710b8bc04e37560ab7b08ceb9aa316a4a3334b6b0980d7a"  # pragma: allowlist secret
 )
 _PLAN = (  # pragma: allowlist secret
-    "ab8560a02feb250c859afd04a3a64fe88a4be1aaa8555d8e1314ec188017233f"
+    "ab8560a02feb250c859afd04a3a64fe88a4be1aaa8555d8e1314ec188017233f"  # pragma: allowlist secret
 )
 _AUTH = (  # pragma: allowlist secret
-    "80cf80a881f9e6bcdbfd1e0a81d0b6108a85ec9909736da40722691fb3f3b3e8"
+    "80cf80a881f9e6bcdbfd1e0a81d0b6108a85ec9909736da40722691fb3f3b3e8"  # pragma: allowlist secret
 )
 
 
@@ -878,3 +880,264 @@ class TestProdCopyMigration:
         assert r.status == "ok"
         assert r.request_state == "quality_validated"
         journal.connection.close()
+
+
+# ── Additional required tests ──────────────────────────────────────
+
+
+class TestMonetaryContract:
+    def test_nonfinite_rejected(self, tmp_path):
+        raw, norm, qr = _make_files(tmp_path)
+        for bad in ["NaN", "Infinity"]:
+            with pytest.raises(ValueError, match="finite"):
+                build_successful_settlement(
+                    execution_id=_EXEC,
+                    request_id=_REQ,
+                    request_hash=_REQ_HASH,
+                    plan_hash=_PLAN,
+                    authorization_hash=_AUTH,
+                    raw_artifact_path=str(raw),
+                    raw_artifact_sha256=sha256_of_file(raw),
+                    normalized_artifact_path=str(norm),
+                    normalized_artifact_sha256=sha256_of_file(norm),
+                    quality_report_path=str(qr),
+                    quality_report_sha256=sha256_of_file(qr),
+                    evidence_classification="BILLED_EXACT",
+                    billed_amount_usd=bad,
+                    provider_observed_at="2026-07-27T00:00:00+00:00",
+                    provider_evidence_description="test",
+                    provider_evidence_reference="test-ref",
+                )
+
+    def test_empty_amount_rejected(self, tmp_path):
+        raw, norm, qr = _make_files(tmp_path)
+        for bad in ["", "  "]:
+            with pytest.raises(ValueError):
+                build_successful_settlement(
+                    execution_id=_EXEC,
+                    request_id=_REQ,
+                    request_hash=_REQ_HASH,
+                    plan_hash=_PLAN,
+                    authorization_hash=_AUTH,
+                    raw_artifact_path=str(raw),
+                    raw_artifact_sha256=sha256_of_file(raw),
+                    normalized_artifact_path=str(norm),
+                    normalized_artifact_sha256=sha256_of_file(norm),
+                    quality_report_path=str(qr),
+                    quality_report_sha256=sha256_of_file(qr),
+                    evidence_classification="BILLED_EXACT",
+                    billed_amount_usd=bad,
+                    provider_observed_at="2026-07-27T00:00:00+00:00",
+                    provider_evidence_description="test",
+                    provider_evidence_reference="test-ref",
+                )
+
+    def test_unsupported_currency_rejected(self, tmp_path):
+        raw, norm, qr = _make_files(tmp_path)
+        with pytest.raises(ValueError):
+            SuccessfulSettlementArtifact.model_validate(
+                {
+                    "manifest_version": "successful-request-billing-settlement-v1",
+                    "execution_id": _EXEC,
+                    "request_id": _REQ,
+                    "request_hash": _REQ_HASH,
+                    "plan_hash": _PLAN,
+                    "authorization_hash": _AUTH,
+                    "raw_artifact_path": str(raw),
+                    "raw_artifact_sha256": sha256_of_file(raw),
+                    "normalized_artifact_path": str(norm),
+                    "normalized_artifact_sha256": sha256_of_file(norm),
+                    "quality_report_path": str(qr),
+                    "quality_report_sha256": sha256_of_file(qr),
+                    "evidence_classification": "BILLED_EXACT",
+                    "billed_amount_usd": "0.05",
+                    "currency": "EUR",
+                    "provider_observed_at": "2026-07-27T00:00:00+00:00",
+                    "reviewed_at": "2026-07-27T00:00:00+00:00",
+                    "reviewed_by": "neuralmarket_local_operator",
+                    "review_method": "manual_databento_provider_review",
+                    "provider_evidence_description": "test",
+                    "provider_evidence_reference": "test-ref",
+                    "settlement_hash": "a" * 64,
+                }
+            )
+
+
+class TestAuthEdge:
+    def test_unconsumed_auth_fails(self, tmp_path):
+        raw, norm, qr = _make_files(tmp_path)
+        jp = _make_journal(tmp_path, raw, norm)
+        conn = sqlite3.connect(str(jp))
+        conn.execute(
+            "UPDATE authorization_reservations SET state='reserved',"
+            "consumed_at=NULL WHERE authorization_hash=?",
+            (_AUTH,),
+        )
+        conn.execute("DELETE FROM consumed_authorizations WHERE plan_hash=?", (_PLAN,))
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        conn.close()
+        a = _artifact(tmp_path, raw, norm, qr)
+        journal = RequestJournal(jp)
+        with pytest.raises(SettlementError, match="authorization is not consumed"):
+            apply_successful_settlement(journal=journal, artifact=a)
+
+    def test_auth_row_preserved(self, tmp_path):
+        raw, norm, qr = _make_files(tmp_path)
+        jp = _make_journal(tmp_path, raw, norm)
+        a = _artifact(tmp_path, raw, norm, qr)
+        journal = RequestJournal(jp)
+        apply_successful_settlement(journal=journal, artifact=a)
+        conn = sqlite3.connect(str(jp))
+        conn.row_factory = sqlite3.Row
+        r = conn.execute(
+            "SELECT * FROM authorization_reservations WHERE authorization_hash=?", (_AUTH,)
+        ).fetchone()
+        assert r["state"] == "consumed"
+        assert r["consumed_at"] is not None
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM consumed_authorizations WHERE plan_hash=?", (_PLAN,)
+            ).fetchone()[0]
+            == 1
+        )
+        conn.close()
+
+
+class TestNormEdge:
+    def test_missing_normalized_fails(self, tmp_path):
+        raw, norm, qr = _make_files(tmp_path)
+        jp = _make_journal(tmp_path, raw, norm)
+        a = _artifact(tmp_path, raw, norm, qr, normalized_artifact_path="/x/norm.parquet")
+        journal = RequestJournal(jp)
+        with pytest.raises(SettlementError):
+            apply_successful_settlement(journal=journal, artifact=a)
+
+    def test_normalized_checksum_mismatch_fails(self, tmp_path):
+        raw, norm, qr = _make_files(tmp_path)
+        jp = _make_journal(tmp_path, raw, norm)
+        a = _artifact(tmp_path, raw, norm, qr, normalized_artifact_sha256="f" * 64)
+        journal = RequestJournal(jp)
+        with pytest.raises(SettlementError, match="normalized checksum mismatch"):
+            apply_successful_settlement(journal=journal, artifact=a)
+
+
+class TestRollback:
+    def test_transaction_rollback(self, tmp_path):
+        raw, norm, qr = _make_files(tmp_path)
+        jp = _make_journal(tmp_path, raw, norm)
+        a = _artifact(tmp_path, raw, norm, qr)
+        journal = RequestJournal(jp)
+        conn = journal.connection
+        conn.execute("DROP TABLE request_events")
+        conn.commit()
+        with pytest.raises(sqlite3.OperationalError):
+            apply_successful_settlement(journal=journal, artifact=a)
+        conn2 = sqlite3.connect(str(jp))
+        conn2.row_factory = sqlite3.Row
+        req = conn2.execute("SELECT * FROM requests WHERE request_id=?", (_REQ,)).fetchone()
+        assert req["actual_billed_cost_usd"] is None
+        assert req["actual_provider_cost_status"] is None
+        conn2.close()
+
+
+class TestCliValidateOnly:
+    def test_validate_no_writes(self, tmp_path):
+        raw, norm, qr = _make_files(tmp_path)
+        jp = _make_journal(tmp_path, raw, norm)
+        a = _artifact(tmp_path, raw, norm, qr)
+        ap = tmp_path / "s.json"
+        ap.write_text(a.model_dump_json(), encoding="utf-8")
+        op = tmp_path / "r.json"
+        ph = hashlib.sha256(jp.read_bytes()).hexdigest()
+        from neuralmarket.cli.data import pilot_settle_successful_billing
+
+        with contextlib.suppress(Exception):
+            pilot_settle_successful_billing(
+                settlement=ap,
+                journal_path=jp,
+                output=op,
+                validate_only=True,
+                confirm_settlement_hash="",
+            )
+        assert hashlib.sha256(jp.read_bytes()).hexdigest() == ph
+        assert (
+            sqlite3.connect(str(jp))
+            .execute(
+                "SELECT COUNT(*) FROM request_events WHERE event_type='successful_request_billing_settlement_recorded'"
+            )
+            .fetchone()[0]
+            == 0
+        )
+
+
+class TestCliConfirm:
+    def test_missing_confirm_fails(self, tmp_path):
+        raw, norm, qr = _make_files(tmp_path)
+        jp = _make_journal(tmp_path, raw, norm)
+        a = _artifact(tmp_path, raw, norm, qr)
+        ap = tmp_path / "s.json"
+        ap.write_text(a.model_dump_json(), encoding="utf-8")
+        op = tmp_path / "r.json"
+        ph = hashlib.sha256(jp.read_bytes()).hexdigest()
+        from neuralmarket.cli.data import pilot_settle_successful_billing
+
+        with contextlib.suppress(Exception):
+            pilot_settle_successful_billing(
+                settlement=ap,
+                journal_path=jp,
+                output=op,
+                validate_only=False,
+                confirm_settlement_hash="",
+            )
+        assert hashlib.sha256(jp.read_bytes()).hexdigest() == ph
+
+    def test_wrong_confirm_fails(self, tmp_path):
+        raw, norm, qr = _make_files(tmp_path)
+        jp = _make_journal(tmp_path, raw, norm)
+        a = _artifact(tmp_path, raw, norm, qr)
+        ap = tmp_path / "s.json"
+        ap.write_text(a.model_dump_json(), encoding="utf-8")
+        op = tmp_path / "r.json"
+        ph = hashlib.sha256(jp.read_bytes()).hexdigest()
+        from neuralmarket.cli.data import pilot_settle_successful_billing
+
+        with contextlib.suppress(Exception):
+            pilot_settle_successful_billing(
+                settlement=ap,
+                journal_path=jp,
+                output=op,
+                validate_only=False,
+                confirm_settlement_hash="b" * 64,
+            )
+        assert hashlib.sha256(jp.read_bytes()).hexdigest() == ph
+
+    def test_correct_confirm_applies(self, tmp_path):
+        raw, norm, qr = _make_files(tmp_path)
+        jp = _make_journal(tmp_path, raw, norm)
+        a = _artifact(tmp_path, raw, norm, qr)
+        ap = tmp_path / "s.json"
+        ap.write_text(a.model_dump_json(), encoding="utf-8")
+        op = tmp_path / "r.json"
+        from neuralmarket.cli.data import pilot_settle_successful_billing
+
+        with contextlib.suppress(Exception):
+            pilot_settle_successful_billing(
+                settlement=ap,
+                journal_path=jp,
+                output=op,
+                validate_only=False,
+                confirm_settlement_hash=a.settlement_hash,
+            )
+        conn = sqlite3.connect(str(jp))
+        conn.row_factory = sqlite3.Row
+        req = conn.execute("SELECT * FROM requests WHERE request_id=?", (_REQ,)).fetchone()
+        assert req["actual_billed_cost_usd"] == "0.05"
+        assert req["state"] == "quality_validated"
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM request_events WHERE event_type='successful_request_billing_settlement_recorded'"
+            ).fetchone()[0]
+            == 1
+        )
+        conn.close()

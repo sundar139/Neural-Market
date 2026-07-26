@@ -533,9 +533,7 @@ class SuccessfulSettlementArtifact(BaseModel):
     provider_observed_at: str
     reviewed_at: str
     reviewed_by: Literal["neuralmarket_local_operator"] = "neuralmarket_local_operator"
-    review_method: Literal["manual_databento_provider_review"] = (
-        "manual_databento_provider_review"
-    )
+    review_method: Literal["manual_databento_provider_review"] = "manual_databento_provider_review"
     provider_evidence_description: str
     provider_evidence_reference: str
     settlement_hash: str
@@ -649,7 +647,8 @@ def load_successful_settlement(path: Path) -> SuccessfulSettlementArtifact:
 
     # Schema validation
     schema_path = (
-        find_repository_root() / "data_contracts"
+        find_repository_root()
+        / "data_contracts"
         / "successful_request_billing_settlement.schema.json"
     )
     schema = json.loads(schema_path.read_text(encoding="utf-8"))
@@ -697,7 +696,8 @@ def apply_successful_settlement(
         raise SettlementError("normalized artifact is missing")
 
     attempt = _fetch_one(
-        conn, "SELECT * FROM execution_attempts WHERE execution_id = ?",
+        conn,
+        "SELECT * FROM execution_attempts WHERE execution_id = ?",
         (artifact.execution_id,),
     )
     if str(attempt["status"]) != "completed":
@@ -724,8 +724,7 @@ def apply_successful_settlement(
 
     consumed = _fetch_one(
         conn,
-        "SELECT * FROM consumed_authorizations "
-        "WHERE plan_hash = ? AND authorization_hash = ?",
+        "SELECT * FROM consumed_authorizations WHERE plan_hash = ? AND authorization_hash = ?",
         (artifact.plan_hash, artifact.authorization_hash),
     )
     if str(consumed["execution_id"]) != artifact.execution_id:
@@ -774,9 +773,7 @@ def apply_successful_settlement(
     if existing_status is not None or existing_hash is not None:
         existing_billed = request["actual_billed_cost_usd"]
         try:
-            existing_dec = (
-                Decimal(str(existing_billed)) if existing_billed is not None else None
-            )
+            existing_dec = Decimal(str(existing_billed)) if existing_billed is not None else None
         except InvalidOperation:
             existing_dec = None
         expected_status = _cost_status(artifact.evidence_classification)
@@ -868,9 +865,7 @@ def _cost_status(evidence: str) -> str:
     return "confirmed_billed" if evidence == "BILLED_EXACT" else "confirmed_not_billed"
 
 
-def _existing_settlement_hash(
-    conn: sqlite3.Connection, request_id: str
-) -> str | None:
+def _existing_settlement_hash(conn: sqlite3.Connection, request_id: str) -> str | None:
     row = conn.execute(
         "SELECT detail_json FROM request_events "
         "WHERE request_id = ? AND event_type = ? "
