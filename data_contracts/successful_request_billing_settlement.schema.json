@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "neuralmarket:contract:successful_request_billing_settlement:1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "manifest_version",
+    "execution_id",
+    "request_id",
+    "request_hash",
+    "plan_hash",
+    "authorization_hash",
+    "raw_artifact_path",
+    "raw_artifact_sha256",
+    "normalized_artifact_path",
+    "normalized_artifact_sha256",
+    "quality_report_path",
+    "quality_report_sha256",
+    "evidence_classification",
+    "billed_amount_usd",
+    "currency",
+    "provider_observed_at",
+    "reviewed_at",
+    "reviewed_by",
+    "review_method",
+    "provider_evidence_description",
+    "provider_evidence_reference",
+    "settlement_hash"
+  ],
+  "properties": {
+    "manifest_version": {
+      "const": "successful-request-billing-settlement-v1"
+    },
+    "execution_id": {"type": "string", "minLength": 1},
+    "request_id": {"type": "string", "minLength": 1},
+    "request_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "plan_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "authorization_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "raw_artifact_path": {"type": "string", "minLength": 1},
+    "raw_artifact_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "normalized_artifact_path": {"type": "string", "minLength": 1},
+    "normalized_artifact_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "quality_report_path": {"type": "string", "minLength": 1},
+    "quality_report_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "evidence_classification": {
+      "enum": ["BILLED_EXACT", "NOT_BILLED_EXACT"]
+    },
+    "billed_amount_usd": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)(\\.[0-9]+)?$"
+    },
+    "currency": {"const": "USD"},
+    "provider_observed_at": {"type": "string", "format": "date-time"},
+    "reviewed_at": {"type": "string", "format": "date-time"},
+    "reviewed_by": {"const": "neuralmarket_local_operator"},
+    "review_method": {"const": "manual_databento_provider_review"},
+    "provider_evidence_description": {"type": "string", "minLength": 1},
+    "provider_evidence_reference": {"type": "string", "minLength": 1},
+    "settlement_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+  }
+}

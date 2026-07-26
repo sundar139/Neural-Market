@@ -15,8 +15,10 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Literal, cast
 
+import jsonschema
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
+from neuralmarket.core.environment import find_repository_root
 from neuralmarket.data.acquisition.journal import RequestJournal
 
 PORTAL_STATUS = Literal["BILLED", "NOT_BILLED", "UNKNOWN"]
@@ -540,7 +542,13 @@ class SuccessfulSettlementArtifact(BaseModel):
 
     @field_validator("billed_amount_usd")
     @classmethod
-    def _validate_amount(cls, value: str) -> str:
+    def _validate_amount(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise ValueError("billed_amount_usd must be a string")
+        # ponytail: reject floats before Decimal conversion.
+        # Decimal(float(0.1)) silently produces imprecise values.
+        if isinstance(value, float):
+            raise ValueError("billed_amount_usd must be a string, not float")
         try:
             decimal = Decimal(value)
         except InvalidOperation as exc:
@@ -630,10 +638,26 @@ def build_successful_settlement(
 
 
 def load_successful_settlement(path: Path) -> SuccessfulSettlementArtifact:
-    """Load and hash-validate a successful-settlement artifact from disk."""
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    """Load, schema-validate, and hash-validate a settlement artifact."""
+    raw = path.read_text(encoding="utf-8")
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SettlementError("settlement artifact is not valid JSON") from exc
     if not isinstance(payload, dict):
         raise SettlementError("settlement artifact must be a JSON object")
+
+    # Schema validation
+    schema_path = (
+        find_repository_root() / "data_contracts"
+        / "successful_request_billing_settlement.schema.json"
+    )
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    try:
+        jsonschema.validate(payload, schema)
+    except jsonschema.ValidationError as exc:
+        raise SettlementError(f"settlement artifact schema invalid: {exc.message}") from exc
+
     expected = _settlement_canonical(payload)
     if payload.get("settlement_hash") != expected:
         raise SettlementError("settlement artifact hash mismatch")
