@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict
 
 from neuralmarket.data.acquisition.states import ALLOWED_TRANSITIONS
 
-JOURNAL_SCHEMA_VERSION = 7
+JOURNAL_SCHEMA_VERSION = 8
 
 _COLUMNS = (
     "request_id",
@@ -310,6 +310,98 @@ class RequestJournal:
             elif int(row[0]) > JOURNAL_SCHEMA_VERSION:
                 raise RuntimeError(f"journal schema version {row[0]} is newer than supported")
             elif int(row[0]) < JOURNAL_SCHEMA_VERSION:
+                # --- v7 → v8: remove stale execution_attempts FK -----------------
+                # Historical databases may retain a FOREIGN KEY (plan_hash)
+                # REFERENCES consumed_authorizations (plan_hash) that was removed
+                # from the CREATE TABLE code but never explicitly migrated away.
+                # The FK prevents inserting execution attempts for new recovery
+                # plans until their authorization is consumed, which creates a
+                # circular dependency.
+                # ponytail: rebuild only the affected table; the other migration
+                # blocks already keep column-level upgrades idempotent.
+                if int(row[0]) <= 7:
+                    fks = self._connection.execute(
+                        "PRAGMA foreign_key_list('execution_attempts')"
+                    ).fetchall()
+                    stale_fk = any(
+                        fk[2] == "consumed_authorizations" and fk[3] == "plan_hash" for fk in fks
+                    )
+                    if stale_fk:
+                        # Verify column set matches current schema exactly.
+                        expected_cols = {
+                            "execution_id",
+                            "plan_hash",
+                            "authorization_hash",
+                            "started_at",
+                            "status",
+                            "finished_at",
+                            "blocking_request",
+                            "blocking_state",
+                            "requests_completed",
+                            "requests_uncertain",
+                            "paid_request_calls",
+                            "downloaded_records",
+                            "manual_action_required",
+                        }
+                        actual_cols = {
+                            str(c[1])
+                            for c in self._connection.execute(
+                                "PRAGMA table_info('execution_attempts')"
+                            ).fetchall()
+                        }
+                        if actual_cols != expected_cols:
+                            raise RuntimeError(
+                                "execution_attempts schema has drifted; "
+                                "cannot migrate stale FK safely"
+                            )
+                        before = self._connection.execute(
+                            "SELECT COUNT(*) FROM execution_attempts"
+                        ).fetchone()[0]
+                        self._connection.execute(
+                            "CREATE TABLE execution_attempts_v8 ("
+                            "execution_id TEXT PRIMARY KEY,"
+                            "plan_hash TEXT NOT NULL,"
+                            "authorization_hash TEXT NOT NULL,"
+                            "started_at TEXT NOT NULL,"
+                            "status TEXT NOT NULL,"
+                            "finished_at TEXT,"
+                            "blocking_request TEXT,"
+                            "blocking_state TEXT,"
+                            "requests_completed INTEGER,"
+                            "requests_uncertain INTEGER,"
+                            "paid_request_calls INTEGER,"
+                            "downloaded_records INTEGER,"
+                            "manual_action_required INTEGER"
+                            ")"
+                        )
+                        self._connection.execute(
+                            "INSERT INTO execution_attempts_v8 ("
+                            "execution_id, plan_hash, authorization_hash,"
+                            "started_at, status, finished_at,"
+                            "blocking_request, blocking_state,"
+                            "requests_completed, requests_uncertain,"
+                            "paid_request_calls, downloaded_records,"
+                            "manual_action_required"
+                            ") SELECT "
+                            "execution_id, plan_hash, authorization_hash,"
+                            "started_at, status, finished_at,"
+                            "blocking_request, blocking_state,"
+                            "requests_completed, requests_uncertain,"
+                            "paid_request_calls, downloaded_records,"
+                            "manual_action_required "
+                            "FROM execution_attempts"
+                        )
+                        after = self._connection.execute(
+                            "SELECT COUNT(*) FROM execution_attempts_v8"
+                        ).fetchone()[0]
+                        if after != before:
+                            raise RuntimeError(
+                                "execution_attempts row count mismatch during FK migration"
+                            )
+                        self._connection.execute("DROP TABLE execution_attempts")
+                        self._connection.execute(
+                            "ALTER TABLE execution_attempts_v8 RENAME TO execution_attempts"
+                        )
                 self._connection.execute(
                     "UPDATE schema_meta SET version = ?", (JOURNAL_SCHEMA_VERSION,)
                 )
