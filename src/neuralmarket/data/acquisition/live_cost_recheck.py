@@ -23,7 +23,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from neuralmarket.data.acquisition.cost_estimation import (
     CostSource,
@@ -35,6 +35,9 @@ from neuralmarket.data.acquisition.requests import (
     AcquisitionRequest,
     validate_canonical_pilot_plan,
 )
+
+if TYPE_CHECKING:
+    from neuralmarket.data.acquisition.recovery import RecoveryPlan
 
 # Ponytail: 60 minutes covers the current 25-request serial quote and review flow.
 # Revisit when plan size or bounded retry duration increases materially.
@@ -163,6 +166,18 @@ def _aware_timestamp(value: object, label: str) -> str:
     return value
 
 
+def _validate_quote_plan(
+    requests: list[AcquisitionRequest],
+    plan_hash: str,
+    recovery_plan: RecoveryPlan | None,
+) -> None:
+    if recovery_plan is None:
+        validate_canonical_pilot_plan(requests)
+        return
+    if plan_hash != recovery_plan.plan_hash or tuple(requests) != recovery_plan.requests:
+        raise CostRecheckError("recovery quote plan identity mismatch")
+
+
 def validate_resume_evidence(
     payload: dict[str, Any],
     *,
@@ -171,9 +186,10 @@ def validate_resume_evidence(
     plan_hash: str,
     request_manifest_sha256: str,
     source_evidence_sha256: str,
+    recovery_plan: RecoveryPlan | None = None,
 ) -> ResumeEvidence:
     """Validate prior quote evidence fully before any provider construction."""
-    validate_canonical_pilot_plan(requests)
+    _validate_quote_plan(requests, plan_hash, recovery_plan)
     version = payload.get("schema_version")
     if version not in {"pilot-fresh-cost-recheck-v1", "pilot-cost-recheck-v2"}:
         raise CostRecheckError("resume evidence schema/version is unsupported")
@@ -396,11 +412,13 @@ def recheck_costs(
     tracked_total_usd: Decimal,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     resume: ResumeEvidence | None = None,
+    recovery_plan: RecoveryPlan | None = None,
 ) -> CostRecheckResult:
     """Quote a frozen plan or only its validated unavailable resume targets.
 
-    ``requests`` must be exactly the canonical 25-request pilot plan; any other
-    shape is rejected before a single quote, preventing cross-product expansion.
+    ``requests`` must be the canonical 25-request pilot plan or the exact request
+    tuple of a validated one-request recovery plan. Any other shape is rejected
+    before a single quote, preventing cross-product expansion.
     A quote that fails its bounded attempts marks the run ``incomplete`` and
     ``authorization_ready = False`` while preserving partial evidence. Completed
     provider quotes from validated resume evidence are never fetched again.
@@ -412,7 +430,7 @@ def recheck_costs(
         raise CostRecheckError("max_attempts must be >= 1")
 
     # Exact frozen shape (rejects any broadened / cross-product plan).
-    validate_canonical_pilot_plan(requests)
+    _validate_quote_plan(requests, plan_hash, recovery_plan)
     preserved = [quote for quote in resume.quotes if quote.status == "quoted"] if resume else []
     preserved_ids = {quote.request_id for quote in preserved}
     target_ids = (

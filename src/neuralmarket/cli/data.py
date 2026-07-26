@@ -57,6 +57,8 @@ from neuralmarket.data.acquisition.executor import (
     LifecycleHooks,
     PilotExecutionCoordinator,
     RawAcquisitionResult,
+    RecoveryPurchasePackage,
+    validate_recovery_purchase_package,
 )
 from neuralmarket.data.acquisition.journal import JournalEntry, RequestJournal
 from neuralmarket.data.acquisition.manifests import (
@@ -95,10 +97,18 @@ from neuralmarket.data.acquisition.providers import (
     create_databento_paid_provider,
     paid_provider_readiness,
 )
+from neuralmarket.data.acquisition.purchase_review import (
+    ATTESTATION_SCHEMA,
+    AUTHORIZATION_SCHEMA,
+    ExpectedPurchaseBindings,
+    load_json_artifact,
+)
 from neuralmarket.data.acquisition.recovery import (
+    RecoveryPlan,
     RecoveryReport,
     prepare_recovery_plan,
     run_recovery,
+    validate_recovery_plan,
 )
 from neuralmarket.data.acquisition.requests import (
     AcquisitionRequest,
@@ -1130,7 +1140,13 @@ def _validate_pilot_plan_artifacts(
 ) -> tuple[dict[str, Any], list[AcquisitionRequest], dict[str, str]]:
     """Validate a finalized plan against its canonical local dependencies."""
     plan_payload = load_acquisition_json(request_manifest)
-    _validate_pilot_request_plan_schema(root, plan_payload)
+    recovery_plan = (
+        RecoveryPlan.model_validate(plan_payload)
+        if plan_payload.get("manifest_version") == "pilot-recovery-plan-v1"
+        else None
+    )
+    if recovery_plan is None:
+        _validate_pilot_request_plan_schema(root, plan_payload)
     pilot_config = load_pilot_config(config)
     source_payload = load_manifest(source_manifest)
     split_payload = load_manifest(split_manifest)
@@ -1205,6 +1221,26 @@ def _validate_pilot_plan_artifacts(
         raise PlanValidationError("Acquisition policy budget ceiling is below the pilot plan cap.")
     if policy.maximum_pilot_spend_usd != plan_payload["maximum_allowed_total_usd"]:
         raise PlanValidationError("Acquisition policy pilot cap does not match the pilot plan cap.")
+
+    if recovery_plan is not None:
+        request = recovery_plan.requests[0]
+        expected_requests = build_pilot_request_plan(pilot_config)
+        if request.specification_hash not in {
+            expected.specification_hash for expected in expected_requests
+        }:
+            raise PlanValidationError("Recovery request identity is outside the configured pilot.")
+        cost = to_decimal(request.estimated_cost or "0")
+        if cost != to_decimal(recovery_plan.estimated_total_cost_usd):
+            raise PlanValidationError("Recovery request cost does not match the manifest total.")
+        if cost != to_decimal(recovery_plan.estimated_maximum_single_request_usd):
+            raise PlanValidationError("Recovery maximum request cost does not match the manifest.")
+        if (
+            to_decimal(recovery_plan.maximum_allowed_total_usd) != pilot_config.maximum_spend_usd
+            or to_decimal(recovery_plan.maximum_allowed_single_request_usd)
+            != pilot_config.maximum_single_request_usd
+        ):
+            raise PlanValidationError("Recovery spend caps do not match the configuration.")
+        return plan_payload, [request], expected_bindings
 
     requests = [AcquisitionRequest.model_validate(item) for item in plan_payload["requests"]]
     expected_requests = build_pilot_request_plan(pilot_config)
@@ -1896,6 +1932,7 @@ def pilot_recheck_cost(
     request_manifest: Path = typer.Option(
         _DEFAULT_REQUEST_MANIFEST,
         "--request-manifest",
+        "--plan",
         help="Path to the frozen pilot request-plan manifest.",
     ),
     expected_checkpoint_sha256: str = typer.Option(
@@ -1925,13 +1962,19 @@ def pilot_recheck_cost(
         "--policy-manifest",
         help="Path to the accepted acquisition policy manifest.",
     ),
+    journal_path: Path = typer.Option(
+        _DEFAULT_JOURNAL_PATH,
+        "--journal",
+        help="Journal used to revalidate recovery provenance before quoting.",
+    ),
 ) -> None:
     """Fresh-quote the exact frozen pilot requests via metadata.get_cost.
 
     Provider-only, fail-closed cost recheck to run immediately before a manual
     purchase authorization (and again whenever authorization, scope, SDK, or
-    pricing changes). Quotes only the frozen 25-request plan, validates each
-    dataset's schemas, and never acquires data or authorizes a purchase.
+    pricing changes). Quotes either the frozen 25-request plan or one validated
+    recovery request, validates each dataset's schemas, and never acquires data
+    or authorizes a purchase.
     """
     from neuralmarket.data.acquisition.live_cost_recheck import (
         CostRecheckError,
@@ -1947,6 +1990,7 @@ def pilot_recheck_cost(
     source_manifest = _resolve_under_root(root, source_manifest)
     split_manifest = _resolve_under_root(root, split_manifest)
     policy_manifest = _resolve_under_root(root, policy_manifest)
+    journal_path = _resolve_under_root(root, journal_path)
     output = _resolve_under_root(root, output)
     attempt_manifest = (
         _resolve_under_root(root, attempt_manifest) if attempt_manifest is not None else None
@@ -1976,7 +2020,25 @@ def pilot_recheck_cost(
         source_hash = _required_manifest_hash(source_payload, "source manifest")
         split_hash = _required_manifest_hash(split_payload, "split manifest")
         policy_hash = _required_manifest_hash(policy_payload, "acquisition policy")
-        requests = build_pilot_request_plan(pilot_config)
+        checkpoint_requests = build_pilot_request_plan(pilot_config)
+        manifest_payload = load_acquisition_json(request_manifest)
+        recovery_plan = (
+            validate_recovery_plan(manifest_payload, journal_path=journal_path)
+            if manifest_payload.get("manifest_version") == "pilot-recovery-plan-v1"
+            else None
+        )
+        if recovery_plan is not None:
+            expected_bindings = {
+                "source_manifest_hash": source_hash,
+                "split_manifest_hash": split_hash,
+                "acquisition_policy_hash": policy_hash,
+                "pilot_config_hash": config_sha256(config),
+            }
+            if any(
+                recovery_plan.bindings.get(key) != value for key, value in expected_bindings.items()
+            ):
+                raise PlanValidationError("Recovery plan dependency hash mismatch.")
+        requests = list(recovery_plan.requests) if recovery_plan else checkpoint_requests
     except ConfigurationError as exc:
         _logger.error("Configuration error: %s", exc)
         raise typer.Exit(code=2) from exc
@@ -1991,7 +2053,7 @@ def pilot_recheck_cost(
         "calendar_version": _distribution_version("exchange-calendars"),
         "databento_client_version": checkpoint_client_version(),
         "estimator_version": "pilot-metadata-process-v1",
-        "ordered_request_specification_hashes": [item.request_hash for item in requests],
+        "ordered_request_specification_hashes": [item.request_hash for item in checkpoint_requests],
     }
     try:
         # Frozen-scope agreement: the checkpoint must bind exactly this plan.
@@ -2000,7 +2062,6 @@ def pilot_recheck_cost(
         _logger.error("Checkpoint rejected against frozen plan: %s", exc)
         raise typer.Exit(code=1) from exc
 
-    manifest_payload = load_acquisition_json(request_manifest)
     frozen_plan_hash = str(manifest_payload.get("plan_hash", ""))
     request_manifest_sha = _sha256_file(request_manifest)
 
@@ -2016,6 +2077,7 @@ def pilot_recheck_cost(
                 plan_hash=frozen_plan_hash,
                 request_manifest_sha256=request_manifest_sha,
                 source_evidence_sha256=_sha256_file(resume_from),
+                recovery_plan=recovery_plan,
             )
         except (CostRecheckError, PlanValidationError, ValueError) as exc:
             _logger.error(
@@ -2049,11 +2111,24 @@ def pilot_recheck_cost(
                 run_id=run_id, request_count=len(requests), requests=requests
             ),
             timeout_seconds=float(pilot_config.metadata_execution.hard_request_timeout_seconds),
-            prior_raw_total_usd=Decimal("0.460514456032759765625"),
-            prior_conservative_total_usd=Decimal("0.46298506855869970703125"),
-            tracked_total_usd=Decimal("0.460514456033"),
+            prior_raw_total_usd=(
+                Decimal(recovery_plan.estimated_total_cost_usd)
+                if recovery_plan
+                else Decimal("0.460514456032759765625")
+            ),
+            prior_conservative_total_usd=(
+                Decimal(recovery_plan.estimated_total_cost_usd)
+                if recovery_plan
+                else Decimal("0.46298506855869970703125")
+            ),
+            tracked_total_usd=(
+                Decimal(recovery_plan.estimated_total_cost_usd)
+                if recovery_plan
+                else Decimal("0.460514456033")
+            ),
             max_attempts=pilot_config.metadata_execution.maximum_timeout_attempts,
             resume=resume_state,
+            recovery_plan=recovery_plan,
         )
     except CostRecheckError as exc:
         _logger.error("Fresh cost recheck failed closed: %s", exc)
@@ -2212,6 +2287,29 @@ def pilot_execute(
         "--portal-attestation",
         help="Time-limited, local manual portal-limit attestation.",
     ),
+    cost_evidence: Path | None = typer.Option(
+        None, "--cost-evidence", help="Fresh provider cost evidence required for recovery."
+    ),
+    purchase_authorization: Path | None = typer.Option(
+        None,
+        "--purchase-authorization",
+        help="Completed purchase-review authorization required for recovery.",
+    ),
+    purchase_attestation: Path | None = typer.Option(
+        None,
+        "--purchase-attestation",
+        help="Completed portal cost attestation required for recovery.",
+    ),
+    completed_checkpoint: Path | None = typer.Option(
+        None,
+        "--completed-checkpoint",
+        help="Completed metadata checkpoint bound by recovery purchase evidence.",
+    ),
+    purchase_consumption_marker: Path | None = typer.Option(
+        None,
+        "--purchase-consumption-marker",
+        help="Optional local marker proving the purchase review was already consumed.",
+    ),
     confirm_plan_hash: str = typer.Option(
         ...,
         "--confirm-plan-hash",
@@ -2252,10 +2350,32 @@ def pilot_execute(
     portal_attestation = (
         _resolve_under_root(root, portal_attestation) if portal_attestation is not None else None
     )
+    cost_evidence = _resolve_under_root(root, cost_evidence) if cost_evidence is not None else None
+    purchase_authorization = (
+        _resolve_under_root(root, purchase_authorization)
+        if purchase_authorization is not None
+        else None
+    )
+    purchase_attestation = (
+        _resolve_under_root(root, purchase_attestation)
+        if purchase_attestation is not None
+        else None
+    )
+    completed_checkpoint = (
+        _resolve_under_root(root, completed_checkpoint)
+        if completed_checkpoint is not None
+        else None
+    )
+    purchase_consumption_marker = (
+        _resolve_under_root(root, purchase_consumption_marker)
+        if purchase_consumption_marker is not None
+        else None
+    )
     config = _resolve_under_root(root, config)
     source_manifest = _resolve_under_root(root, source_manifest)
     split_manifest = _resolve_under_root(root, split_manifest)
     policy_manifest = _resolve_under_root(root, policy_manifest)
+    journal_full_path = _resolve_under_root(root, journal_path)
     try:
         if mode not in {"validate-only", "paid"}:
             raise ValueError("mode must be validate-only or paid")
@@ -2267,6 +2387,66 @@ def pilot_execute(
             split_manifest=split_manifest,
             policy_manifest=policy_manifest,
         )
+        recovery_plan = (
+            validate_recovery_plan(plan_payload, journal_path=journal_full_path)
+            if plan_payload.get("manifest_version") == "pilot-recovery-plan-v1"
+            else None
+        )
+        recovery_purchase_package = None
+        if recovery_plan is not None and mode == "paid":
+            required = {
+                "cost evidence": cost_evidence,
+                "purchase authorization": purchase_authorization,
+                "purchase attestation": purchase_attestation,
+                "completed checkpoint": completed_checkpoint,
+            }
+            missing = [label for label, path in required.items() if path is None]
+            if missing:
+                raise ValueError(f"recovery paid execution requires {', '.join(missing)}")
+            assert cost_evidence is not None
+            assert purchase_authorization is not None
+            assert purchase_attestation is not None
+            assert completed_checkpoint is not None
+            cost_payload = json.loads(cost_evidence.read_text(encoding="utf-8"))
+            if not isinstance(cost_payload, dict):
+                raise ValueError("recovery cost evidence must be a JSON object")
+            purchase_auth_payload = load_json_artifact(
+                purchase_authorization,
+                schema_relative=AUTHORIZATION_SCHEMA,
+                kind="purchase_authorization",
+            )
+            purchase_attestation_payload = load_json_artifact(
+                purchase_attestation,
+                schema_relative=ATTESTATION_SCHEMA,
+                kind="purchase_attestation",
+            )
+            recovery_purchase_package = RecoveryPurchasePackage(
+                authorization=purchase_auth_payload,
+                attestation=purchase_attestation_payload,
+                expected=ExpectedPurchaseBindings(
+                    repository_head=_git_head(root),
+                    plan_hash=recovery_plan.plan_hash,
+                    completed_checkpoint_sha256=_sha256_file(completed_checkpoint),
+                    request_manifest_sha256=_sha256_file(plan),
+                    source_manifest_hash=recovery_plan.bindings["source_manifest_hash"],
+                    split_manifest_hash=recovery_plan.bindings["split_manifest_hash"],
+                    acquisition_policy_hash=recovery_plan.bindings["acquisition_policy_hash"],
+                    raw_total_usd=to_decimal(cost_payload.get("fresh_raw_total_usd")),
+                    conservative_total_usd=to_decimal(
+                        cost_payload.get("fresh_conservative_total_usd")
+                    ),
+                    maximum_ceiling_usd=to_decimal(recovery_plan.maximum_allowed_total_usd),
+                ),
+                cost_evidence=cost_payload,
+                journal_path=journal_full_path,
+                consumption_marker=purchase_consumption_marker
+                or purchase_authorization.with_suffix(".consumed.json"),
+            )
+            validate_recovery_purchase_package(
+                recovery_purchase_package,
+                recovery_plan=recovery_plan,
+                now=datetime.now(UTC),
+            )
         plan_hash_value = str(plan_payload["plan_hash"])
         source_hash = expected_bindings["source_manifest_hash"]
         split_hash = expected_bindings["split_manifest_hash"]
@@ -2312,6 +2492,7 @@ def pilot_execute(
                 plan_bindings=plan_payload["bindings"],
                 plan_metadata=_pilot_plan_hash_metadata(plan_payload),
                 metadata_provider_factory=_pilot_metadata_provider_factory,
+                recovery_plan=recovery_plan,
             )
         except Exception as exc:
             message = f"Pilot validation-only preflight failed: {redact(str(exc))}"
@@ -2341,8 +2522,6 @@ def pilot_execute(
         typer.echo(f"Pilot execution blocked: paid provider unavailable: {readiness}", err=True)
         raise typer.Exit(code=1)
 
-    journal_full_path = _resolve_under_root(root, journal_path)
-
     def journal_factory() -> RequestJournal:
         journal_full_path.parent.mkdir(parents=True, exist_ok=True)
         return RequestJournal(journal_full_path)
@@ -2363,6 +2542,8 @@ def pilot_execute(
             journal_factory=journal_factory,
             lifecycle=_pilot_lifecycle(root),
             now=datetime.now(UTC),
+            recovery_plan=recovery_plan,
+            recovery_purchase_package=recovery_purchase_package,
         )
     except ExecutorGuardError as exc:
         message = f"Pilot execution blocked: execution coordinator rejected ({exc.reason}): {exc}"

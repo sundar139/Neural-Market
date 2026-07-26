@@ -238,8 +238,8 @@ def _validate_recovery_state(
         )
         if row["request_hash"] != request.request_hash:
             raise RecoveryPlanError("recovery request hash mismatch")
-        if int(row["attempt_count"]) < 1:
-            raise RecoveryPlanError("recovery request has no prior attempt")
+        if int(row["attempt_count"]) != 1:
+            raise RecoveryPlanError("recovery request must have exactly one prior attempt")
         if row["state"] != _RECOVERY_STATE:
             raise RecoveryPlanError("recovery request is not retry eligible")
         if not _zero_or_null(row["actual_billed_cost_usd"]):
@@ -307,6 +307,126 @@ def _validate_recovery_state(
         ):
             raise RecoveryPlanError("reconciliation provenance mismatch")
     return prior_execution_id, prior_authorization_hash
+
+
+def validate_recovery_plan(
+    payload: dict[str, Any],
+    *,
+    journal_path: Path,
+) -> RecoveryPlan:
+    """Revalidate a prepared recovery identity against current journal state."""
+    recovery = RecoveryPlan.model_validate(payload)
+    request = recovery.requests[0]
+    provenance = recovery.recovery
+    with _read_only_connection(journal_path) as connection:
+        schema_rows = connection.execute("SELECT version FROM schema_meta").fetchall()
+        if len(schema_rows) != 1 or int(schema_rows[0][0]) != JOURNAL_SCHEMA_VERSION:
+            raise RecoveryPlanError("journal schema version is not supported")
+        consumed = _one_row(
+            connection,
+            "SELECT * FROM consumed_authorizations WHERE plan_hash = ?",
+            (provenance.parent_plan_hash,),
+            "parent authorization consumption",
+        )
+        if (
+            consumed["authorization_hash"] != provenance.prior_authorization_hash
+            or consumed["execution_id"] != provenance.prior_execution_id
+        ):
+            raise RecoveryPlanError("parent authorization consumption binding mismatch")
+        reservation = _one_row(
+            connection,
+            "SELECT * FROM authorization_reservations WHERE authorization_hash = ?",
+            (provenance.prior_authorization_hash,),
+            "parent authorization reservation",
+        )
+        if (
+            reservation["plan_hash"] != provenance.parent_plan_hash
+            or reservation["execution_id"] != provenance.prior_execution_id
+            or reservation["state"] != "consumed"
+            or reservation["consumed_at"] != consumed["consumed_at"]
+        ):
+            raise RecoveryPlanError("parent authorization reservation binding mismatch")
+        execution = _one_row(
+            connection,
+            "SELECT * FROM execution_attempts WHERE execution_id = ?",
+            (provenance.prior_execution_id,),
+            "prior execution",
+        )
+        expected_execution = {
+            "plan_hash": provenance.parent_plan_hash,
+            "authorization_hash": provenance.prior_authorization_hash,
+            "status": "blocked_reconciled_not_billed",
+            "blocking_request": request.request_id,
+            "blocking_state": "block_uncertain_billing",
+            "requests_completed": 0,
+            "requests_uncertain": 0,
+            "paid_request_calls": 1,
+            "downloaded_records": 0,
+            "manual_action_required": 0,
+        }
+        if any(execution[field] != value for field, value in expected_execution.items()):
+            raise RecoveryPlanError("reconciled execution state mismatch")
+        row = _one_row(
+            connection,
+            "SELECT * FROM requests WHERE request_id = ?",
+            (request.request_id,),
+            "recovery request",
+        )
+        if row["request_hash"] != request.request_hash:
+            raise RecoveryPlanError("recovery request hash mismatch")
+        if int(row["attempt_count"]) != 1:
+            raise RecoveryPlanError("recovery request must have exactly one prior attempt")
+        if row["state"] != _RECOVERY_STATE:
+            raise RecoveryPlanError("recovery request is not retry eligible")
+        if not _zero_or_null(row["actual_billed_cost_usd"]):
+            raise RecoveryPlanError("recovery request has billed cost")
+        if row["request_completed_at"] is not None:
+            raise RecoveryPlanError("recovery request is completed")
+        artifact_fields = (
+            "raw_path",
+            "raw_checksum",
+            "raw_record_count",
+            "raw_byte_count",
+            "provider_response_id",
+            "normalized_path",
+            "normalized_checksum",
+        )
+        if any(row[field] is not None for field in artifact_fields):
+            raise RecoveryPlanError("recovery request has registered artifacts")
+        reconciliations = connection.execute(
+            "SELECT * FROM billing_reconciliations "
+            "WHERE execution_id = ? AND request_id = ? "
+            "ORDER BY supersession_sequence, applied_at",
+            (provenance.prior_execution_id, request.request_id),
+        ).fetchall()
+        if not reconciliations:
+            raise RecoveryPlanError("effective reconciliation is missing")
+        previous_hash: str | None = None
+        for sequence, reconciliation in enumerate(reconciliations, start=1):
+            if (
+                reconciliation["supersession_sequence"] != sequence
+                or reconciliation["supersedes_reconciliation_hash"] != previous_hash
+            ):
+                raise RecoveryPlanError("reconciliation chain mismatch")
+            previous_hash = str(reconciliation["artifact_hash"])
+        effective = reconciliations[-1]
+        required = {
+            "artifact_hash": provenance.reconciliation_artifact_hash,
+            "plan_hash": provenance.parent_plan_hash,
+            "authorization_hash": provenance.prior_authorization_hash,
+            "portal_review_status": "NOT_BILLED",
+            "billing_resolution": _RECOVERY_RESOLUTION,
+            "retry_eligible": 1,
+            "manual_action_required": 0,
+        }
+        if (
+            any(effective[field] != value for field, value in required.items())
+            or Decimal(str(effective["observed_usage_usd"])) != 0
+        ):
+            raise RecoveryPlanError(
+                "selected reconciliation is not the effective NOT_BILLED record"
+            )
+    return recovery
 
 
 def prepare_recovery_plan(

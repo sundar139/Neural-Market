@@ -67,11 +67,22 @@ SQLite read-only immutable mode and fails closed on any nonempty WAL:
     --output "reports/data/execution/recovery/pilot_recovery_plan_<hash>.local.json"
 ```
 
-This command does not load credentials, quote, authorize, consume, retry, or
-mutate the journal. A later implementation milestone must integrate this identity
-with the normal guarded quote, review, authorization, and executor paths. Only
-after that code is separately accepted may an operational milestone obtain a
-fresh quote, portal attestation, and one-time authorization for the distinct hash.
+This preparation command does not load credentials, quote, authorize, consume,
+retry, or mutate the journal. The recovery identity is accepted by the normal
+cost-recheck, purchase-review, authorization, portal-attestation, and paid-executor
+guards; it does not have a separate executor or provider. The separately authorized
+operational order is: prepare the recovery plan, obtain fresh direct-provider
+one-request cost evidence, perform a fresh portal observation, create a new
+authorization bound to the recovery hash, validate the package, and execute the
+single guarded request. Any billing uncertainty stops execution for manual
+reconciliation. The parent authorization is never reset, the parent plan remains
+consumed, recovery is never automatic, and the new recovery authorization is
+one-time use. Recovery paid execution additionally requires `--cost-evidence`,
+`--purchase-authorization`, `--purchase-attestation`, and
+`--completed-checkpoint`; these artifacts are revalidated before credentials or
+paid-provider readiness are loaded and again at the coordinator boundary. The
+authorization reservation and retry-eligible journal transition are one atomic
+operation performed before paid-provider construction.
 
 Offline diagnosis of the first paid-provider failure found a deterministic
 adapter-contract defect before Databento could receive a valid request: the

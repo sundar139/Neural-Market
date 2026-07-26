@@ -14,6 +14,7 @@ keep on disk.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
@@ -79,6 +80,7 @@ class RequestJournal:
 
     def __init__(self, db_path: Path) -> None:
         """Open or create the journal SQLite database at ``db_path``."""
+        self._db_path = db_path
         self._connection = sqlite3.connect(db_path)
         self._connection.execute("PRAGMA journal_mode=WAL")
         self._connection.execute("PRAGMA foreign_keys=ON")
@@ -88,6 +90,11 @@ class RequestJournal:
     def connection(self) -> sqlite3.Connection:
         """Expose the underlying connection for coordinated journal transactions."""
         return self._connection
+
+    @property
+    def db_path(self) -> Path:
+        """Return the journal path for immutable recovery-state revalidation."""
+        return self._db_path
 
     def _migrate(self) -> None:
         with self._connection:
@@ -338,6 +345,108 @@ class RequestJournal:
                 )
         except sqlite3.IntegrityError:
             return False
+        return True
+
+    def reserve_recovery_authorization(
+        self,
+        *,
+        authorization_hash: str,
+        execution_id: str,
+        reserved_at: str,
+        request_id: str,
+        request_hash: str,
+        recovery_plan_hash: str,
+        parent_plan_hash: str,
+        reconciliation_hash: str,
+    ) -> bool:
+        """Atomically reserve authorization and claim the reconciled request."""
+        detail = json.dumps(
+            {
+                "recovery_plan_hash": recovery_plan_hash,
+                "parent_plan_hash": parent_plan_hash,
+                "reconciliation_hash": reconciliation_hash,
+            },
+            sort_keys=True,
+        )
+        try:
+            with self._connection:
+                if self._connection.execute(
+                    "SELECT 1 FROM authorization_reservations WHERE authorization_hash = ?",
+                    (authorization_hash,),
+                ).fetchone():
+                    return False
+                self._connection.execute(
+                    "INSERT INTO authorization_reservations "
+                    "(authorization_hash, plan_hash, execution_id, state, reserved_at) "
+                    "VALUES (?, ?, ?, 'reserved', ?)",
+                    (authorization_hash, recovery_plan_hash, execution_id, reserved_at),
+                )
+                self._connection.execute(
+                    "INSERT INTO execution_attempts "
+                    "(execution_id, plan_hash, authorization_hash, started_at, status) "
+                    "VALUES (?, ?, ?, ?, 'running')",
+                    (execution_id, recovery_plan_hash, authorization_hash, reserved_at),
+                )
+                updated = self._connection.execute(
+                    "UPDATE requests SET state = 'preflight_validated', updated_at = ? "
+                    "WHERE request_id = ? AND request_hash = ? "
+                    "AND state = 'retry_eligible_after_manual_nonbilling_confirmation' "
+                    "AND attempt_count = 1 "
+                    "AND request_completed_at IS NULL AND actual_billed_cost_usd IS NULL "
+                    "AND raw_path IS NULL AND raw_checksum IS NULL "
+                    "AND raw_byte_count IS NULL AND raw_record_count IS NULL "
+                    "AND provider_response_id IS NULL "
+                    "AND normalized_path IS NULL AND normalized_checksum IS NULL",
+                    (reserved_at, request_id, request_hash),
+                )
+                if updated.rowcount != 1:
+                    raise ValueError("recovery request is no longer eligible")
+                self._connection.execute(
+                    "INSERT INTO request_events (request_id, event_type, event_at, detail_json) "
+                    "VALUES (?, 'recovery_execution_started', ?, ?)",
+                    (request_id, reserved_at, detail),
+                )
+        except sqlite3.IntegrityError:
+            return False
+        return True
+
+    def release_recovery_reservation(
+        self, *, authorization_hash: str, execution_id: str, request_id: str
+    ) -> bool:
+        """Undo a nonbillable recovery claim when provider construction fails."""
+        now = datetime.now(UTC).isoformat()
+        with self._connection:
+            reverted = self._connection.execute(
+                "UPDATE requests SET state = "
+                "'retry_eligible_after_manual_nonbilling_confirmation', updated_at = ? "
+                "WHERE request_id = ? AND state = 'preflight_validated' "
+                "AND attempt_count = 1 AND request_completed_at IS NULL "
+                "AND actual_billed_cost_usd IS NULL AND raw_path IS NULL "
+                "AND raw_checksum IS NULL AND raw_byte_count IS NULL "
+                "AND raw_record_count IS NULL AND provider_response_id IS NULL "
+                "AND normalized_path IS NULL AND normalized_checksum IS NULL",
+                (now, request_id),
+            ).rowcount
+            if reverted != 1:
+                raise ValueError("recovery request could not be released safely")
+            self._connection.execute(
+                "INSERT INTO request_events (request_id, event_type, event_at, detail_json) "
+                "VALUES (?, 'recovery_execution_released', ?, '{}')",
+                (request_id, now),
+            )
+            self._connection.execute(
+                "UPDATE execution_attempts SET status = 'failed_provider_construction', "
+                "finished_at = ?, blocking_state = 'provider_construction_failed', "
+                "manual_action_required = 0 WHERE execution_id = ? AND status = 'running'",
+                (now, execution_id),
+            )
+            deleted = self._connection.execute(
+                "DELETE FROM authorization_reservations WHERE authorization_hash = ? "
+                "AND execution_id = ? AND state = 'reserved'",
+                (authorization_hash, execution_id),
+            ).rowcount
+            if deleted != 1:
+                raise ValueError("recovery authorization reservation could not be released")
         return True
 
     def release_reservation(

@@ -25,6 +25,16 @@ from typing import Any
 import jsonschema
 
 from neuralmarket.core.environment import find_repository_root
+from neuralmarket.data.acquisition.live_cost_recheck import (
+    RECHECK_FRESHNESS,
+    CostRecheckError,
+    validate_resume_evidence,
+)
+from neuralmarket.data.acquisition.recovery import (
+    RecoveryPlan,
+    RecoveryPlanError,
+    validate_recovery_plan,
+)
 from neuralmarket.data.manifests import canonical_dumps
 
 AUTHORIZATION_SCHEMA = "data_contracts/pilot_purchase_authorization.schema.json"
@@ -201,6 +211,75 @@ def _journal_conflicts(journal_path: Path, *, plan_hash: str) -> list[Rejection]
     return rejections
 
 
+def _recovery_quote_rejections(
+    *,
+    recovery_plan: RecoveryPlan,
+    cost_evidence: dict[str, Any] | None,
+    checkpoint_sha256: str,
+    request_manifest_sha256: str,
+    repository_head: str,
+    now: datetime,
+    journal_path: Path,
+) -> list[Rejection]:
+    try:
+        validate_recovery_plan(
+            recovery_plan.model_dump(mode="json", by_alias=True), journal_path=journal_path
+        )
+    except (RecoveryPlanError, ValueError) as exc:
+        return [Rejection("invalid_recovery_provenance", str(exc))]
+    if cost_evidence is None:
+        return [Rejection("invalid_cost_evidence", "recovery cost evidence is missing")]
+    try:
+        validate_resume_evidence(
+            cost_evidence,
+            requests=list(recovery_plan.requests),
+            checkpoint_sha256=checkpoint_sha256,
+            plan_hash=recovery_plan.plan_hash,
+            request_manifest_sha256=request_manifest_sha256,
+            source_evidence_sha256="0" * 64,
+            recovery_plan=recovery_plan,
+        )
+    except CostRecheckError as exc:
+        return [Rejection("invalid_cost_evidence", str(exc))]
+    quotes = cost_evidence.get("quotes")
+    quote = quotes[0] if isinstance(quotes, list) and len(quotes) == 1 else None
+    request = recovery_plan.requests[0]
+    observed_at = _timestamp(cost_evidence.get("observed_at"))
+    expires_at = _timestamp(cost_evidence.get("expires_at"))
+    valid = (
+        cost_evidence.get("schema_version") == "pilot-cost-recheck-v2"
+        and cost_evidence.get("plan_hash") == recovery_plan.plan_hash
+        and cost_evidence.get("repository_head") == repository_head
+        and cost_evidence.get("status") == "complete"
+        and cost_evidence.get("authorization_ready") is True
+        and cost_evidence.get("provider_quote_count") == 1
+        and cost_evidence.get("unavailable_quote_count") == 0
+        and isinstance(quote, dict)
+        and quote.get("request_id") == request.request_id
+        and quote.get("request_specification_sha256") == request.specification_hash
+        and quote.get("status") == "quoted"
+        and quote.get("quote_source") == "provider_response"
+        and isinstance(quote.get("provider_response_sha256"), str)
+        and observed_at is not None
+        and observed_at <= now
+        and expires_at is not None
+        and now < expires_at <= observed_at + RECHECK_FRESHNESS
+    )
+    if not valid:
+        return [Rejection("invalid_cost_evidence", "recovery quote identity or freshness failed")]
+    assert isinstance(quote, dict)
+    cost = _decimal(quote.get("cost_usd"))
+    total = _decimal(cost_evidence.get("fresh_conservative_total_usd"))
+    if (
+        cost is None
+        or total is None
+        or cost > Decimal(recovery_plan.maximum_allowed_single_request_usd)
+        or total > Decimal(recovery_plan.maximum_allowed_total_usd)
+    ):
+        return [Rejection("cost_cap_exceeded", "recovery quote exceeds a plan cost cap")]
+    return []
+
+
 def review_purchase_package(
     *,
     authorization: dict[str, Any],
@@ -209,6 +288,8 @@ def review_purchase_package(
     now: datetime,
     journal_path: Path,
     consumption_marker: Path,
+    recovery_plan: RecoveryPlan | None = None,
+    cost_evidence: dict[str, Any] | None = None,
 ) -> PurchaseReviewResult:
     """Validate the complete purchase package offline, fail-closed.
 
@@ -221,6 +302,18 @@ def review_purchase_package(
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("review time must be timezone-aware")
     now = now.astimezone(UTC)
+    if recovery_plan is not None:
+        r.extend(
+            _recovery_quote_rejections(
+                recovery_plan=recovery_plan,
+                cost_evidence=cost_evidence,
+                checkpoint_sha256=expected.completed_checkpoint_sha256,
+                request_manifest_sha256=expected.request_manifest_sha256,
+                repository_head=expected.repository_head,
+                now=now,
+                journal_path=journal_path,
+            )
+        )
 
     # --- Template / decision state ------------------------------------
     if authorization.get("template_only") is not False:

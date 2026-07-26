@@ -19,11 +19,12 @@ from __future__ import annotations
 import hashlib
 import hmac
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 from threading import Lock
-from typing import Any, Literal, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict
 
@@ -36,6 +37,7 @@ from neuralmarket.data.acquisition.budget import to_decimal
 from neuralmarket.data.acquisition.estimation import MetadataEstimator
 from neuralmarket.data.acquisition.journal import JournalEntry, RequestJournal
 from neuralmarket.data.acquisition.preflight import run_preflight
+from neuralmarket.data.acquisition.recovery import RecoveryPlan, validate_recovery_plan
 from neuralmarket.data.acquisition.requests import (
     AcquisitionRequest,
     PilotExecutionConfig,
@@ -46,6 +48,9 @@ from neuralmarket.data.acquisition.requests import (
     plan_hash as compute_plan_hash,
 )
 from neuralmarket.data.acquisition.states import ALLOWED_TRANSITIONS
+
+if TYPE_CHECKING:
+    from neuralmarket.data.acquisition.purchase_review import ExpectedPurchaseBindings
 
 
 class MetadataProvider(Protocol):
@@ -100,6 +105,47 @@ class ValidationOnlyResult(BaseModel):
     download_attempts: int = 0
     downloaded_records: int = 0
     portal_limit_status: str = "operator_attested"
+
+
+@dataclass(frozen=True)
+class RecoveryPurchasePackage:
+    """Loaded recovery purchase evidence revalidated at the paid boundary."""
+
+    authorization: dict[str, Any]
+    attestation: dict[str, Any]
+    expected: ExpectedPurchaseBindings
+    cost_evidence: dict[str, Any]
+    journal_path: Path
+    consumption_marker: Path
+
+
+def validate_recovery_purchase_package(
+    package: RecoveryPurchasePackage, *, recovery_plan: RecoveryPlan, now: datetime
+) -> None:
+    """Fail closed unless every recovery purchase-review artifact is valid."""
+    from neuralmarket.data.acquisition.purchase_review import review_purchase_package
+
+    expected = package.expected
+    if (
+        expected.plan_hash != recovery_plan.plan_hash
+        or expected.source_manifest_hash != recovery_plan.bindings["source_manifest_hash"]
+        or expected.split_manifest_hash != recovery_plan.bindings["split_manifest_hash"]
+        or expected.acquisition_policy_hash != recovery_plan.bindings["acquisition_policy_hash"]
+    ):
+        raise ExecutorGuardError("invalid_recovery_purchase_review", "binding_mismatch")
+    review = review_purchase_package(
+        authorization=package.authorization,
+        attestation=package.attestation,
+        expected=package.expected,
+        now=now,
+        journal_path=package.journal_path,
+        consumption_marker=package.consumption_marker,
+        recovery_plan=recovery_plan,
+        cost_evidence=package.cost_evidence,
+    )
+    if not review.ok:
+        reasons = ",".join(rejection.code for rejection in review.rejections)
+        raise ExecutorGuardError("invalid_recovery_purchase_review", reasons)
 
 
 class PilotExecutionResult(BaseModel):
@@ -344,6 +390,9 @@ class PilotExecutor:
         expected_maximum_spend_usd: Decimal = Decimal("5.00"),
         expected_maximum_single_request_usd: Decimal = Decimal("1.00"),
         resume_consumed: bool = False,
+        recovery_request_id: str | None = None,
+        recovery_plan: RecoveryPlan | None = None,
+        expected_authorization_hash: str | None = None,
     ) -> PaidHistoricalProvider:
         """Construct a paid provider ONLY if both money guards pass.
 
@@ -380,6 +429,12 @@ class PilotExecutor:
             raise ExecutorGuardError(
                 "invalid_authorization", f"authorization file could not be loaded: {exc}"
             ) from exc
+        if expected_authorization_hash is not None and not hmac.compare_digest(
+            auth.authorization_hash, expected_authorization_hash
+        ):
+            raise ExecutorGuardError(
+                "invalid_authorization", "authorization artifact hash does not match execution"
+            )
 
         try:
             validate_authorization(
@@ -466,7 +521,12 @@ class PilotExecutor:
         }
         for request in authorized_requests:
             entry = self._journal.get(request.request_id)
-            if entry is None or entry.state not in resumable_states:
+            recovery_ready = (
+                recovery_request_id == request.request_id
+                and entry is not None
+                and entry.state == "retry_eligible_after_manual_nonbilling_confirmation"
+            )
+            if entry is None or (entry.state not in resumable_states and not recovery_ready):
                 raise ExecutorGuardError(
                     "preflight_not_passed",
                     f"request is not preflight validated: {request.request_id}",
@@ -475,12 +535,30 @@ class PilotExecutor:
         execution_id = hashlib.sha256(
             f"{plan_hash}:{auth.authorization_hash}".encode()
         ).hexdigest()[:32]
-        if not resume_consumed and not self._journal.reserve_authorization(
-            plan_hash=plan_hash,
-            authorization_hash=auth.authorization_hash,
-            execution_id=execution_id,
-            reserved_at=now.isoformat(),
-        ):
+        reserved = True
+        if not resume_consumed and recovery_plan is not None:
+            request = recovery_plan.requests[0]
+            try:
+                reserved = self._journal.reserve_recovery_authorization(
+                    authorization_hash=auth.authorization_hash,
+                    execution_id=execution_id,
+                    reserved_at=now.isoformat(),
+                    request_id=request.request_id,
+                    request_hash=request.request_hash,
+                    recovery_plan_hash=recovery_plan.plan_hash,
+                    parent_plan_hash=recovery_plan.recovery.parent_plan_hash,
+                    reconciliation_hash=recovery_plan.recovery.reconciliation_artifact_hash,
+                )
+            except ValueError as exc:
+                raise ExecutorGuardError("invalid_recovery_provenance", str(exc)) from exc
+        elif not resume_consumed:
+            reserved = self._journal.reserve_authorization(
+                plan_hash=plan_hash,
+                authorization_hash=auth.authorization_hash,
+                execution_id=execution_id,
+                reserved_at=now.isoformat(),
+            )
+        if not reserved:
             raise ExecutorGuardError(
                 "invalid_authorization", "authorization rejected: unavailable_or_reserved"
             )
@@ -492,11 +570,18 @@ class PilotExecutor:
             inner = paid_provider_factory()
         except Exception as exc:
             if not resume_consumed:
-                self._journal.release_reservation(
-                    authorization_hash=auth.authorization_hash,
-                    execution_id=execution_id,
-                    message="paid provider construction failed",
-                )
+                if recovery_plan is None:
+                    self._journal.release_reservation(
+                        authorization_hash=auth.authorization_hash,
+                        execution_id=execution_id,
+                        message="paid provider construction failed",
+                    )
+                else:
+                    self._journal.release_recovery_reservation(
+                        authorization_hash=auth.authorization_hash,
+                        execution_id=execution_id,
+                        request_id=recovery_plan.recovery.request_id,
+                    )
             raise ExecutorGuardError("provider_construction_failed", str(exc)) from exc
 
         def consume_before_first_call() -> None:
@@ -531,9 +616,13 @@ class PilotExecutionCoordinator:
         plan_bindings: dict[str, object],
         plan_metadata: dict[str, Any] | None,
         metadata_provider_factory: Callable[[], MetadataProvider],
+        recovery_plan: RecoveryPlan | None = None,
     ) -> ValidationOnlyResult:
         """Run sequential fresh metadata preflight without durable execution state."""
-        validate_canonical_pilot_plan(requests)
+        if recovery_plan is None:
+            validate_canonical_pilot_plan(requests)
+        elif tuple(requests) != recovery_plan.requests:
+            raise ExecutorGuardError("recovery_plan_identity_mismatch")
         provider = metadata_provider_factory()
         try:
             retry = config.retry
@@ -581,24 +670,58 @@ class PilotExecutionCoordinator:
         journal_factory: Callable[[], RequestJournal],
         lifecycle: LifecycleHooks,
         now: datetime,
+        recovery_plan: RecoveryPlan | None = None,
+        recovery_purchase_package: RecoveryPurchasePackage | None = None,
     ) -> PilotExecutionResult:
         """Execute or safely resume requests, stopping at the first unresolved state."""
         if not hmac.compare_digest(
             compute_plan_hash(requests, plan_bindings, plan_metadata), plan_hash
         ):
             raise ExecutorGuardError("plan_hash_mismatch")
+        if recovery_plan is not None and (
+            recovery_plan.plan_hash != plan_hash
+            or tuple(requests) != recovery_plan.requests
+            or recovery_plan.bindings != plan_bindings
+        ):
+            raise ExecutorGuardError("recovery_plan_identity_mismatch")
+        if recovery_plan is not None:
+            if recovery_purchase_package is None:
+                raise ExecutorGuardError("missing_recovery_purchase_review")
+            validate_recovery_purchase_package(
+                recovery_purchase_package,
+                recovery_plan=recovery_plan,
+                now=now,
+            )
         validation = self.validate_only(
             requests=requests,
             config=config,
             plan_bindings=plan_bindings,
             plan_metadata=plan_metadata,
             metadata_provider_factory=metadata_provider_factory,
+            recovery_plan=recovery_plan,
         )
         if not validation.ready_for_paid_execution:
             raise ExecutorGuardError("preflight_not_passed")
 
         with journal_factory() as journal:
             executor = PilotExecutor(journal=journal)
+            if recovery_plan is not None:
+                assert recovery_purchase_package is not None
+                if journal.db_path.resolve() != recovery_purchase_package.journal_path.resolve():
+                    raise ExecutorGuardError(
+                        "invalid_recovery_purchase_review", "journal_path_mismatch"
+                    )
+                try:
+                    validate_recovery_plan(
+                        recovery_plan.model_dump(mode="json", by_alias=True),
+                        journal_path=journal.db_path,
+                    )
+                except ValueError as exc:
+                    raise ExecutorGuardError("invalid_recovery_provenance", str(exc)) from exc
+                if plan_hash in journal.consumed_authorization_ids():
+                    raise ExecutorGuardError(
+                        "invalid_authorization", "recovery authorization was already consumed"
+                    )
             if not journal.all():
                 executor.prepare(requests)
                 for request in requests:
@@ -615,6 +738,13 @@ class PilotExecutionCoordinator:
                     quality_valid=quality,
                     partial_present=partial,
                 )
+                if (
+                    recovery_plan is not None
+                    and entry is not None
+                    and entry.state == "retry_eligible_after_manual_nonbilling_confirmation"
+                    and not any((raw, normalized, quality, partial))
+                ):
+                    action = "execute_provider"
                 actions.append((request, action))
                 if action in {"block_uncertain_billing", "quarantine", "manual_recovery_required"}:
                     return self._report(
@@ -650,7 +780,14 @@ class PilotExecutionCoordinator:
                     preflight_passed=True,
                     expected_maximum_spend_usd=config.maximum_spend_usd,
                     expected_maximum_single_request_usd=config.maximum_single_request_usd,
-                    resume_consumed=plan_hash in journal.consumed_authorization_ids(),
+                    resume_consumed=(
+                        recovery_plan is None and plan_hash in journal.consumed_authorization_ids()
+                    ),
+                    recovery_request_id=(
+                        recovery_plan.recovery.request_id if recovery_plan is not None else None
+                    ),
+                    recovery_plan=recovery_plan,
+                    expected_authorization_hash=authorization_hash,
                 )
 
             paid_calls = downloaded_records = skipped = 0
@@ -756,7 +893,7 @@ class PilotExecutionCoordinator:
         blocking_state: str | None,
         paid_provider_constructed: bool,
     ) -> PilotExecutionResult:
-        entries = journal.all()
+        entries = [entry for request in requests if (entry := journal.get(request.request_id))]
         complete = [entry for entry in entries if entry.state == "quality_validated"]
         uncertain = [entry for entry in entries if entry.state == "uncertain_billing"]
         raw_bytes = sum(entry.raw_byte_count or 0 for entry in entries)

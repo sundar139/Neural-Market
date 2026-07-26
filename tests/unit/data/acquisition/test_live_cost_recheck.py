@@ -27,6 +27,7 @@ from neuralmarket.data.acquisition.metadata_runner import (
     IsolatedMetadataResult,
     MetadataOperationEvent,
 )
+from neuralmarket.data.acquisition.recovery import RecoveryPlan
 from neuralmarket.data.acquisition.requests import build_pilot_request_plan, load_pilot_config
 from neuralmarket.data.redaction import classify_json_secret_candidates
 
@@ -40,6 +41,19 @@ PRIOR_CONS = Decimal("0.46298506855869970703125")
 TRACKED = Decimal("0.460514456033")
 PLAN_HASH = (
     "5ee6126ca9e27e3d1909c58b4e555526d5894dcd9ea129faf8d6159973aff1fe"  # pragma: allowlist secret
+)
+RECOVERY_PLAN_HASH = (
+    "84fbf547129fc5ad29b81a09624333f2f"  # pragma: allowlist secret
+    "e40df2bd27efecec447726611c92f9f"  # pragma: allowlist secret
+)
+RECOVERY_REQUEST_ID = "2750995e515e4f1a"  # pragma: allowlist secret
+PRIOR_AUTHORIZATION_HASH = (
+    "db2cde39f5a5e96c7301b9d289fc0c8"  # pragma: allowlist secret
+    "e5412b60d2b69faae30f12a7b99dd885e"  # pragma: allowlist secret
+)
+RECONCILIATION_HASH = (
+    "ddc5a8e776d2fa77354baf503fbef32fa"  # pragma: allowlist secret
+    "3c93489f10ba02ac3f1caa2f8d9bbe5"  # pragma: allowlist secret
 )
 
 _SUPPORTED = {
@@ -57,6 +71,35 @@ def _no_real_databento() -> Any:
 
 def _plan() -> list[Any]:
     return build_pilot_request_plan(load_pilot_config(_CONFIG))
+
+
+def _recovery_plan() -> RecoveryPlan:
+    parent = json.loads((_ROOT / "data/manifests/pilot_request_plan_v1.json").read_text())
+    request = next(item for item in parent["requests"] if item["request_id"] == RECOVERY_REQUEST_ID)
+    return RecoveryPlan.model_validate(
+        {
+            "manifest_version": "pilot-recovery-plan-v1",
+            "plan_hash": RECOVERY_PLAN_HASH,
+            "bindings": parent["bindings"],
+            "estimated_total_cost_usd": request["estimated_cost"],
+            "estimated_maximum_single_request_usd": request["estimated_cost"],
+            "maximum_allowed_total_usd": "5.00",
+            "maximum_allowed_single_request_usd": "1.00",
+            "authorization": "required",
+            "purchase_authorized": False,
+            "request_count": 1,
+            "recovery": {
+                "parent_plan_hash": parent["plan_hash"],
+                "prior_execution_id": "132078783c31dcab22cb90d95c967c9c",
+                "prior_authorization_hash": PRIOR_AUTHORIZATION_HASH,
+                "request_id": RECOVERY_REQUEST_ID,
+                "request_hash": request["request_hash"],
+                "reconciliation_artifact_hash": RECONCILIATION_HASH,
+                "automatic_retry_allowed": False,
+            },
+            "requests": [request],
+        }
+    )
 
 
 def _ok(cost: str = "0.01") -> IsolatedMetadataResult:
@@ -121,12 +164,13 @@ def _run(
     max_attempts: int = 2,
     resume=None,
     now: datetime = NOW,
+    recovery_plan: RecoveryPlan | None = None,
 ) -> Any:
     return recheck_costs(
         requests=requests if requests is not None else _plan(),
         repository_head="0" * 40,
         checkpoint_sha256="e" * 64,
-        plan_hash=PLAN_HASH,
+        plan_hash=recovery_plan.plan_hash if recovery_plan else PLAN_HASH,
         request_manifest_sha256="8" * 64,
         sdk_version="0.81.0",
         now=now,
@@ -138,6 +182,7 @@ def _run(
         tracked_total_usd=TRACKED,
         max_attempts=max_attempts,
         resume=resume,
+        recovery_plan=recovery_plan,
     )
 
 
@@ -174,6 +219,57 @@ def test_exact_frozen_reconstruction_and_no_cross_product() -> None:
     }
     assert result.status == "complete"
     assert result.provider_quote_count == 25
+
+
+def test_recovery_plan_quotes_exactly_one_bound_request() -> None:
+    recovery = _recovery_plan()
+    seen: list[Any] = []
+
+    result = _run(
+        requests=list(recovery.requests),
+        recovery_plan=recovery,
+        quoter=lambda request, attempt, timeout: seen.append(request) or _ok("0.02"),
+    )
+
+    assert [request.request_id for request in seen] == [RECOVERY_REQUEST_ID]
+    assert result.plan_hash == RECOVERY_PLAN_HASH
+    assert result.status == "complete"
+    assert result.provider_quote_count == 1
+    assert result.unavailable_quote_count == 0
+    assert [quote.request_id for quote in result.quotes] == [RECOVERY_REQUEST_ID]
+
+
+def test_recovery_unavailable_quote_resumes_only_request() -> None:
+    recovery = _recovery_plan()
+    first = _run(
+        requests=list(recovery.requests),
+        recovery_plan=recovery,
+        quoter=lambda request, attempt, timeout: _fail(),
+        max_attempts=1,
+    )
+    resume = validate_resume_evidence(
+        _evidence(first),
+        requests=list(recovery.requests),
+        checkpoint_sha256="e" * 64,
+        plan_hash=RECOVERY_PLAN_HASH,
+        request_manifest_sha256="8" * 64,
+        source_evidence_sha256="7" * 64,
+        recovery_plan=recovery,
+    )
+    seen: list[str] = []
+
+    result = _run(
+        requests=list(recovery.requests),
+        recovery_plan=recovery,
+        resume=resume,
+        quoter=lambda request, attempt, timeout: seen.append(request.request_id) or _ok(),
+        max_attempts=1,
+    )
+
+    assert first.status == "incomplete"
+    assert first.unavailable_quote_count == 1
+    assert seen == [RECOVERY_REQUEST_ID]
+    assert result.status == "complete"
 
 
 def test_one_list_schemas_call_per_dataset() -> None:
