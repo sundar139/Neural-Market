@@ -50,7 +50,12 @@ class RecoveryPlanError(ValueError):
 
 
 class RecoveryPlanProvenance(BaseModel):
-    """Immutable parent history required to authorize exactly one recovery."""
+    """Immutable parent history required to authorize exactly one recovery.
+
+    ``parent_bindings`` records the frozen dependency hashes under which the
+    original 25-request parent plan was created.  These are immutable
+    provenance — they must never be reinterpreted as active execution bindings.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -60,6 +65,7 @@ class RecoveryPlanProvenance(BaseModel):
     request_id: str
     request_hash: str
     reconciliation_artifact_hash: str
+    parent_bindings: dict[str, str]
     required_prior_resolution: Literal["confirmed_not_billed"] = "confirmed_not_billed"
     required_journal_state: Literal["retry_eligible_after_manual_nonbilling_confirmation"] = (
         "retry_eligible_after_manual_nonbilling_confirmation"
@@ -68,11 +74,17 @@ class RecoveryPlanProvenance(BaseModel):
 
 
 class RecoveryPlan(BaseModel):
-    """A normal one-request plan identity with explicit recovery provenance."""
+    """A normal one-request plan identity with explicit recovery provenance.
+
+    ``bindings`` are the **active execution bindings** — the dependency hashes
+    under which the recovery will be quoted, reviewed, authorized, and executed
+    at the current repository HEAD.  The historical parent dependency hashes are
+    preserved separately as ``recovery.parent_bindings``.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    manifest_version: Literal["pilot-recovery-plan-v1"] = "pilot-recovery-plan-v1"
+    manifest_version: Literal["pilot-recovery-plan-v2"] = "pilot-recovery-plan-v2"
     plan_hash: str
     bindings: dict[str, str]
     estimated_total_cost_usd: str
@@ -95,6 +107,13 @@ class RecoveryPlan(BaseModel):
             or request.request_hash != self.recovery.request_hash
         ):
             raise ValueError("recovery request provenance mismatch")
+        # ponytail: parent_bindings must exist and match the parent plan.
+        # The prepare / validate paths enforce the actual match; here we only
+        # enforce presence so a forged artifact can't sneak through.
+        if not self.recovery.parent_bindings:
+            raise ValueError("recovery parent dependency bindings are missing")
+        if not self.bindings:
+            raise ValueError("recovery active dependency bindings are missing")
         verify_final_request(request)
         metadata = plan_hash_metadata(self.model_dump(mode="json", by_alias=True))
         if plan_hash([request], self.bindings, metadata) != self.plan_hash:
@@ -435,8 +454,15 @@ def prepare_recovery_plan(
     journal_path: Path,
     reconciliation_path: Path,
     request_id: str,
+    active_config_path: Path | None = None,
 ) -> RecoveryPlan:
-    """Build one deterministic recovery identity from read-only authoritative state."""
+    """Build one deterministic recovery identity from read-only authoritative state.
+
+    ``parent_bindings`` preserve the frozen dependency hashes from the parent
+    plan (immutable provenance).  ``bindings`` are the active execution bindings
+    computed from the current repository HEAD — by default identical to the
+    parent bindings unless *active_config_path* is supplied and its hash differs.
+    """
     payload = json.loads(parent_plan_path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise RecoveryPlanError("parent plan must be an object")
@@ -453,6 +479,14 @@ def prepare_recovery_plan(
         request=request,
         reconciliation=reconciliation,
     )
+    parent_bindings = cast(dict[str, str], payload["bindings"])
+    active_bindings = dict(parent_bindings)
+    if active_config_path is not None:
+        # ponytail: only pilot_config_hash can differ; manifest hashes are
+        # validated separately against the current files during recheck-cost.
+        from neuralmarket.core.configuration import config_sha256
+
+        active_bindings["pilot_config_hash"] = config_sha256(active_config_path)
     provenance = RecoveryPlanProvenance(
         parent_plan_hash=parent_plan_hash,
         prior_execution_id=prior_execution_id,
@@ -460,6 +494,7 @@ def prepare_recovery_plan(
         request_id=request.request_id,
         request_hash=request.request_hash,
         reconciliation_artifact_hash=reconciliation.artifact_hash,
+        parent_bindings=parent_bindings,
     )
     cost = str(request.estimated_cost)
     recovery_payload: dict[str, Any] = {
@@ -471,17 +506,16 @@ def prepare_recovery_plan(
         "purchase_authorized": False,
         "recovery": provenance.model_dump(mode="json"),
     }
-    bindings = cast(dict[str, str], payload["bindings"])
     recovery_hash = plan_hash(
         [request],
-        bindings,
+        active_bindings,
         plan_hash_metadata(recovery_payload),
     )
     if recovery_hash == parent_plan_hash:
         raise RecoveryPlanError("recovery plan hash must differ from parent plan hash")
     return RecoveryPlan(
         plan_hash=recovery_hash,
-        bindings=bindings,
+        bindings=active_bindings,
         requests=(request,),
         **recovery_payload,
     )

@@ -154,6 +154,7 @@ def test_valid_reconciled_request_produces_distinct_one_request_plan(tmp_path: P
     assert payload["requests"][0] == next(
         request for request in parent["requests"] if request["request_id"] == _REQUEST_ID
     )
+    assert payload["manifest_version"] == "pilot-recovery-plan-v2"
     assert payload["recovery"] == {
         "parent_plan_hash": _PARENT_PLAN,
         "prior_execution_id": _PRIOR_EXECUTION,
@@ -161,6 +162,7 @@ def test_valid_reconciled_request_produces_distinct_one_request_plan(tmp_path: P
         "request_id": _REQUEST_ID,
         "request_hash": _REQUEST_HASH,
         "reconciliation_artifact_hash": not_billed_hash(reconciliation_path),
+        "parent_bindings": parent["bindings"],
         "required_prior_resolution": "confirmed_not_billed",
         "required_journal_state": "retry_eligible_after_manual_nonbilling_confirmation",
         "automatic_retry_allowed": False,

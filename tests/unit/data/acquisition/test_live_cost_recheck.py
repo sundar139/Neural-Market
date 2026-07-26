@@ -76,28 +76,45 @@ def _plan() -> list[Any]:
 def _recovery_plan() -> RecoveryPlan:
     parent = json.loads((_ROOT / "data/manifests/pilot_request_plan_v1.json").read_text())
     request = next(item for item in parent["requests"] if item["request_id"] == RECOVERY_REQUEST_ID)
+    parent_bindings = parent["bindings"]
+    from neuralmarket.data.acquisition.recovery import RecoveryPlanProvenance
+    from neuralmarket.data.acquisition.requests import (
+        AcquisitionRequest,
+        plan_hash,
+        plan_hash_metadata,
+    )
+
+    provenance_model = RecoveryPlanProvenance(
+        parent_plan_hash=parent["plan_hash"],
+        prior_execution_id="132078783c31dcab22cb90d95c967c9c",
+        prior_authorization_hash=PRIOR_AUTHORIZATION_HASH,
+        request_id=RECOVERY_REQUEST_ID,
+        request_hash=request["request_hash"],
+        reconciliation_artifact_hash=RECONCILIATION_HASH,
+        parent_bindings=parent_bindings,
+    )
+    recovery_payload: dict[str, Any] = {
+        "estimated_total_cost_usd": request["estimated_cost"],
+        "estimated_maximum_single_request_usd": request["estimated_cost"],
+        "maximum_allowed_total_usd": "5.00",
+        "maximum_allowed_single_request_usd": "1.00",
+        "authorization": "required",
+        "purchase_authorized": False,
+        "recovery": provenance_model.model_dump(mode="json"),
+    }
+    plan_hash_value = plan_hash(
+        [AcquisitionRequest.model_validate(request)],
+        parent_bindings,
+        plan_hash_metadata(recovery_payload),
+    )
     return RecoveryPlan.model_validate(
         {
-            "manifest_version": "pilot-recovery-plan-v1",
-            "plan_hash": RECOVERY_PLAN_HASH,
-            "bindings": parent["bindings"],
-            "estimated_total_cost_usd": request["estimated_cost"],
-            "estimated_maximum_single_request_usd": request["estimated_cost"],
-            "maximum_allowed_total_usd": "5.00",
-            "maximum_allowed_single_request_usd": "1.00",
-            "authorization": "required",
-            "purchase_authorized": False,
+            "manifest_version": "pilot-recovery-plan-v2",
+            "plan_hash": plan_hash_value,
+            "bindings": parent_bindings,
             "request_count": 1,
-            "recovery": {
-                "parent_plan_hash": parent["plan_hash"],
-                "prior_execution_id": "132078783c31dcab22cb90d95c967c9c",
-                "prior_authorization_hash": PRIOR_AUTHORIZATION_HASH,
-                "request_id": RECOVERY_REQUEST_ID,
-                "request_hash": request["request_hash"],
-                "reconciliation_artifact_hash": RECONCILIATION_HASH,
-                "automatic_retry_allowed": False,
-            },
             "requests": [request],
+            **recovery_payload,
         }
     )
 
@@ -232,7 +249,7 @@ def test_recovery_plan_quotes_exactly_one_bound_request() -> None:
     )
 
     assert [request.request_id for request in seen] == [RECOVERY_REQUEST_ID]
-    assert result.plan_hash == RECOVERY_PLAN_HASH
+    assert result.plan_hash == recovery.plan_hash
     assert result.status == "complete"
     assert result.provider_quote_count == 1
     assert result.unavailable_quote_count == 0
@@ -251,7 +268,7 @@ def test_recovery_unavailable_quote_resumes_only_request() -> None:
         _evidence(first),
         requests=list(recovery.requests),
         checkpoint_sha256="e" * 64,
-        plan_hash=RECOVERY_PLAN_HASH,
+        plan_hash=recovery.plan_hash,
         request_manifest_sha256="8" * 64,
         source_evidence_sha256="7" * 64,
         recovery_plan=recovery,

@@ -1142,7 +1142,8 @@ def _validate_pilot_plan_artifacts(
     plan_payload = load_acquisition_json(request_manifest)
     recovery_plan = (
         RecoveryPlan.model_validate(plan_payload)
-        if plan_payload.get("manifest_version") == "pilot-recovery-plan-v1"
+        if plan_payload.get("manifest_version")
+        in {"pilot-recovery-plan-v1", "pilot-recovery-plan-v2"}
         else None
     )
     if recovery_plan is None:
@@ -2024,7 +2025,8 @@ def pilot_recheck_cost(
         manifest_payload = load_acquisition_json(request_manifest)
         recovery_plan = (
             validate_recovery_plan(manifest_payload, journal_path=journal_path)
-            if manifest_payload.get("manifest_version") == "pilot-recovery-plan-v1"
+            if manifest_payload.get("manifest_version")
+            in {"pilot-recovery-plan-v1", "pilot-recovery-plan-v2"}
             else None
         )
         if recovery_plan is not None:
@@ -2038,6 +2040,15 @@ def pilot_recheck_cost(
                 recovery_plan.bindings.get(key) != value for key, value in expected_bindings.items()
             ):
                 raise PlanValidationError("Recovery plan dependency hash mismatch.")
+            # Validate parent bindings match the frozen parent plan.
+            parent_plan_path = _resolve_under_root(root, _DEFAULT_REQUEST_MANIFEST)
+            parent_payload = load_acquisition_json(parent_plan_path)
+            parent_bindings_from_file = parent_payload.get("bindings")
+            if not isinstance(parent_bindings_from_file, dict) or any(
+                recovery_plan.recovery.parent_bindings.get(key) != value
+                for key, value in parent_bindings_from_file.items()
+            ):
+                raise PlanValidationError("Recovery plan parent-provenance bindings mismatch.")
         requests = list(recovery_plan.requests) if recovery_plan else checkpoint_requests
     except ConfigurationError as exc:
         _logger.error("Configuration error: %s", exc)
@@ -2389,7 +2400,8 @@ def pilot_execute(
         )
         recovery_plan = (
             validate_recovery_plan(plan_payload, journal_path=journal_full_path)
-            if plan_payload.get("manifest_version") == "pilot-recovery-plan-v1"
+            if plan_payload.get("manifest_version")
+            in {"pilot-recovery-plan-v1", "pilot-recovery-plan-v2"}
             else None
         )
         recovery_purchase_package = None
@@ -2579,13 +2591,24 @@ def pilot_prepare_recovery_plan(
         "--journal",
         help="Canonical journal opened in SQLite read-only mode.",
     ),
+    config: Path = typer.Option(
+        _DEFAULT_PILOT_CONFIG,
+        "--config",
+        help="Current pilot config whose hash becomes the active execution binding.",
+    ),
 ) -> None:
-    """Prepare one deterministic recovery plan without provider or journal writes."""
+    """Prepare one deterministic recovery plan without provider or journal writes.
+
+    Parent-provenance bindings are recorded from the frozen parent plan.
+    Active execution bindings are computed from the current HEAD files —
+    specifically the supplied config's hash overrides the parent config hash.
+    """
     root = find_repository_root()
     parent_plan = _resolve_under_root(root, parent_plan)
     journal_path = _resolve_under_root(root, journal_path)
     reconciliation = _resolve_under_root(root, reconciliation)
     output = _resolve_under_root(root, output)
+    config = _resolve_under_root(root, config)
     protected_inputs = {
         parent_plan.resolve(),
         journal_path.resolve(),
@@ -2602,6 +2625,7 @@ def pilot_prepare_recovery_plan(
             journal_path=journal_path,
             reconciliation_path=reconciliation,
             request_id=request_id,
+            active_config_path=config,
         )
     except (OSError, ValueError, BillingReconciliationError) as exc:
         _logger.error("Recovery-plan preparation failed: %s", redact(str(exc)))
