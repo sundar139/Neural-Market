@@ -23,6 +23,7 @@ from neuralmarket.data.acquisition.billing_reconciliation import (
     load_successful_settlement,
 )
 from neuralmarket.data.acquisition.journal import (
+    JOURNAL_SCHEMA_VERSION,
     JournalEntry,
     RequestJournal,
 )
@@ -778,7 +779,7 @@ class TestSettlementMigration:
         jp = tmp_path / "j.sqlite"
         journal = RequestJournal(jp)
         v = journal.connection.execute("SELECT version FROM schema_meta").fetchone()[0]
-        assert v == 9
+        assert v == JOURNAL_SCHEMA_VERSION
         cols = {c[1] for c in journal.connection.execute("PRAGMA table_info(requests)")}
         assert "actual_provider_cost_status" in cols
         journal.connection.close()
@@ -796,7 +797,7 @@ class TestSettlementMigration:
         conn.close()
         journal = RequestJournal(jp)
         v = journal.connection.execute("SELECT version FROM schema_meta").fetchone()[0]
-        assert v == 9
+        assert v == JOURNAL_SCHEMA_VERSION
         cols = {c[1] for c in journal.connection.execute("PRAGMA table_info(requests)")}
         assert "actual_provider_cost_status" in cols
         journal.connection.close()
@@ -807,29 +808,46 @@ class TestSettlementMigration:
         RequestJournal(jp).connection.close()
         conn = sqlite3.connect(str(jp))
         v = conn.execute("SELECT version FROM schema_meta").fetchone()[0]
-        assert v == 9
+        assert v == JOURNAL_SCHEMA_VERSION
         conn.close()
 
 
 # ── Temporary production-copy tests ───────────────────────────────
 
 
+def _make_realistic_v8_journal(tmp_path: Path, raw: Path, norm: Path) -> Path:
+    """Build a full v9 journal via _make_journal then downgrade it to v8."""
+    jp = _make_journal(tmp_path, raw, norm)
+    conn = sqlite3.connect(str(jp))
+    conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    conn.execute("UPDATE schema_meta SET version = 8")
+    conn.execute("ALTER TABLE requests DROP COLUMN actual_provider_cost_status")
+    conn.commit()
+    conn.close()
+    return jp
+
+
 class TestProdCopyMigration:
     def test_prod_copy_migrates(self, tmp_path: Path) -> None:
-        src = Path("data/state/pilot_acquisition_journal.sqlite")
-        if not src.exists():
-            pytest.skip("production journal not available")
+        raw, norm, _qr = _make_files(tmp_path)
+        src = _make_realistic_v8_journal(tmp_path, raw, norm)
         dst = tmp_path / "prod_copy.sqlite"
         shutil.copy2(src, dst)
+
         pre = sqlite3.connect(str(dst))
         pre_v = pre.execute("SELECT version FROM schema_meta").fetchone()[0]
         assert pre_v == 8
+        pre_cols = {c[1] for c in pre.execute("PRAGMA table_info(requests)")}
+        assert "actual_provider_cost_status" not in pre_cols
+        pre_req = pre.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
         pre.close()
 
         journal = RequestJournal(dst)
         journal.connection.row_factory = sqlite3.Row
         post_v = journal.connection.execute("SELECT version FROM schema_meta").fetchone()[0]
         assert post_v == 9
+        post_cols = {c[1] for c in journal.connection.execute("PRAGMA table_info(requests)")}
+        assert "actual_provider_cost_status" in post_cols
         req = journal.connection.execute(
             "SELECT state, actual_billed_cost_usd, actual_provider_cost_status "
             "FROM requests WHERE request_id=?",
@@ -837,6 +855,8 @@ class TestProdCopyMigration:
         ).fetchone()
         assert req["state"] == "quality_validated"
         assert req["actual_billed_cost_usd"] is None
+        assert req["actual_provider_cost_status"] is None
+        assert journal.connection.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == pre_req
         journal.connection.close()
 
     def test_prod_copy_settlement_validates(self, tmp_path: Path) -> None:

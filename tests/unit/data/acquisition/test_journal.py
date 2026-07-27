@@ -4,7 +4,11 @@ from pathlib import Path
 
 import pytest
 
-from neuralmarket.data.acquisition.journal import JournalEntry, RequestJournal
+from neuralmarket.data.acquisition.journal import (
+    JOURNAL_SCHEMA_VERSION,
+    JournalEntry,
+    RequestJournal,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -245,7 +249,7 @@ class TestStaleFkMigration:
     def test_fresh_journal_is_v8(self, tmp_path: Path) -> None:
         journal = RequestJournal(tmp_path / "j.sqlite")
         v = journal.connection.execute("SELECT version FROM schema_meta").fetchone()
-        assert v[0] == 9
+        assert v[0] == JOURNAL_SCHEMA_VERSION
         fks = journal.connection.execute("PRAGMA foreign_key_list('execution_attempts')").fetchall()
         assert len(fks) == 0
 
@@ -262,7 +266,7 @@ class TestStaleFkMigration:
 
         journal = RequestJournal(db)
         v = journal.connection.execute("SELECT version FROM schema_meta").fetchone()
-        assert v[0] == 9
+        assert v[0] == JOURNAL_SCHEMA_VERSION
         fks_after = journal.connection.execute(
             "PRAGMA foreign_key_list('execution_attempts')"
         ).fetchall()
@@ -276,7 +280,7 @@ class TestStaleFkMigration:
         db = _already_repaired_v7_db(tmp_path / "repaired.sqlite")
         journal = RequestJournal(db)
         v = journal.connection.execute("SELECT version FROM schema_meta").fetchone()
-        assert v[0] == 9
+        assert v[0] == JOURNAL_SCHEMA_VERSION
         rows = _row_dicts(journal.connection, "execution_attempts")
         assert len(rows) == 1
         assert rows[0]["execution_id"] == "e1"
@@ -316,7 +320,10 @@ class TestStaleFkMigration:
         conn.close()
         # Column migration adds the missing columns back; migration succeeds
         journal = RequestJournal(db)
-        assert journal.connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 9
+        assert (
+            journal.connection.execute("SELECT version FROM schema_meta").fetchone()[0]
+            == JOURNAL_SCHEMA_VERSION
+        )
 
     def test_rollback_on_failure_preserves_original(self, tmp_path: Path) -> None:
         """Simulate a mid-migration failure and verify rollback."""
@@ -340,18 +347,27 @@ class TestStaleFkMigration:
         # The migration should still work because the drift check only looks
         # at execution_attempts columns, not unrelated tables.
         journal = RequestJournal(tmp_path / "copy.sqlite")
-        assert journal.connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 9
+        assert (
+            journal.connection.execute("SELECT version FROM schema_meta").fetchone()[0]
+            == JOURNAL_SCHEMA_VERSION
+        )
 
     def test_idempotent_reopen(self, tmp_path: Path) -> None:
         db = _historical_v7_db(tmp_path / "idem.sqlite")
         j1 = RequestJournal(db)
-        assert j1.connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 9
+        assert (
+            j1.connection.execute("SELECT version FROM schema_meta").fetchone()[0]
+            == JOURNAL_SCHEMA_VERSION
+        )
         j1.connection.close()
         j2 = RequestJournal(db)
-        assert j2.connection.execute("SELECT version FROM schema_meta").fetchone()[0] == 9
+        assert (
+            j2.connection.execute("SELECT version FROM schema_meta").fetchone()[0]
+            == JOURNAL_SCHEMA_VERSION
+        )
 
     def test_migrated_schema_matches_fresh(self, tmp_path: Path) -> None:
-        """Fresh v8 and migrated v7→v8 must converge."""
+        """Fresh and migrated v7 must converge on the current schema."""
         fresh = RequestJournal(tmp_path / "fresh.sqlite")
         hist = RequestJournal(_historical_v7_db(tmp_path / "hist.sqlite"))
 
@@ -381,10 +397,10 @@ class TestStaleFkMigration:
         assert len(ffk) == 0
         assert len(hfk) == 0
 
-        # Both must have version 8
+        # Both must have the current schema version
         fv = fresh.connection.execute("SELECT version FROM schema_meta").fetchone()[0]
         hv = hist.connection.execute("SELECT version FROM schema_meta").fetchone()[0]
-        assert fv == 9 and hv == 9
+        assert fv == JOURNAL_SCHEMA_VERSION and hv == JOURNAL_SCHEMA_VERSION
 
     def test_real_backup_copy_migrates(self, tmp_path: Path) -> None:
         """Copy of the real pre-execution backup migrates successfully."""
@@ -411,7 +427,7 @@ class TestStaleFkMigration:
         journal = RequestJournal(dst)
         journal.connection.row_factory = sqlite3.Row
         v = journal.connection.execute("SELECT version FROM schema_meta").fetchone()
-        assert v[0] == 9
+        assert v[0] == JOURNAL_SCHEMA_VERSION
         fks = journal.connection.execute("PRAGMA foreign_key_list('execution_attempts')").fetchall()
         assert len(fks) == 0
 
@@ -423,8 +439,8 @@ class TestStaleFkMigration:
         req_count = journal.connection.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
         assert req_count == pre_req_count
 
-    def test_real_current_copy_migrates(self, tmp_path: Path) -> None:
-        """Copy of the real current (already-repaired) journal migrates."""
+    def test_real_current_copy_reopens(self, tmp_path: Path) -> None:
+        """Copy of the real current journal reopens idempotently."""
         import shutil
 
         src = Path("data/state/pilot_acquisition_journal.sqlite")
@@ -433,14 +449,14 @@ class TestStaleFkMigration:
         dst = tmp_path / "current_copy.sqlite"
         shutil.copy2(src, dst)
 
-        # Verify start state (no FK, version 7 from manual repair)
+        # Verify start state (no FK, current schema version)
         pre = sqlite3.connect(str(dst))
         pre.row_factory = sqlite3.Row
         pre.execute("PRAGMA foreign_keys=ON")
         fks_before = pre.execute("PRAGMA foreign_key_list('execution_attempts')").fetchall()
-        assert len(fks_before) == 0  # already repaired
+        assert len(fks_before) == 0
         v_before = pre.execute("SELECT version FROM schema_meta").fetchone()[0]
-        assert v_before == 8  # was migrated from 7→8 earlier
+        assert v_before == JOURNAL_SCHEMA_VERSION
         pre_req_count = pre.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
         pre_auths = pre.execute("SELECT COUNT(*) FROM authorization_reservations").fetchone()[0]
         pre.close()
@@ -448,7 +464,7 @@ class TestStaleFkMigration:
         journal = RequestJournal(dst)
         journal.connection.row_factory = sqlite3.Row
         v = journal.connection.execute("SELECT version FROM schema_meta").fetchone()
-        assert v[0] == 9
+        assert v[0] == JOURNAL_SCHEMA_VERSION
         fks = journal.connection.execute("PRAGMA foreign_key_list('execution_attempts')").fetchall()
         assert len(fks) == 0
 
