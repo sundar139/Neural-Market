@@ -1065,7 +1065,8 @@ class TestCliValidateOnly:
         assert (
             sqlite3.connect(str(jp))
             .execute(
-                "SELECT COUNT(*) FROM request_events WHERE event_type='successful_request_billing_settlement_recorded'"
+                "SELECT COUNT(*) FROM request_events "
+                "WHERE event_type='successful_request_billing_settlement_recorded'"
             )
             .fetchone()[0]
             == 0
@@ -1170,7 +1171,8 @@ class TestCliConfirm:
         assert req["state"] == "quality_validated"
         assert (
             conn.execute(
-                "SELECT COUNT(*) FROM request_events WHERE event_type='successful_request_billing_settlement_recorded'"
+                "SELECT COUNT(*) FROM request_events "
+                "WHERE event_type='successful_request_billing_settlement_recorded'"
             ).fetchone()[0]
             == 1
         )
