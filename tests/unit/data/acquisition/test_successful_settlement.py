@@ -7,6 +7,7 @@ import hashlib
 import json
 import shutil
 import sqlite3
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -1069,6 +1070,39 @@ class TestCliValidateOnly:
             .fetchone()[0]
             == 0
         )
+
+    def test_validate_only_no_provider(self, tmp_path, monkeypatch):
+        """Validate-only never constructs or calls a Databento provider."""
+        import databento  # ensure already imported
+
+        raw, norm, qr = _make_files(tmp_path)
+        jp = _make_journal(tmp_path, raw, norm)
+        a = _artifact(tmp_path, raw, norm, qr)
+        ap = tmp_path / "s.json"
+        ap.write_text(a.model_dump_json(), encoding="utf-8")
+        op = tmp_path / "r.json"
+        ph = hashlib.sha256(jp.read_bytes()).hexdigest()
+
+        called = []
+
+        def fake_historical(*args, **kwargs):
+            called.append(("Historical", args, kwargs))
+            raise RuntimeError("provider must not be constructed")
+
+        monkeypatch.setattr(databento, "Historical", fake_historical)
+        from neuralmarket.cli.data import pilot_settle_successful_billing
+
+        with contextlib.suppress(Exception):
+            pilot_settle_successful_billing(
+                settlement=ap,
+                journal_path=jp,
+                output=op,
+                validate_only=True,
+                confirm_settlement_hash="",
+            )
+        assert len(called) == 0, f"provider constructed {len(called)} times"
+        assert hashlib.sha256(jp.read_bytes()).hexdigest() == ph
+        assert "databento" in sys.modules
 
 
 class TestCliConfirm:
