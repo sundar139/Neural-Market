@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "neuralmarket:contract:pilot_authorization:1.0",
+  "$id": "neuralmarket:contract:pilot_authorization:2.0",
   "type": "object",
   "required": [
     "authorization_version",
@@ -20,7 +20,8 @@
   ],
   "properties": {
     "authorization_version": {
-      "type": "string"
+      "type": "string",
+      "enum": ["1.0", "2.0", "pilot-authorization-v1"]
     },
     "pilot_plan_hash": {
       "type": "string"
@@ -62,6 +63,37 @@
     },
     "authorization_hash": {
       "type": "string"
+    },
+    "remaining_scope_hash": {
+      "type": ["string", "null"]
+    },
+    "cost_evidence": {
+      "type": ["object", "null"],
+      "required": ["evidence_type", "evidence_sha256", "observed_at", "expires_at"],
+      "properties": {
+        "evidence_type": {"type": "string"},
+        "evidence_sha256": {"type": "string"},
+        "observed_at": {"type": "string"},
+        "expires_at": {"type": "string"}
+      }
+    },
+    "portal_evidence": {
+      "type": ["object", "null"],
+      "required": ["evidence_type", "evidence_sha256", "observed_at", "expires_at"],
+      "properties": {
+        "evidence_type": {"type": "string"},
+        "evidence_sha256": {"type": "string"},
+        "observed_at": {"type": "string"},
+        "expires_at": {"type": "string"}
+      }
     }
+  },
+  "if": {
+    "properties": {
+      "authorization_version": {"const": "2.0"}
+    }
+  },
+  "then": {
+    "required": ["remaining_scope_hash", "cost_evidence", "portal_evidence"]
   }
 }

@@ -6,6 +6,11 @@ artifacts under review, the artifact must not have expired or already been
 consumed, and the artifact's own hash must confirm it has not been edited
 after it was signed. This module is the gate; it makes no purchase decisions
 itself.
+
+.. versionchanged:: 2.0
+   Added ``remaining_scope_hash``, ``cost_evidence``, and ``portal_evidence``
+   fields.  v1 artifacts are rejected during validation with
+   ``authorization_scope_missing``.
 """
 
 from __future__ import annotations
@@ -16,10 +21,10 @@ import json
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import jsonschema
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from neuralmarket.core.environment import find_repository_root
 from neuralmarket.data.acquisition.budget import to_decimal
@@ -27,10 +32,18 @@ from neuralmarket.data.manifests import canonical_dumps
 
 CONFIRMATION_PHRASE = "AUTHORIZE_NEURALMARKET_PILOT_PURCHASE"
 
+_SCOPE_VERSION: Literal["1.0"] = "1.0"
+
 _SCHEMA_RELATIVE_PATH = "data_contracts/pilot_authorization.schema.json"
 
 # Fields excluded from an authorization's own hash input (the hash field itself).
 _HASH_EXCLUDED = ("authorization_hash",)
+
+# Accepted authorization versions.
+_V1 = "1.0"
+_V2 = "2.0"
+_LEGACY_V1 = "pilot-authorization-v1"
+_SUPPORTED_VERSIONS = {_V1, _V2, _LEGACY_V1}
 
 
 class AuthorizationError(ValueError):
@@ -46,8 +59,123 @@ class AuthorizationError(ValueError):
         super().__init__(message or reason)
 
 
+# ── Remaining-request scope ──────────────────────────────────────────
+
+
+class RemainingRequestScope(BaseModel):
+    """Deterministic 24-request subset derived from the canonical 25-request plan.
+
+    Excludes exactly the completed, settled request.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    scope_version: Literal["1.0"] = _SCOPE_VERSION
+    source_plan_hash: str
+    derivation_rule: Literal["canonical_25_minus_settled"] = "canonical_25_minus_settled"
+    completed_request_ids: list[str]
+    completed_request_hashes: list[str]
+    remaining_request_ids: list[str]
+    remaining_request_hashes: list[str]
+    duplicate_count: int = 0
+    overlap_count: int = 0
+    scope_hash: str
+
+    @model_validator(mode="after")
+    def _validate_scope(self) -> RemainingRequestScope:
+        if len(self.completed_request_ids) != len(self.completed_request_hashes):
+            raise ValueError("completed ID and hash lists must be same length")
+        if len(self.remaining_request_ids) != len(self.remaining_request_hashes):
+            raise ValueError("remaining ID and hash lists must be same length")
+        if len(self.completed_request_ids) < 1:
+            raise ValueError("scope must exclude at least one completed request")
+        expected_count = len(self.completed_request_ids) + len(self.remaining_request_ids)
+        if expected_count != 25:
+            raise ValueError(f"scope must contain exactly 25 total requests, got {expected_count}")
+        # No overlap
+        completed_set = set(self.completed_request_ids)
+        remaining_set = set(self.remaining_request_ids)
+        object.__setattr__(self, "overlap_count", len(completed_set & remaining_set))
+        if self.overlap_count > 0:
+            raise ValueError("completed and remaining request IDs must not overlap")
+        # No duplicates within each list
+        object.__setattr__(
+            self,
+            "duplicate_count",
+            (len(self.completed_request_ids) - len(completed_set))
+            + (len(self.remaining_request_ids) - len(remaining_set)),
+        )
+        if self.duplicate_count > 0:
+            raise ValueError("request ID lists must not contain duplicates")
+        return self
+
+
+def build_remaining_scope(
+    *,
+    source_plan_hash: str,
+    completed_request_ids: list[str],
+    completed_request_hashes: list[str],
+    remaining_request_ids: list[str],
+    remaining_request_hashes: list[str],
+) -> RemainingRequestScope:
+    """Build and self-hash a deterministic remaining-request scope."""
+    payload: dict[str, object] = {
+        "scope_version": _SCOPE_VERSION,
+        "source_plan_hash": source_plan_hash,
+        "derivation_rule": "canonical_25_minus_settled",
+        "completed_request_ids": completed_request_ids,
+        "completed_request_hashes": completed_request_hashes,
+        "remaining_request_ids": remaining_request_ids,
+        "remaining_request_hashes": remaining_request_hashes,
+    }
+    payload["scope_hash"] = _scope_canonical(payload)
+    return RemainingRequestScope.model_validate(payload)
+
+
+def _scope_canonical(payload: dict[str, object]) -> str:
+    unsigned = {k: v for k, v in payload.items() if k != "scope_hash"}
+    canonical = canonical_dumps(unsigned)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+# ── Evidence reference ───────────────────────────────────────────────
+
+
+class EvidenceReference(BaseModel):
+    """Immutable reference to an external evidence artifact."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    evidence_type: str
+    evidence_sha256: str
+    observed_at: datetime
+    expires_at: datetime
+
+    @field_validator("observed_at", "expires_at")
+    @classmethod
+    def _require_aware(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("evidence timestamps must be timezone-aware")
+        return value
+
+
+# ── Authorization model ──────────────────────────────────────────────
+
+
 class PilotAuthorization(BaseModel):
-    """A signed, single-use authorization to spend real money on the pilot purchase."""
+    """A signed, single-use authorization to spend real money on the pilot purchase.
+
+    v1 (``authorization_version == "1.0"``):
+        The original contract binding the full 25-request plan hash without
+        per-request scoping or evidence references.  Parsed successfully for
+        audit but rejected during ``validate_authorization``.
+
+    v2 (``authorization_version == "2.0"``):
+        Requires ``remaining_scope_hash``, ``cost_evidence``, and
+        ``portal_evidence``.  Validation enforces per-request scoping,
+        evidence hash binding, evidence freshness, and bounded
+        authorization expiry.
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -66,6 +194,11 @@ class PilotAuthorization(BaseModel):
     purchase_authorized: bool
     authorization_hash: str
 
+    # v2 fields (optional for backward-compatible parsing of v1 artifacts)
+    remaining_scope_hash: str | None = None
+    cost_evidence: EvidenceReference | None = None
+    portal_evidence: EvidenceReference | None = None
+
     @field_validator("maximum_spend_usd", "maximum_single_request_usd", mode="before")
     @classmethod
     def _coerce_maximum_spend(cls, value: Any) -> Decimal:
@@ -77,6 +210,12 @@ class PilotAuthorization(BaseModel):
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("authorization timestamps must be timezone-aware")
         return value
+
+    @model_validator(mode="after")
+    def _validate_version(self) -> PilotAuthorization:
+        if self.authorization_version not in _SUPPORTED_VERSIONS:
+            raise ValueError(f"unsupported authorization_version: {self.authorization_version}")
+        return self
 
 
 def compute_authorization_hash(auth_payload_without_hash: dict[str, Any]) -> str:
@@ -101,6 +240,22 @@ def compute_authorization_hash(auth_payload_without_hash: dict[str, Any]) -> str
             if timestamp.tzinfo is None or timestamp.utcoffset() is None:
                 raise ValueError("authorization timestamps must be timezone-aware")
             reduced[field] = timestamp.astimezone(UTC).isoformat()
+    # Canonicalise nested evidence references
+    for field in ("cost_evidence", "portal_evidence"):
+        evidence = reduced.get(field)
+        if isinstance(evidence, dict):
+            evidence = dict(evidence)
+            for ts_field in ("observed_at", "expires_at"):
+                ts_val = evidence.get(ts_field)
+                if isinstance(ts_val, datetime):
+                    evidence[ts_field] = ts_val.astimezone(UTC).isoformat()
+                elif isinstance(ts_val, str):
+                    evidence[ts_field] = (
+                        datetime.fromisoformat(ts_val.replace("Z", "+00:00"))
+                        .astimezone(UTC)
+                        .isoformat()
+                    )
+            reduced[field] = evidence
     return hashlib.sha256(canonical_dumps(reduced).encode("utf-8")).hexdigest()
 
 
@@ -111,8 +266,8 @@ def load_authorization(path: Path) -> PilotAuthorization:
         path: Path to a JSON authorization artifact.
 
     Returns:
-        The validated, unconsumed-state ``PilotAuthorization``. Callers must
-        still call ``validate_authorization`` before treating it as live.
+        The validated ``PilotAuthorization``. Callers must still call
+        ``validate_authorization`` before treating it as live.
 
     Raises:
         jsonschema.ValidationError: If the JSON does not match the checked-in
@@ -138,21 +293,161 @@ def validate_authorization(
     consumed_ids: set[str],
     expected_maximum_spend_usd: Decimal = Decimal("5.00"),
     expected_maximum_single_request_usd: Decimal = Decimal("1.00"),
+    expected_scope_hash: str | None = None,
+    expected_cost_evidence_sha256: str | None = None,
+    expected_portal_evidence_sha256: str | None = None,
 ) -> None:
     """Validate a parsed authorization against the live plan/state, or raise.
 
     Raises:
         AuthorizationError: With ``.reason`` set to the first rejection
-            reason encountered, checked in this order: hash tampering, plan
-            hash, manifest hashes, expiry, single-use consumption, currency,
-            confirmation phrase, then the explicit purchase-authorized flag.
+            reason encountered.
     """
-    # Rebuild the payload manually (not via model_dump) so string/datetime
-    # formatting exactly matches what was hashed on disk: Decimal round-trips
-    # as its original "5.00" string either way, but model_dump(mode="json")
-    # renders aware datetimes with a "Z" suffix where the source JSON used
-    # "+00:00", which would make every untampered artifact look tampered.
-    payload = {
+    # ── hash tampering ──────────────────────────────────────────────
+    payload = _validation_payload(auth)
+    fresh_hash = compute_authorization_hash(payload)
+    if not hmac.compare_digest(fresh_hash, auth.authorization_hash):
+        raise AuthorizationError("hash_tampered", "authorization_hash does not match payload")
+
+    # ── plan & manifest ─────────────────────────────────────────────
+    if not hmac.compare_digest(auth.pilot_plan_hash, expected_plan_hash):
+        raise AuthorizationError("plan_hash_mismatch", "pilot_plan_hash does not match plan")
+
+    if (
+        not hmac.compare_digest(auth.source_manifest_hash, expected_source_manifest_hash)
+        or not hmac.compare_digest(auth.split_manifest_hash, expected_split_manifest_hash)
+        or not hmac.compare_digest(auth.acquisition_policy_hash, expected_acquisition_policy_hash)
+    ):
+        raise AuthorizationError(
+            "manifest_hash_mismatch", "a source/split/policy manifest hash does not match"
+        )
+
+    # ── version gate ────────────────────────────────────────────────
+    if auth.authorization_version not in _SUPPORTED_VERSIONS:
+        raise AuthorizationError(
+            "unsupported_version", f"unknown authorization_version: {auth.authorization_version}"
+        )
+    if auth.authorization_version in (_V1, _LEGACY_V1):
+        # v1 / legacy accepted only when no v2 params are expected
+        if expected_scope_hash is not None:
+            raise AuthorizationError(
+                "authorization_scope_missing",
+                "v1 authorization lacks per-request scope and evidence references",
+            )
+    else:
+        _validate_v2_evidence(
+            auth,
+            expected_scope_hash,
+            expected_cost_evidence_sha256,
+            expected_portal_evidence_sha256,
+            now,
+        )
+
+    # ── timestamp validity ──────────────────────────────────────────
+    if auth.expires_at <= auth.authorized_at:
+        raise AuthorizationError(
+            "invalid_validity_interval", "expires_at must be after authorized_at"
+        )
+    if now < auth.authorized_at:
+        raise AuthorizationError("not_yet_valid", "authorization is not yet valid")
+    if now >= auth.expires_at:
+        raise AuthorizationError("expired", "authorization has expired")
+
+    # ── single-use ──────────────────────────────────────────────────
+    if auth.pilot_plan_hash in consumed_ids:
+        raise AuthorizationError("already_consumed", "authorization already consumed")
+
+    # ── spend caps ──────────────────────────────────────────────────
+    if (
+        auth.maximum_spend_usd != expected_maximum_spend_usd
+        or auth.maximum_single_request_usd != expected_maximum_single_request_usd
+    ):
+        raise AuthorizationError("spend_cap_mismatch", "authorization spend caps do not match plan")
+
+    # ── currency ────────────────────────────────────────────────────
+    if not hmac.compare_digest(auth.authorized_currency, "USD"):
+        raise AuthorizationError("currency_mismatch", "authorized_currency must be USD")
+
+    # ── confirmation phrase ─────────────────────────────────────────
+    if not hmac.compare_digest(auth.confirmation_phrase, CONFIRMATION_PHRASE):
+        raise AuthorizationError(
+            "confirmation_phrase_mismatch", "confirmation_phrase does not match"
+        )
+
+    # ── purchase authorized ─────────────────────────────────────────
+    if auth.purchase_authorized is not True:
+        raise AuthorizationError("purchase_not_authorized", "purchase_authorized is not True")
+
+
+def mark_consumed(request_id_or_plan_hash: str, consumed_ids: set[str]) -> None:
+    """Record an authorization identifier as consumed (single-use tracking)."""
+    consumed_ids.add(request_id_or_plan_hash)
+
+
+# ── helpers ──────────────────────────────────────────────────────────
+
+
+def _validate_v2_evidence(
+    auth: PilotAuthorization,
+    expected_scope_hash: str | None,
+    expected_cost_evidence_sha256: str | None,
+    expected_portal_evidence_sha256: str | None,
+    now: datetime,
+) -> None:
+    """Validate v2 scope and evidence requirements."""
+    # ── scope ─────────────────────────────────────────────────────
+    if expected_scope_hash is None:
+        raise AuthorizationError("scope_missing", "expected scope hash not provided")
+    if auth.remaining_scope_hash is None:
+        raise AuthorizationError("scope_missing", "authorization missing remaining_scope_hash")
+    if not hmac.compare_digest(auth.remaining_scope_hash, expected_scope_hash):
+        raise AuthorizationError(
+            "scope_hash_mismatch", "remaining_scope_hash does not match expected scope"
+        )
+
+    # ── cost evidence ─────────────────────────────────────────────
+    if auth.cost_evidence is None:
+        raise AuthorizationError("cost_evidence_missing", "authorization missing cost_evidence")
+    if expected_cost_evidence_sha256 is None:
+        raise AuthorizationError(
+            "cost_evidence_missing", "expected cost evidence hash not provided"
+        )
+    if not hmac.compare_digest(auth.cost_evidence.evidence_sha256, expected_cost_evidence_sha256):
+        raise AuthorizationError(
+            "cost_evidence_hash_mismatch", "cost evidence sha256 does not match expected"
+        )
+    if now >= auth.cost_evidence.expires_at:
+        raise AuthorizationError("cost_evidence_stale", "cost evidence has expired")
+
+    # ── portal evidence ───────────────────────────────────────────
+    if auth.portal_evidence is None:
+        raise AuthorizationError("portal_evidence_missing", "authorization missing portal_evidence")
+    if expected_portal_evidence_sha256 is None:
+        raise AuthorizationError(
+            "portal_evidence_missing", "expected portal evidence hash not provided"
+        )
+    if not hmac.compare_digest(
+        auth.portal_evidence.evidence_sha256, expected_portal_evidence_sha256
+    ):
+        raise AuthorizationError(
+            "portal_evidence_hash_mismatch", "portal evidence sha256 does not match expected"
+        )
+    if now >= auth.portal_evidence.expires_at:
+        raise AuthorizationError("portal_evidence_stale", "portal evidence has expired")
+
+    # ── effective expiry ──────────────────────────────────────────
+    evidence_expiry = min(auth.cost_evidence.expires_at, auth.portal_evidence.expires_at)
+    if auth.expires_at > evidence_expiry:
+        raise AuthorizationError(
+            "authorization_expiry_exceeds_evidence",
+            f"authorization expires {auth.expires_at.isoformat()} "
+            f"but evidence expires {evidence_expiry.isoformat()}",
+        )
+
+
+def _validation_payload(auth: PilotAuthorization) -> dict[str, object]:
+    """Rebuild the canonical payload for hash comparison."""
+    payload: dict[str, object] = {
         "authorization_version": auth.authorization_version,
         "pilot_plan_hash": auth.pilot_plan_hash,
         "source_manifest_hash": auth.source_manifest_hash,
@@ -167,52 +462,20 @@ def validate_authorization(
         "confirmation_phrase": auth.confirmation_phrase,
         "purchase_authorized": auth.purchase_authorized,
     }
-    fresh_hash = compute_authorization_hash(payload)
-    if not hmac.compare_digest(fresh_hash, auth.authorization_hash):
-        raise AuthorizationError("hash_tampered", "authorization_hash does not match payload")
-
-    if not hmac.compare_digest(auth.pilot_plan_hash, expected_plan_hash):
-        raise AuthorizationError("plan_hash_mismatch", "pilot_plan_hash does not match plan")
-
-    if (
-        not hmac.compare_digest(auth.source_manifest_hash, expected_source_manifest_hash)
-        or not hmac.compare_digest(auth.split_manifest_hash, expected_split_manifest_hash)
-        or not hmac.compare_digest(auth.acquisition_policy_hash, expected_acquisition_policy_hash)
-    ):
-        raise AuthorizationError(
-            "manifest_hash_mismatch", "a source/split/policy manifest hash does not match"
-        )
-
-    if auth.expires_at <= auth.authorized_at:
-        raise AuthorizationError(
-            "invalid_validity_interval", "expires_at must be after authorized_at"
-        )
-    if now < auth.authorized_at:
-        raise AuthorizationError("not_yet_valid", "authorization is not yet valid")
-    if now >= auth.expires_at:
-        raise AuthorizationError("expired", "authorization has expired")
-
-    if auth.pilot_plan_hash in consumed_ids:
-        raise AuthorizationError("already_consumed", "authorization already consumed")
-
-    if (
-        auth.maximum_spend_usd != expected_maximum_spend_usd
-        or auth.maximum_single_request_usd != expected_maximum_single_request_usd
-    ):
-        raise AuthorizationError("spend_cap_mismatch", "authorization spend caps do not match plan")
-
-    if not hmac.compare_digest(auth.authorized_currency, "USD"):
-        raise AuthorizationError("currency_mismatch", "authorized_currency must be USD")
-
-    if not hmac.compare_digest(auth.confirmation_phrase, CONFIRMATION_PHRASE):
-        raise AuthorizationError(
-            "confirmation_phrase_mismatch", "confirmation_phrase does not match"
-        )
-
-    if auth.purchase_authorized is not True:
-        raise AuthorizationError("purchase_not_authorized", "purchase_authorized is not True")
-
-
-def mark_consumed(request_id_or_plan_hash: str, consumed_ids: set[str]) -> None:
-    """Record an authorization identifier as consumed (single-use tracking)."""
-    consumed_ids.add(request_id_or_plan_hash)
+    if auth.authorization_version == _V2:
+        payload["remaining_scope_hash"] = auth.remaining_scope_hash
+        if auth.cost_evidence is not None:
+            payload["cost_evidence"] = {
+                "evidence_type": auth.cost_evidence.evidence_type,
+                "evidence_sha256": auth.cost_evidence.evidence_sha256,
+                "observed_at": auth.cost_evidence.observed_at.isoformat(),
+                "expires_at": auth.cost_evidence.expires_at.isoformat(),
+            }
+        if auth.portal_evidence is not None:
+            payload["portal_evidence"] = {
+                "evidence_type": auth.portal_evidence.evidence_type,
+                "evidence_sha256": auth.portal_evidence.evidence_sha256,
+                "observed_at": auth.portal_evidence.observed_at.isoformat(),
+                "expires_at": auth.portal_evidence.expires_at.isoformat(),
+            }
+    return payload
