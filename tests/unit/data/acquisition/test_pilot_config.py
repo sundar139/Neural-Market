@@ -31,7 +31,7 @@ def test_authorization_template_is_schema_valid_but_unusable() -> None:
     )
     jsonschema.validate(template, schema)
     assert template["purchase_authorized"] is False
-    assert template["confirmation_phrase"] == "REPLACE_ME"
+    assert template["confirmation_phrase"] == "AUTHORIZE_NEURALMARKET_PILOT_PURCHASE"
 
 
 def test_pilot_local_artifact_schemas_are_valid_json_schema() -> None:

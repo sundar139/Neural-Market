@@ -86,6 +86,9 @@
         "observed_at": {"type": "string"},
         "expires_at": {"type": "string"}
       }
+    },
+    "portal_source_evidence_sha256": {
+      "type": ["string", "null"]
     }
   },
   "if": {
@@ -94,6 +97,11 @@
     }
   },
   "then": {
-    "required": ["remaining_scope_hash", "cost_evidence", "portal_evidence"]
+    "required": [
+      "remaining_scope_hash",
+      "cost_evidence",
+      "portal_evidence",
+      "portal_source_evidence_sha256"
+    ]
   }
 }

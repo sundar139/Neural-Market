@@ -15,6 +15,7 @@ import pytest
 
 from neuralmarket.data.acquisition.authorization import (
     CONFIRMATION_PHRASE,
+    build_remaining_scope,
     compute_authorization_hash,
 )
 from neuralmarket.data.acquisition.estimation import MetadataEstimate
@@ -42,8 +43,15 @@ def _write_valid_auth_file(path: Path, *, plan_hash: str = "p" * 64) -> None:
     import json
 
     now = datetime.now(UTC)
+    scope = build_remaining_scope(
+        source_plan_hash=plan_hash,
+        completed_request_ids=["completed-00000000001"],
+        completed_request_hashes=["b" * 64],
+        remaining_request_ids=[f"remaining-{i:08x}" for i in range(24)],
+        remaining_request_hashes=[f"{i:064x}" for i in range(24)],
+    )
     payload = {
-        "authorization_version": "1.0",
+        "authorization_version": "2.0",
         "pilot_plan_hash": plan_hash,
         "source_manifest_hash": "s" * 64,
         "split_manifest_hash": "v" * 64,
@@ -56,6 +64,20 @@ def _write_valid_auth_file(path: Path, *, plan_hash: str = "p" * 64) -> None:
         "authorized_by": "Test User",
         "confirmation_phrase": CONFIRMATION_PHRASE,
         "purchase_authorized": True,
+        "remaining_scope_hash": scope.scope_hash,
+        "cost_evidence": {
+            "evidence_type": "cost_recheck",
+            "evidence_sha256": "c" * 64,
+            "observed_at": (now - timedelta(minutes=5)).isoformat(),
+            "expires_at": (now + timedelta(days=1)).isoformat(),
+        },
+        "portal_evidence": {
+            "evidence_type": "portal_attestation",
+            "evidence_sha256": "d" * 64,
+            "observed_at": (now - timedelta(minutes=5)).isoformat(),
+            "expires_at": (now + timedelta(days=1)).isoformat(),
+        },
+        "portal_source_evidence_sha256": "e" * 64,
     }
     payload["authorization_hash"] = compute_authorization_hash(payload)
     path.write_text(json.dumps(payload), encoding="utf-8")

@@ -37,6 +37,18 @@ _PILOT_CONFIG = "configs/data/acquisition/pilot_january_2019.yaml"
 _AUTH_TEMPLATE = "configs/data/acquisition/pilot_authorization.template.json"
 
 
+def _integration_scope(plan_hash: str) -> Any:
+    from neuralmarket.data.acquisition.authorization import build_remaining_scope
+
+    return build_remaining_scope(
+        source_plan_hash=plan_hash,
+        completed_request_ids=["completed-00000000001"],
+        completed_request_hashes=["b" * 64],
+        remaining_request_ids=[f"remaining-{i:08x}" for i in range(24)],
+        remaining_request_hashes=[f"{i:064x}" for i in range(24)],
+    )
+
+
 class _ZeroCostMetadata:
     """Metadata client stub with deterministic nonzero estimates."""
 
@@ -453,8 +465,9 @@ def pilot_manifest_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path
 
 def _write_execution_inputs(plan: dict[str, Any], tmp_path: Path) -> tuple[Path, Path]:
     now = data_module.datetime.now(data_module.UTC)
+    _scope = _integration_scope(plan["plan_hash"])
     auth_payload: dict[str, object] = {
-        "authorization_version": "1.0",
+        "authorization_version": "2.0",
         "pilot_plan_hash": plan["plan_hash"],
         "source_manifest_hash": plan["bindings"]["source_manifest_hash"],
         "split_manifest_hash": plan["bindings"]["split_manifest_hash"],
@@ -467,6 +480,20 @@ def _write_execution_inputs(plan: dict[str, Any], tmp_path: Path) -> tuple[Path,
         "authorized_by": "test_operator",
         "confirmation_phrase": CONFIRMATION_PHRASE,
         "purchase_authorized": True,
+        "remaining_scope_hash": _scope.scope_hash,
+        "cost_evidence": {
+            "evidence_type": "cost_recheck",
+            "evidence_sha256": "c" * 64,
+            "observed_at": (now - timedelta(minutes=5)).isoformat(),
+            "expires_at": (now + timedelta(minutes=10)).isoformat(),
+        },
+        "portal_evidence": {
+            "evidence_type": "portal_attestation",
+            "evidence_sha256": "d" * 64,
+            "observed_at": (now - timedelta(minutes=5)).isoformat(),
+            "expires_at": (now + timedelta(minutes=10)).isoformat(),
+        },
+        "portal_source_evidence_sha256": "e" * 64,
     }
     auth_payload["authorization_hash"] = compute_authorization_hash(auth_payload)
     auth_path = tmp_path / "authorization.json"
@@ -1060,7 +1087,7 @@ def test_pilot_validate_only_uses_metadata_capability_without_paid_namespaces(
 
     now = data_module.datetime.now(data_module.UTC)
     auth_payload: dict[str, object] = {
-        "authorization_version": "1.0",
+        "authorization_version": "2.0",
         "pilot_plan_hash": plan["plan_hash"],
         "source_manifest_hash": plan["bindings"]["source_manifest_hash"],
         "split_manifest_hash": plan["bindings"]["split_manifest_hash"],
@@ -1073,6 +1100,20 @@ def test_pilot_validate_only_uses_metadata_capability_without_paid_namespaces(
         "authorized_by": "test_operator",
         "confirmation_phrase": CONFIRMATION_PHRASE,
         "purchase_authorized": True,
+        "remaining_scope_hash": _integration_scope(plan["plan_hash"]).scope_hash,
+        "cost_evidence": {
+            "evidence_type": "cost_recheck",
+            "evidence_sha256": "c" * 64,
+            "observed_at": (now - timedelta(minutes=5)).isoformat(),
+            "expires_at": (now + timedelta(minutes=10)).isoformat(),
+        },
+        "portal_evidence": {
+            "evidence_type": "portal_attestation",
+            "evidence_sha256": "d" * 64,
+            "observed_at": (now - timedelta(minutes=5)).isoformat(),
+            "expires_at": (now + timedelta(minutes=10)).isoformat(),
+        },
+        "portal_source_evidence_sha256": "e" * 64,
     }
     auth_payload["authorization_hash"] = compute_authorization_hash(auth_payload)
     auth_path = tmp_path / "authorization.json"
@@ -1467,7 +1508,7 @@ def test_coordinator_fake_25_request_lifecycle(pilot_manifest_path: Path, tmp_pa
     requests = [AcquisitionRequest.model_validate(item) for item in plan["requests"]]
     now = data_module.datetime.now(data_module.UTC)
     auth: dict[str, object] = {
-        "authorization_version": "1.0",
+        "authorization_version": "2.0",
         "pilot_plan_hash": plan["plan_hash"],
         "source_manifest_hash": plan["bindings"]["source_manifest_hash"],
         "split_manifest_hash": plan["bindings"]["split_manifest_hash"],
@@ -1480,6 +1521,20 @@ def test_coordinator_fake_25_request_lifecycle(pilot_manifest_path: Path, tmp_pa
         "authorized_by": "test_operator",
         "confirmation_phrase": CONFIRMATION_PHRASE,
         "purchase_authorized": True,
+        "remaining_scope_hash": _integration_scope(plan["plan_hash"]).scope_hash,
+        "cost_evidence": {
+            "evidence_type": "cost_recheck",
+            "evidence_sha256": "c" * 64,
+            "observed_at": (now - timedelta(minutes=5)).isoformat(),
+            "expires_at": (now + timedelta(minutes=10)).isoformat(),
+        },
+        "portal_evidence": {
+            "evidence_type": "portal_attestation",
+            "evidence_sha256": "d" * 64,
+            "observed_at": (now - timedelta(minutes=5)).isoformat(),
+            "expires_at": (now + timedelta(minutes=10)).isoformat(),
+        },
+        "portal_source_evidence_sha256": "e" * 64,
     }
     auth["authorization_hash"] = compute_authorization_hash(auth)
     auth_path = tmp_path / "authorization.json"

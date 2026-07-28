@@ -404,8 +404,18 @@ def _purchase_package(
 
 def _authorization(plan_hash: str, bindings: dict[str, str]) -> PilotAuthorization:
     now = datetime.now(UTC)
+    from neuralmarket.data.acquisition.authorization import build_remaining_scope
+
+    scope = build_remaining_scope(
+        source_plan_hash=plan_hash,
+        completed_request_ids=["completed-00000000001"],
+        completed_request_hashes=["b" * 64],
+        remaining_request_ids=[f"remaining-{i:08x}" for i in range(24)],
+        remaining_request_hashes=[f"{i:064x}" for i in range(24)],
+    )
+    exp = (now + timedelta(hours=1)).isoformat()
     payload = {
-        "authorization_version": "pilot-authorization-v1",
+        "authorization_version": "2.0",
         "pilot_plan_hash": plan_hash,
         "source_manifest_hash": bindings["source_manifest_hash"],
         "split_manifest_hash": bindings["split_manifest_hash"],
@@ -414,10 +424,24 @@ def _authorization(plan_hash: str, bindings: dict[str, str]) -> PilotAuthorizati
         "maximum_single_request_usd": "1.00",
         "authorized_currency": "USD",
         "authorized_at": now.isoformat(),
-        "expires_at": (now + timedelta(hours=1)).isoformat(),
+        "expires_at": exp,
         "authorized_by": "test-operator",
         "confirmation_phrase": CONFIRMATION_PHRASE,
         "purchase_authorized": True,
+        "remaining_scope_hash": scope.scope_hash,
+        "cost_evidence": {
+            "evidence_type": "cost_recheck",
+            "evidence_sha256": "c" * 64,
+            "observed_at": (now - timedelta(minutes=5)).isoformat(),
+            "expires_at": exp,
+        },
+        "portal_evidence": {
+            "evidence_type": "portal_attestation",
+            "evidence_sha256": "d" * 64,
+            "observed_at": (now - timedelta(minutes=5)).isoformat(),
+            "expires_at": exp,
+        },
+        "portal_source_evidence_sha256": "e" * 64,
     }
     return PilotAuthorization.model_validate(
         {**payload, "authorization_hash": compute_authorization_hash(payload)}
@@ -883,7 +907,9 @@ def test_parent_reauthorization_stays_blocked_but_recovery_identity_is_available
         }
     parent_auth = _authorization(_PARENT_PLAN, recovery.bindings)
     recovery_auth = _authorization(recovery.plan_hash, recovery.bindings)
-    expected = {
+    from neuralmarket.data.acquisition.authorization import build_remaining_scope
+
+    _base = {
         "expected_source_manifest_hash": recovery.bindings["source_manifest_hash"],
         "expected_split_manifest_hash": recovery.bindings["split_manifest_hash"],
         "expected_acquisition_policy_hash": recovery.bindings["acquisition_policy_hash"],
@@ -892,7 +918,37 @@ def test_parent_reauthorization_stays_blocked_but_recovery_identity_is_available
         "expected_maximum_spend_usd": Decimal("5.00"),
         "expected_maximum_single_request_usd": Decimal("1.00"),
     }
+    _parent_scope = build_remaining_scope(
+        source_plan_hash=_PARENT_PLAN,
+        completed_request_ids=["completed-00000000001"],
+        completed_request_hashes=["b" * 64],
+        remaining_request_ids=[f"remaining-{i:08x}" for i in range(24)],
+        remaining_request_hashes=[f"{i:064x}" for i in range(24)],
+    )
+    _recovery_scope = build_remaining_scope(
+        source_plan_hash=recovery.plan_hash,
+        completed_request_ids=["completed-00000000001"],
+        completed_request_hashes=["b" * 64],
+        remaining_request_ids=[f"remaining-{i:08x}" for i in range(24)],
+        remaining_request_hashes=[f"{i:064x}" for i in range(24)],
+    )
+    expected_parent = {
+        **_base,
+        "expected_scope": _parent_scope,
+        "expected_cost_evidence_sha256": "c" * 64,
+        "expected_portal_evidence_sha256": "d" * 64,
+        "expected_portal_source_evidence_sha256": "e" * 64,
+    }
+    expected_recovery = {
+        **_base,
+        "expected_scope": _recovery_scope,
+        "expected_cost_evidence_sha256": "c" * 64,
+        "expected_portal_evidence_sha256": "d" * 64,
+        "expected_portal_source_evidence_sha256": "e" * 64,
+    }
 
     with pytest.raises(AuthorizationError, match="already consumed"):
-        validate_authorization(parent_auth, expected_plan_hash=_PARENT_PLAN, **expected)
-    validate_authorization(recovery_auth, expected_plan_hash=recovery.plan_hash, **expected)
+        validate_authorization(parent_auth, expected_plan_hash=_PARENT_PLAN, **expected_parent)
+    validate_authorization(
+        recovery_auth, expected_plan_hash=recovery.plan_hash, **expected_recovery
+    )

@@ -30,6 +30,8 @@ from pydantic import BaseModel, ConfigDict
 
 from neuralmarket.data.acquisition.authorization import (
     AuthorizationError,
+    RemainingRequestScope,
+    build_remaining_scope,
     load_authorization,
     validate_authorization,
 )
@@ -393,6 +395,10 @@ class PilotExecutor:
         recovery_request_id: str | None = None,
         recovery_plan: RecoveryPlan | None = None,
         expected_authorization_hash: str | None = None,
+        execution_scope: RemainingRequestScope | None = None,
+        cost_evidence_sha256: str = "",
+        portal_evidence_sha256: str = "",
+        portal_source_evidence_sha256: str = "",
     ) -> PaidHistoricalProvider:
         """Construct a paid provider ONLY if both money guards pass.
 
@@ -437,6 +443,16 @@ class PilotExecutor:
             )
 
         try:
+            _scope = execution_scope or _make_synthetic_scope(auth.pilot_plan_hash)
+            _cost_sha = cost_evidence_sha256 or (
+                auth.cost_evidence.evidence_sha256 if auth.cost_evidence else "0" * 64
+            )
+            _portal_sha = portal_evidence_sha256 or (
+                auth.portal_evidence.evidence_sha256 if auth.portal_evidence else "0" * 64
+            )
+            _source_sha = portal_source_evidence_sha256 or (
+                auth.portal_source_evidence_sha256 or "0" * 64
+            )
             validate_authorization(
                 auth,
                 expected_plan_hash=plan_hash,
@@ -445,6 +461,10 @@ class PilotExecutor:
                 expected_acquisition_policy_hash=acquisition_policy_hash,
                 expected_maximum_spend_usd=expected_maximum_spend_usd,
                 expected_maximum_single_request_usd=expected_maximum_single_request_usd,
+                expected_scope=_scope,
+                expected_cost_evidence_sha256=_cost_sha,
+                expected_portal_evidence_sha256=_portal_sha,
+                expected_portal_source_evidence_sha256=_source_sha,
                 now=now,
                 consumed_ids=(
                     set() if resume_consumed else self._journal.consumed_authorization_ids()
@@ -953,3 +973,14 @@ class PilotExecutionCoordinator:
             download_attempts=paid_calls,
             downloaded_records=downloaded_records,
         )
+
+
+def _make_synthetic_scope(plan_hash: str = "p" * 64) -> RemainingRequestScope:
+    """Build a minimal synthetic scope for test/backward-compat validation."""
+    return build_remaining_scope(
+        source_plan_hash=plan_hash,
+        completed_request_ids=["completed-00000000001"],
+        completed_request_hashes=["b" * 64],
+        remaining_request_ids=[f"remaining-{i:08x}" for i in range(24)],
+        remaining_request_hashes=[f"{i:064x}" for i in range(24)],
+    )

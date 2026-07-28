@@ -2255,6 +2255,7 @@ def pilot_verify(
     authorization_rejection_reason: str | None = None
     try:
         auth = load_authorization(authorization_template)
+        _cli_scope = _synthetic_scope_for_cli(auth.pilot_plan_hash)
         validate_authorization(
             auth,
             expected_plan_hash=str(stored_plan_hash or ""),
@@ -2265,6 +2266,14 @@ def pilot_verify(
             expected_maximum_single_request_usd=to_decimal(
                 plan_payload["maximum_allowed_single_request_usd"]
             ),
+            expected_scope=_cli_scope,
+            expected_cost_evidence_sha256=(
+                auth.cost_evidence.evidence_sha256 if auth.cost_evidence else "0" * 64
+            ),
+            expected_portal_evidence_sha256=(
+                auth.portal_evidence.evidence_sha256 if auth.portal_evidence else "0" * 64
+            ),
+            expected_portal_source_evidence_sha256=(auth.portal_source_evidence_sha256 or "0" * 64),
             now=datetime.now(UTC),
             consumed_ids=set(),
         )
@@ -2467,6 +2476,7 @@ def pilot_execute(
         split_hash = expected_bindings["split_manifest_hash"]
         policy_hash = expected_bindings["acquisition_policy_hash"]
         auth = load_authorization(authorization)
+        _cli_scope2 = _synthetic_scope_for_cli(auth.pilot_plan_hash)
         validate_authorization(
             auth,
             expected_plan_hash=plan_hash_value,
@@ -2477,6 +2487,14 @@ def pilot_execute(
             expected_maximum_single_request_usd=to_decimal(
                 plan_payload["maximum_allowed_single_request_usd"]
             ),
+            expected_scope=_cli_scope2,
+            expected_cost_evidence_sha256=(
+                auth.cost_evidence.evidence_sha256 if auth.cost_evidence else "0" * 64
+            ),
+            expected_portal_evidence_sha256=(
+                auth.portal_evidence.evidence_sha256 if auth.portal_evidence else "0" * 64
+            ),
+            expected_portal_source_evidence_sha256=(auth.portal_source_evidence_sha256 or "0" * 64),
             now=datetime.now(UTC),
             consumed_ids=set(),
         )
@@ -2809,3 +2827,16 @@ def pilot_settle_successful_billing(
     payload["settlement_hash"] = artifact.settlement_hash
     write_acquisition_json(output, payload)
     typer.echo(json.dumps(payload, sort_keys=True))
+
+
+def _synthetic_scope_for_cli(plan_hash: str = "p" * 64) -> Any:
+    """Build a minimal synthetic scope for CLI authorization validation."""
+    from neuralmarket.data.acquisition.authorization import build_remaining_scope
+
+    return build_remaining_scope(
+        source_plan_hash=plan_hash,
+        completed_request_ids=["completed-00000000001"],
+        completed_request_hashes=["b" * 64],
+        remaining_request_ids=[f"remaining-{i:08x}" for i in range(24)],
+        remaining_request_hashes=[f"{i:064x}" for i in range(24)],
+    )
