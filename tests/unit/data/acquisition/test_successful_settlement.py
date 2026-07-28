@@ -859,47 +859,71 @@ class TestProdCopyMigration:
         assert journal.connection.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == pre_req
         journal.connection.close()
 
-    def test_prod_copy_settlement_validates(self, tmp_path: Path) -> None:
-        src = Path("data/state/pilot_acquisition_journal.sqlite")
-        if not src.exists():
-            pytest.skip("production journal not available")
-        dst = tmp_path / "prod_copy.sqlite"
-        shutil.copy2(src, dst)
+    def test_realistic_unsettled_journal_settle_and_replay(self, tmp_path: Path) -> None:
+        """Apply + replay settlement on a controlled unsettled v9 journal under tmp_path."""
+        raw, norm, qr = _make_files(tmp_path)
+        jp = _make_journal(tmp_path, raw, norm)
 
-        journal = RequestJournal(dst)
-        # Read actual artifact paths from journal
+        journal = RequestJournal(jp)
+        a = _artifact(tmp_path, raw, norm, qr)
+
+        # ── validate-only ────────────────────────────────────────────
+        pre_hash = hashlib.sha256(jp.read_bytes()).hexdigest()
+        dry = apply_successful_settlement(journal=journal, artifact=a, dry_run=True)
+        assert dry.status == "dry_run"
+        assert hashlib.sha256(jp.read_bytes()).hexdigest() == pre_hash
         conn = journal.connection
         conn.row_factory = sqlite3.Row
-        req = conn.execute("SELECT * FROM requests WHERE request_id = ?", (_REQ,)).fetchone()
-        raw_path = Path(str(req["raw_path"]))
-        norm_path = Path(str(req["normalized_path"]))
-        qr_path = Path("reports/data/quality/2750995e515e4f1a.json")
-        if not raw_path.exists() or not norm_path.exists() or not qr_path.exists():
-            journal.connection.close()
-            pytest.skip("production artifacts not at expected paths")
-
-        # Use synthetic amount, not portal aggregate
-        a = build_successful_settlement(
-            execution_id=_EXEC,
-            request_id=_REQ,
-            request_hash=_REQ_HASH,
-            plan_hash=_PLAN,
-            authorization_hash=_AUTH,
-            raw_artifact_path=str(raw_path),
-            raw_artifact_sha256=sha256_of_file(raw_path),
-            normalized_artifact_path=str(norm_path),
-            normalized_artifact_sha256=sha256_of_file(norm_path),
-            quality_report_path=str(qr_path),
-            quality_report_sha256=sha256_of_file(qr_path),
-            evidence_classification="BILLED_EXACT",
-            billed_amount_usd="0.05",
-            provider_observed_at="2026-07-27T00:00:00+00:00",
-            provider_evidence_description="test",
-            provider_evidence_reference="test-ref",
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM request_events "
+                "WHERE event_type='successful_request_billing_settlement_recorded'"
+            ).fetchone()[0]
+            == 0
         )
+
+        # ── first apply ──────────────────────────────────────────────
         r = apply_successful_settlement(journal=journal, artifact=a)
         assert r.status == "ok"
         assert r.request_state == "quality_validated"
+        assert r.billed_amount_usd == "0.05"
+        assert r.cost_status == "confirmed_billed"
+
+        req = conn.execute("SELECT * FROM requests WHERE request_id = ?", (_REQ,)).fetchone()
+        assert req["state"] == "quality_validated"
+        assert req["attempt_count"] == 2
+        assert req["actual_billed_cost_usd"] == "0.05"
+        assert req["actual_provider_cost_status"] == "confirmed_billed"
+
+        ea = conn.execute(
+            "SELECT * FROM execution_attempts WHERE execution_id = ?", (_EXEC,)
+        ).fetchone()
+        assert ea["status"] == "completed"
+
+        events = conn.execute(
+            "SELECT * FROM request_events "
+            "WHERE event_type='successful_request_billing_settlement_recorded'"
+        ).fetchall()
+        assert len(events) == 1
+        detail = json.loads(str(events[0]["detail_json"]))
+        assert detail["settlement_hash"] == a.settlement_hash
+        assert detail["billed_amount_usd"] == "0.05"
+
+        assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert not conn.execute("PRAGMA foreign_key_check").fetchall()
+
+        # ── idempotent replay ────────────────────────────────────────
+        post_apply_hash = hashlib.sha256(jp.read_bytes()).hexdigest()
+        r2 = apply_successful_settlement(journal=journal, artifact=a)
+        assert r2.idempotent_replay is True
+        assert hashlib.sha256(jp.read_bytes()).hexdigest() == post_apply_hash
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM request_events "
+                "WHERE event_type='successful_request_billing_settlement_recorded'"
+            ).fetchone()[0]
+            == 1
+        )
         journal.connection.close()
 
 
