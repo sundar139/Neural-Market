@@ -2111,12 +2111,20 @@ def pilot_recheck_cost(
                     if key in RemainingRequestScope.model_fields
                 }
             )
+            # The scope binds finalized request hashes, which include each bound
+            # estimate. ``checkpoint_requests`` are drafts whose hashes predate
+            # estimation, so they can never match; validate and quote against the
+            # frozen manifest instead. Drafts stay in use for checkpoint binding.
+            finalized_requests = [
+                AcquisitionRequest.model_validate(item)
+                for item in manifest_payload.get("requests", [])
+            ]
             validate_remaining_scope(
                 scope,
-                canonical_requests=checkpoint_requests,
+                canonical_requests=finalized_requests,
                 source_plan_hash=str(manifest_payload.get("plan_hash", "")),
             )
-            by_id = {item.request_id: item for item in checkpoint_requests}
+            by_id = {item.request_id: item for item in finalized_requests}
             requests = [by_id[request_id] for request_id in scope.remaining_request_ids]
             scoped_prior = _scoped_prior_total(scope, manifest_payload)
     except AuthorizationError as exc:

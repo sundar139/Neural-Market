@@ -96,6 +96,140 @@ def _args(checkpoint: Path, manifest: Path, sha: str, out: Path, attempts: Path)
     ]
 
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_TRACKED_MANIFEST = _REPO_ROOT / "data/manifests/pilot_request_plan_v1.json"
+_SETTLED_REQUEST_ID = "2750995e515e4f1a"  # pragma: allowlist secret
+
+
+def _finalized_scope_artifact(tmp_path: Path) -> tuple[Path, str, list[dict[str, str]]]:
+    """Build a scope from the *tracked finalized* manifest, as production does.
+
+    The checkpoint is still generated from ``build_pilot_request_plan``; that
+    draft/finalized split is precisely the production combination, so this is the
+    only shape that catches a regression in which request set the scope is
+    validated and quoted against.
+    """
+    from neuralmarket.data.acquisition.authorization import build_remaining_scope
+
+    manifest = json.loads(_TRACKED_MANIFEST.read_text(encoding="utf-8"))
+    completed = [r for r in manifest["requests"] if r["request_id"] == _SETTLED_REQUEST_ID]
+    remaining = [r for r in manifest["requests"] if r["request_id"] != _SETTLED_REQUEST_ID]
+    assert len(completed) == 1 and len(remaining) == 24
+
+    scope = build_remaining_scope(
+        source_plan_hash=str(manifest["plan_hash"]),
+        completed_request_ids=[r["request_id"] for r in completed],
+        completed_request_hashes=[r["request_hash"] for r in completed],
+        remaining_request_ids=[r["request_id"] for r in remaining],
+        remaining_request_hashes=[r["request_hash"] for r in remaining],
+    )
+    path = tmp_path / "remaining_scope_finalized.json"
+    path.write_text(json.dumps(scope.model_dump(mode="json")), encoding="utf-8")
+    return path, hashlib.sha256(path.read_bytes()).hexdigest(), remaining
+
+
+def test_scoped_recheck_quotes_finalized_manifest_requests(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Regression: the scope binds finalized hashes; drafts must never be quoted."""
+    checkpoint, _, ckpt_sha = _prepare(monkeypatch, tmp_path, cost="0.01")
+    scope_path, scope_sha, remaining = _finalized_scope_artifact(tmp_path)
+    quoted: list[object] = []
+
+    def quoter(**kwargs: object) -> object:
+        request = kwargs["request"]
+        quoted.append(request)
+        return _ok(str(request.estimated_cost))
+
+    monkeypatch.setattr(data_module, "_run_isolated_metadata", quoter)
+    out = tmp_path / "finalized.json"
+    result = runner.invoke(
+        app,
+        [
+            *_args(checkpoint, _TRACKED_MANIFEST, ckpt_sha, out, tmp_path / "finalized-a.json"),
+            "--remaining-scope",
+            str(scope_path),
+            "--expected-remaining-scope-sha256",
+            scope_sha,
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert len(quoted) == 24
+    assert [r.request_id for r in quoted] == [r["request_id"] for r in remaining]
+    # Every quoted request carries its finalized hash and its bound estimate.
+    assert [r.request_hash for r in quoted] == [r["request_hash"] for r in remaining]
+    assert all(r.estimated_cost is not None for r in quoted)
+    assert _SETTLED_REQUEST_ID not in {r.request_id for r in quoted}
+
+    evidence = json.loads(out.read_text(encoding="utf-8"))
+    assert evidence["provider_call_inventory"]["get_cost"] == 24
+    assert len(evidence["quotes"]) == 24
+    assert evidence["purchase_authorized"] is False
+
+
+def test_scoped_recheck_rejects_tampered_finalized_scope_before_provider(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    checkpoint, _, ckpt_sha = _prepare(monkeypatch, tmp_path, cost="0.01")
+    scope_path, _, _ = _finalized_scope_artifact(tmp_path)
+    payload = json.loads(scope_path.read_text(encoding="utf-8"))
+    payload["scope_hash"] = "0" * 64
+    scope_path.write_text(json.dumps(payload), encoding="utf-8")
+    tampered_sha = hashlib.sha256(scope_path.read_bytes()).hexdigest()
+    monkeypatch.setattr(
+        data_module, "_load_dotenv", lambda root: pytest.fail("must reject before key lookup")
+    )
+    monkeypatch.setattr(
+        data_module,
+        "_pilot_metadata_provider_factory",
+        lambda: pytest.fail("must reject before provider construction"),
+    )
+    out = tmp_path / "never.json"
+    result = runner.invoke(
+        app,
+        [
+            *_args(checkpoint, _TRACKED_MANIFEST, ckpt_sha, out, tmp_path / "never-a.json"),
+            "--remaining-scope",
+            str(scope_path),
+            "--expected-remaining-scope-sha256",
+            tampered_sha,
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert not out.exists()
+
+
+def test_scoped_recheck_rejects_scope_from_a_different_manifest_before_provider(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A scope built from drafts must not validate against the finalized manifest."""
+    checkpoint, _, ckpt_sha = _prepare(monkeypatch, tmp_path, cost="0.01")
+    manifest = json.loads(_TRACKED_MANIFEST.read_text(encoding="utf-8"))
+    draft_scope, _, _, _ = _scope_artifact(tmp_path, str(manifest["plan_hash"]))
+    draft_sha = hashlib.sha256(draft_scope.read_bytes()).hexdigest()
+    monkeypatch.setattr(
+        data_module,
+        "_pilot_metadata_provider_factory",
+        lambda: pytest.fail("must reject before provider construction"),
+    )
+    out = tmp_path / "never.json"
+    result = runner.invoke(
+        app,
+        [
+            *_args(checkpoint, _TRACKED_MANIFEST, ckpt_sha, out, tmp_path / "never-a.json"),
+            "--remaining-scope",
+            str(draft_scope),
+            "--expected-remaining-scope-sha256",
+            draft_sha,
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert not out.exists()
+
+
 def _scope_artifact(tmp_path: Path, plan_hash: str) -> tuple[Path, str, str, list[str]]:
     """Write a valid 24-request scope artifact derived from the config-built plan."""
     from neuralmarket.data.acquisition.authorization import build_remaining_scope
@@ -134,12 +268,16 @@ def _manifest_with_estimates(tmp_path: Path, plan_hash: str, estimate: str) -> P
         load_pilot_config(root / "configs/data/acquisition/pilot_january_2019.yaml")
     )
     manifest = tmp_path / "request_manifest.json"
+    # Full request payloads: the scoped path validates and quotes the manifest's
+    # own requests, so stubs are not enough. request_hash is carried through
+    # unchanged so this manifest agrees with a draft-derived scope.
     manifest.write_text(
         json.dumps(
             {
                 "plan_hash": plan_hash,
                 "requests": [
-                    {"request_id": item.request_id, "estimated_cost": estimate} for item in plan
+                    {**item.model_dump(mode="json", by_alias=True), "estimated_cost": estimate}
+                    for item in plan
                 ],
             }
         ),
