@@ -36,8 +36,9 @@ def _payload(**changes: Any) -> dict[str, Any]:
         "contract_version": "portal-source-evidence-v1",
         "observed_at": OBSERVED.isoformat(),
         "timezone": "America/New_York (EDT)",
+        "billing_cycle_basis": "dated",
         "billing_cycle_start": "2026-06-30T20:00:00-04:00",
-        "billing_cycle_end": "2026-07-27T20:00:00-04:00",
+        "billing_cycle_end": "2026-07-31T20:00:00-04:00",
         "usage_display_text": "<$0.01",
         "usage_relation": "lt",
         "usage_amount_usd": "0.01",
@@ -146,6 +147,40 @@ def test_missing_required_source_fields_are_rejected(missing: str) -> None:
 def test_naive_timestamps_are_rejected() -> None:
     with pytest.raises(ValidationError, match="timezone-aware"):
         _evidence(observed_at="2026-07-29T12:00:00")
+
+
+def test_rolling_billing_cycle_needs_no_dates() -> None:
+    """Some accounts bill on a rolling basis; that is recorded, not faked."""
+    payload = _payload(billing_cycle_basis="rolling")
+    del payload["billing_cycle_start"]
+    del payload["billing_cycle_end"]
+    evidence = PortalSourceEvidence.model_validate(payload)
+    assert evidence.billing_cycle_basis == "rolling"
+    assert evidence.billing_cycle_start is None
+    assert evidence.billing_cycle_end is None
+    # Capacity arithmetic is unaffected by the absence of cycle bounds.
+    assert evidence.conservative_remaining_capacity_usd == Decimal("4.99")
+
+
+def test_rolling_billing_cycle_must_not_carry_dates() -> None:
+    with pytest.raises(ValidationError, match="must not carry start or end"):
+        _evidence(billing_cycle_basis="rolling")
+
+
+def test_dated_billing_cycle_requires_both_bounds() -> None:
+    payload = _payload()
+    del payload["billing_cycle_end"]
+    with pytest.raises(ValidationError, match="requires billing_cycle_start and _end"):
+        PortalSourceEvidence.model_validate(payload)
+
+
+def test_dated_cycle_rejects_an_observation_outside_it() -> None:
+    """The stale-cycle case that slipped through before: observed after cycle end."""
+    with pytest.raises(ValidationError, match="must fall inside the stated billing cycle"):
+        _evidence(
+            billing_cycle_start="2026-06-30T20:00:00-04:00",
+            billing_cycle_end="2026-07-27T20:00:00-04:00",
+        )
 
 
 def test_inverted_billing_cycle_is_rejected() -> None:

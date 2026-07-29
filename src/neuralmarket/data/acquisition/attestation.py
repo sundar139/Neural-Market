@@ -70,6 +70,10 @@ class PortalSourceEvidence(BaseModel):
     precision the UI never gave, the display text is kept verbatim alongside a
     relation and the exact Decimal bound it implies, and every capacity check
     uses that bound conservatively.
+
+    Some accounts bill on a rolling basis with no dated cycle. That is recorded
+    as ``billing_cycle_basis="rolling"`` with both bounds absent, rather than
+    inventing dates the portal never displayed.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -77,8 +81,9 @@ class PortalSourceEvidence(BaseModel):
     contract_version: Literal["portal-source-evidence-v1"]
     observed_at: datetime
     timezone: str = Field(min_length=1)
-    billing_cycle_start: datetime
-    billing_cycle_end: datetime
+    billing_cycle_basis: Literal["dated", "rolling"] = "dated"
+    billing_cycle_start: datetime | None = None
+    billing_cycle_end: datetime | None = None
     usage_display_text: str = Field(min_length=1)
     usage_relation: Literal["exact", "lt", "lte"]
     usage_amount_usd: Decimal = Field(ge=Decimal(0))
@@ -108,15 +113,24 @@ class PortalSourceEvidence(BaseModel):
 
     @field_validator("observed_at", "billing_cycle_start", "billing_cycle_end", "expires_at")
     @classmethod
-    def _utc(cls, value: datetime) -> datetime:
+    def _utc(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("portal-source-evidence timestamps must be timezone-aware")
         return value.astimezone(UTC)
 
     @model_validator(mode="after")
     def _check_windows(self) -> PortalSourceEvidence:
-        if self.billing_cycle_end <= self.billing_cycle_start:
-            raise ValueError("billing_cycle_end must be after billing_cycle_start")
+        if self.billing_cycle_basis == "dated":
+            if self.billing_cycle_start is None or self.billing_cycle_end is None:
+                raise ValueError("a dated billing cycle requires billing_cycle_start and _end")
+            if self.billing_cycle_end <= self.billing_cycle_start:
+                raise ValueError("billing_cycle_end must be after billing_cycle_start")
+            if not (self.billing_cycle_start <= self.observed_at <= self.billing_cycle_end):
+                raise ValueError("observed_at must fall inside the stated billing cycle")
+        elif self.billing_cycle_start is not None or self.billing_cycle_end is not None:
+            raise ValueError("a rolling billing cycle must not carry start or end dates")
         if self.expires_at <= self.observed_at:
             raise ValueError("expires_at must be after observed_at")
         if self.expires_at > self.observed_at + PORTAL_EVIDENCE_VALIDITY:
