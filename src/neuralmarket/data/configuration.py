@@ -9,7 +9,7 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from neuralmarket.core.configuration import ConfigurationError, config_sha256
+from neuralmarket.core.configuration import ConfigurationError
 
 
 class CrossedQuotePolicy(str, Enum):
@@ -237,8 +237,3 @@ def load_data_config(path: Path) -> DataConfig:
         return DataConfig.model_validate(raw)
     except ValidationError as exc:
         raise ConfigurationError(f"Invalid data configuration in {path}: {exc}") from exc
-
-
-def data_config_sha256(path: Path) -> str:
-    """Return the SHA-256 hash of a data configuration file's raw bytes."""
-    return config_sha256(path)

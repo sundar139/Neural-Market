@@ -100,9 +100,9 @@ class BillingReconciliationArtifact(BaseModel):
         return self
 
 
-def canonical_artifact_hash(payload: dict[str, object]) -> str:
-    """Return SHA-256 over canonical JSON excluding ``artifact_hash``."""
-    unsigned = {key: value for key, value in payload.items() if key != "artifact_hash"}
+def canonical_artifact_hash(payload: dict[str, Any], *, exclude: str = "artifact_hash") -> str:
+    """Return SHA-256 over canonical JSON excluding the artifact's own hash field."""
+    unsigned = {key: value for key, value in payload.items() if key != exclude}
     canonical = json.dumps(unsigned, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -581,12 +581,6 @@ class SuccessfulSettlementArtifact(BaseModel):
         return self
 
 
-def _settlement_canonical(payload: dict[str, Any]) -> str:
-    unsigned = {k: v for k, v in payload.items() if k != "settlement_hash"}
-    canonical = json.dumps(unsigned, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-
-
 def build_successful_settlement(
     *,
     execution_id: str,
@@ -631,7 +625,7 @@ def build_successful_settlement(
         "provider_evidence_description": provider_evidence_description,
         "provider_evidence_reference": provider_evidence_reference,
     }
-    payload["settlement_hash"] = _settlement_canonical(payload)
+    payload["settlement_hash"] = canonical_artifact_hash(payload, exclude="settlement_hash")
     return SuccessfulSettlementArtifact.model_validate(payload)
 
 
@@ -657,7 +651,7 @@ def load_successful_settlement(path: Path) -> SuccessfulSettlementArtifact:
     except jsonschema.ValidationError as exc:
         raise SettlementError(f"settlement artifact schema invalid: {exc.message}") from exc
 
-    expected = _settlement_canonical(payload)
+    expected = canonical_artifact_hash(payload, exclude="settlement_hash")
     if payload.get("settlement_hash") != expected:
         raise SettlementError("settlement artifact hash mismatch")
     return SuccessfulSettlementArtifact.model_validate(payload)

@@ -92,16 +92,27 @@ def test_all_returns_every_entry(tmp_path: Path) -> None:
 
 def test_authorization_consumption_is_atomic_and_durable(tmp_path: Path) -> None:
     db_path = tmp_path / "journal.sqlite"
+    now = datetime.now(UTC).isoformat()
     with RequestJournal(db_path) as journal:
-        assert journal.consume_authorization(
-            plan_hash="p" * 64,
+        assert journal.reserve_authorization(
             authorization_hash="a" * 64,
-            consumed_at=datetime.now(UTC).isoformat(),
-        )
-        assert not journal.consume_authorization(
             plan_hash="p" * 64,
-            authorization_hash="b" * 64,
-            consumed_at=datetime.now(UTC).isoformat(),
+            execution_id="execution",
+            reserved_at=now,
+        )
+        # A second reservation of the same authorization is refused outright.
+        assert not journal.reserve_authorization(
+            authorization_hash="a" * 64,
+            plan_hash="p" * 64,
+            execution_id="execution-2",
+            reserved_at=now,
+        )
+        assert journal.consume_reserved_authorization(
+            authorization_hash="a" * 64, execution_id="execution", consumed_at=now
+        )
+        # A consumed reservation can never be consumed again.
+        assert not journal.consume_reserved_authorization(
+            authorization_hash="a" * 64, execution_id="execution", consumed_at=now
         )
     with RequestJournal(db_path) as reopened:
         assert reopened.consumed_authorization_ids() == {"p" * 64}

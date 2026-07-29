@@ -277,29 +277,6 @@ def underlying_daily_arrow_schema() -> pa.Schema:
     )
 
 
-def option_definition_arrow_schema() -> pa.Schema:
-    """PyArrow storage schema for normalized point-in-time option definitions."""
-    return pa.schema(
-        [
-            pa.field("definition_timestamp", pa.timestamp("us", tz="UTC"), nullable=False),
-            pa.field("instrument_id", pa.string(), nullable=False),
-            pa.field("option_symbol", pa.string(), nullable=False),
-            pa.field("raw_symbol", pa.string(), nullable=False),
-            pa.field("underlying_symbol", pa.string(), nullable=False),
-            pa.field("expiration_date", pa.date32(), nullable=False),
-            pa.field("strike", _PRICE_TYPE, nullable=False),
-            pa.field("option_type", pa.string(), nullable=False),
-            pa.field("exercise_style", pa.string(), nullable=False),
-            pa.field("settlement_style", pa.string(), nullable=False),
-            pa.field("contract_multiplier", _PRICE_TYPE, nullable=False),
-            pa.field("currency", pa.string(), nullable=False),
-            pa.field("source", pa.string(), nullable=False),
-            pa.field("source_dataset", pa.string(), nullable=False),
-            pa.field("schema_version", pa.string(), nullable=False),
-        ]
-    )
-
-
 def underlying_quote_arrow_schema() -> pa.Schema:
     """PyArrow storage schema for normalized underlying BBO snapshots."""
     return pa.schema(

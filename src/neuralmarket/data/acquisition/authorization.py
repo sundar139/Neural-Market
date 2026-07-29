@@ -429,11 +429,6 @@ def validate_authorization(
         raise AuthorizationError("purchase_not_authorized", "purchase_authorized is not True")
 
 
-def mark_consumed(request_id_or_plan_hash: str, consumed_ids: set[str]) -> None:
-    """Record an authorization identifier as consumed (single-use tracking)."""
-    consumed_ids.add(request_id_or_plan_hash)
-
-
 # ── helpers ──────────────────────────────────────────────────────────
 
 

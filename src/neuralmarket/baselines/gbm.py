@@ -44,4 +44,5 @@ def sample_gbm(
     # Log-return per step: N(mu*dt - 0.5*sigma^2*dt, sigma^2*dt)
     drift = (mu - 0.5 * sigma**2) * dt
     diffusion = sigma * np.sqrt(dt)
-    return drift + diffusion * rng.standard_normal((n_paths, horizon))
+    increments: np.ndarray = drift + diffusion * rng.standard_normal((n_paths, horizon))
+    return increments

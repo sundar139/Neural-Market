@@ -17,10 +17,12 @@ provider-client, implementation, request identities, logical relative paths,
 fresh estimates, and authorization requirements. It contains no API key,
 account identifier, absolute path, or market observation.
 
-No execution is authorized in this milestone. A future purchase requires the
-exact plan hash, a narrow-lived authorization with the required confirmation
-phrase, durable single-use consumption, and a second execution preflight.
-The false authorization template is intentionally unusable.
+Every purchase requires the exact plan hash, a narrow-lived authorization with
+the required confirmation phrase, durable single-use consumption, and a second
+execution preflight. `configs/data/acquisition/pilot_authorization.template.json`
+and `configs/data/acquisition/portal_limit_attestation.template.json` are
+deliberately unusable placeholders: copy them to an ignored local path and fill
+every binding exactly.
 
 If provider completion or local persistence is uncertain, the pipeline stops
 and recovery is manual. It never automatically redownloads under uncertain
@@ -84,16 +86,13 @@ paid-provider readiness are loaded and again at the coordinator boundary. The
 authorization reservation and retry-eligible journal transition are one atomic
 operation performed before paid-provider construction.
 
-Offline diagnosis of the first paid-provider failure found a deterministic
-adapter-contract defect before Databento could receive a valid request: the
-production `timeseries.get_range` call supplied an `encoding` keyword, but the
-installed Databento 0.81.0 signature accepts only `dataset`, `start`, `end`,
-`symbols`, `schema`, `stype_in`, `stype_out`, `limit`, and optional `path`.
-Databento streams DBN/Zstd for this method internally. The repaired adapter
-therefore passes only supported request keywords, validates the DBNStore-like
-response shape, and classifies post-response serialization/persistence failures
-without enabling automatic retry. Any future retry still requires fresh explicit
-authorization and portal attestation.
+The `timeseries.get_range` adapter passes only the keywords the installed
+Databento 0.81.0 signature accepts (`dataset`, `start`, `end`, `symbols`,
+`schema`, `stype_in`, `stype_out`, `limit`, and optional `path`); Databento
+streams DBN/Zstd for this method internally, so no `encoding` keyword is sent.
+The adapter validates the DBNStore-like response shape and classifies
+post-response serialization/persistence failures without enabling automatic
+retry. Any retry requires fresh explicit authorization and portal attestation.
 
 ## Resilient usage-based cost fallback
 
@@ -167,18 +166,10 @@ malformed or mixed response (a non-mapping entry, an empty or non-mapping schema
 map, an empty mode name) fails the whole response closed rather than returning a
 partial subset.
 
-This correction was developed and validated entirely offline against fixtures
-that model the observed SDK shape. A new live unit-price probe is still required
-before the production metadata checkpoint may be resumed, and market-data
-acquisition remains unauthorized.
-
 ### Unit-price failure diagnostics
 
-The first shape correction remained insufficient: a second live probe still
-failed, and the child returned only the exception class, so neither the failing
-**stage** nor the response **structure** was recoverable — a single authorized
-call could not be diagnosed. `unit_price_diagnostics.py` closes that gap. On any
-failure the isolated child now returns a typed, versioned
+Raw responses must never be logged, so failures are classified structurally. On
+any failure the isolated child returns a typed, versioned
 `UnitPriceFailureDiagnostic` (`diagnostic_schema_version =
 "unit-price-diagnostic-v1"`) carrying the failing stage (`provider_call`,
 `sanitization`, `snapshot_parsing`, `child_timeout`, …), a stable machine-readable
@@ -197,15 +188,14 @@ fingerprint hashes only that structural summary, so **changing prices does not
 change it** while changing a mode or schema key does — a stable signal for
 comparing responses across probes.
 
-Parser acceptance/rejection was deliberately left **unchanged**; diagnostics only
-observe and classify it. One new controlled live probe is still required, the
-metadata checkpoint remains blocked, and acquisition remains unauthorized.
+Diagnostics only observe and classify; they never change parser acceptance or
+rejection.
 
 ### Confirmed Databento 0.81.0 response contract
 
-The final diagnostic probe confirmed the real `list_unit_prices` shape: a list of
-items `{"mode": <string>, "unit_prices": {<schema>: <price>}}` (12 OPRA schemas
-per mode). The sanitizer now recognizes this alongside the earlier forms and
+The confirmed `list_unit_prices` shape is a list of items
+`{"mode": <string>, "unit_prices": {<schema>: <price>}}` (12 OPRA schemas
+per mode). The sanitizer recognizes this alongside the earlier forms and
 normalizes `unit_prices` to the canonical `schemas` block — the mode name and
 every schema key are preserved and each price passes through the same
 representation normalization (`str(price)`), so the confirmed float prices survive
@@ -219,18 +209,14 @@ is canonical; `mode` + `unit_prices` is the confirmed form; an item declaring
 **both** `schemas` and `unit_prices` is ambiguous; a `mode`/`unit_prices` item
 with any unexpected sibling key, a `unit_prices` without `mode`, or a `mode`
 without a wrapper all fail closed. Duplicate feed modes are still preserved (never
-merged) so the parser rejects the ambiguity. The correction was implemented and
-tested entirely offline; **one new controlled live probe is still required**
-before the metadata checkpoint may be resumed, and acquisition remains
-unauthorized. This milestone did not run a live probe — do not assume the live
-call now passes.
+merged) so the parser rejects the ambiguity.
 
 ### Stale-checkpoint resume and metadata deadline
 
-`data pilot prepare --resume` now means *resume this exact checkpoint or fail
+`data pilot prepare --resume` means *resume this exact checkpoint or fail
 closed*: a missing, stale, hash-invalid, plan-incompatible, or otherwise-invalid
-checkpoint exits nonzero and never silently starts a fresh generation (the prior
-behavior, which discarded completed endpoints). A checkpoint older than
+checkpoint exits nonzero and never silently starts a fresh generation. A
+checkpoint older than
 `checkpoint_max_age_minutes` (still 30) may be resumed only with
 `--allow-stale-checkpoint-sha256 <64-lowercase-hex>` matching the checkpoint's
 exact bytes; this bypasses **age only** — every schema, canonical-hash,
@@ -244,10 +230,7 @@ complete the 59 pending endpoints (worst case ≈ 21 OPRA `cbbo-1m` costs × 120
 or cost semantics), `checkpoint_compatibility.py` lets a checkpoint bound to the
 prior `540`-second config resume: the stored config hash must equal the current
 hash or a hand-verified prior hash whose only field difference is the deadline
-(see amendment 009). Any scientific/budget difference fails closed. Everything was
-implemented and tested offline; a separate authorized live milestone is still
-required to resume and complete the checkpoint, and acquisition remains
-unauthorized.
+(see amendment 009). Any scientific/budget difference fails closed.
 
 ## Fresh provider cost recheck (`data pilot recheck-cost`)
 

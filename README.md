@@ -28,11 +28,22 @@ trading profitability.
 
 ## Repository status
 
-Foundation and guarded acquisition tooling only: reproducibility, configuration,
-environment diagnostics, data contracts, and a metadata-only January 2019 pilot.
-No market records, models, hedging policies, or results exist yet. No empirical
-result is claimed. Confirmatory results must be reproducible through versioned
-CLI commands and configurations. Notebooks will never contain authoritative
+Implemented today:
+
+- `neuralmarket.core` — reproducibility, typed configuration, environment report.
+- `neuralmarket.data` — canonical contracts, manifests, calendars, the Databento
+  source adapter, raw DBN and normalized Parquet handling.
+- `neuralmarket.data.acquisition` — the guarded January 2019 pilot: planning,
+  cost estimation and recheck, authorization, journal, executor, recovery, and
+  billing settlement.
+- `neuralmarket.baselines.gbm` and `neuralmarket.eval.scorecard` — deterministic
+  GBM baseline and the stylized-fact scorecard.
+- `neuralmarket.cli` — every supported operation (`neuralmarket environment`,
+  `neuralmarket data`).
+
+No models, hedging policies, or empirical results exist yet, and none are
+claimed. Confirmatory results must be reproducible through versioned CLI
+commands and configurations. Notebooks will never contain authoritative
 implementations.
 
 ## Requirements
@@ -51,14 +62,16 @@ py -3.11 -m venv .venv
 
 Or run `scripts/bootstrap.ps1`.
 
-## Quality verification
+## Tests and quality verification
 
 ```powershell
+& .\.venv\Scripts\python.exe -m pytest -q
 powershell -ExecutionPolicy Bypass -File .\scripts\verify.ps1
 ```
 
-This runs Ruff lint and format checks, strict mypy, pytest with branch coverage
-(minimum 85%), pre-commit, a CLI smoke test, and environment-report generation.
+`verify.ps1` runs Ruff lint and format checks, strict mypy, pytest with branch
+coverage (minimum 85%), pre-commit, a CLI smoke test, and environment-report
+generation. Every test is offline; none contacts a provider.
 
 ## Environment report
 
@@ -113,9 +126,27 @@ exits nonzero, never silently restarting. A checkpoint past its freshness window
 resumes only with `--allow-stale-checkpoint-sha256` matching its exact bytes
 (age-bypass only; all other integrity checks stay mandatory).
 
+## Next acquisition preflight
+
+The one supported acquisition workflow is `prepare` → `recheck-cost` → `verify`
+→ `execute`, each documented in [pilot acquisition](docs/data/pilot_acquisition.md).
+The next step is a preflight, which issues metadata-only requests:
+
+```powershell
+& .\.venv\Scripts\neuralmarket.exe data pilot prepare `
+    --config "configs/data/acquisition/pilot_january_2019.yaml" `
+    --output "reports/data/pilot_preflight.local.json" `
+    --request-manifest "reports/data/pilot_request_plan_audit.local.json"
+```
+
 ## Data and secrets
 
 Raw licensed vendor data is never committed; generated data is tracked with DVC
 later. See [data governance](data/README.md). Never commit `.env`, API keys,
 tokens, checkpoints, or `.venv`. Copy `.env.example` to a local, ignored `.env`
 for optional non-secret settings.
+
+Intentionally ignored local artifacts: `.env`, `.venv/`, `data/raw/`,
+`data/processed/`, `data/state/` (SQLite journals and backups), generated
+environment reports, and the operational acquisition evidence under
+`reports/data/{cost,execution,quality,reconciliation}/`.

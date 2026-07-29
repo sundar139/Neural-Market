@@ -39,7 +39,6 @@ def test_pilot_local_artifact_schemas_are_valid_json_schema() -> None:
         "pilot_request_plan",
         "pilot_authorization",
         "pilot_execution",
-        "pilot_quality_report",
         "billing_reconciliation",
     ):
         schema = json.loads(

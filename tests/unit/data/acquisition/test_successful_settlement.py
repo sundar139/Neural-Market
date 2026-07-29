@@ -17,9 +17,9 @@ import pytest
 from neuralmarket.data.acquisition.billing_reconciliation import (
     SettlementError,
     SuccessfulSettlementArtifact,
-    _settlement_canonical,
     apply_successful_settlement,
     build_successful_settlement,
+    canonical_artifact_hash,
     load_successful_settlement,
 )
 from neuralmarket.data.acquisition.journal import (
@@ -212,7 +212,7 @@ class TestArtifactModel:
         )
         d = json.loads(a.model_dump_json())
         d["billed_amount_usd"] = "999"
-        bad_hash = _settlement_canonical(d)
+        bad_hash = canonical_artifact_hash(d, exclude="settlement_hash")
         assert bad_hash != a.settlement_hash
 
     def test_billed_exact_zero_fails(self, tmp_path: Path) -> None:

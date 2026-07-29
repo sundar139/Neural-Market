@@ -29,7 +29,6 @@ import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime
 from decimal import Decimal
 from enum import Enum
 from typing import Any
@@ -209,10 +208,6 @@ class UnitPriceSnapshot:
                 f"no {self.feed_mode!r} unit price for schema {schema!r} in snapshot"
             )
         return Decimal(self.schema_prices[schema])
-
-    def is_expired(self, now_utc: datetime) -> bool:
-        """Return whether the snapshot has expired at ``now_utc``."""
-        return now_utc >= datetime.fromisoformat(self.expires_at_utc)
 
 
 def parse_unit_price_snapshot(

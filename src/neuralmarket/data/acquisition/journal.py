@@ -632,65 +632,6 @@ class RequestJournal:
             ).rowcount
         return bool(count)
 
-    def consume_authorization(
-        self, *, plan_hash: str, authorization_hash: str, consumed_at: str
-    ) -> bool:
-        """Atomically consume a plan authorization; return false if already used."""
-        try:
-            with self._connection:
-                self._connection.execute(
-                    """
-                    INSERT INTO consumed_authorizations
-                        (plan_hash, authorization_hash, consumed_at)
-                    VALUES (?, ?, ?)
-                    """,
-                    (plan_hash, authorization_hash, consumed_at),
-                )
-        except sqlite3.IntegrityError:
-            return False
-        return True
-
-    def consume_authorization_and_create_execution(
-        self,
-        *,
-        plan_hash: str,
-        authorization_hash: str,
-        consumed_at: str,
-        execution_id: str,
-        maximum_authorized_spend_usd: str,
-        currency: str,
-    ) -> bool:
-        """Consume authorization and create the execution attempt atomically."""
-        try:
-            with self._connection:
-                self._connection.execute(
-                    """
-                    INSERT INTO consumed_authorizations
-                        (plan_hash, authorization_hash, consumed_at, execution_id,
-                         maximum_authorized_spend_usd, currency)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        plan_hash,
-                        authorization_hash,
-                        consumed_at,
-                        execution_id,
-                        maximum_authorized_spend_usd,
-                        currency,
-                    ),
-                )
-                self._connection.execute(
-                    """
-                    INSERT INTO execution_attempts
-                        (execution_id, plan_hash, authorization_hash, started_at, status)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (execution_id, plan_hash, authorization_hash, consumed_at, "authorized"),
-                )
-        except sqlite3.IntegrityError:
-            return False
-        return True
-
     def upsert(self, entry: JournalEntry) -> None:
         """Insert or update ``entry``'s row, rejecting illegal state transitions."""
         with self._connection:

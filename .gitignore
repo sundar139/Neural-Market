@@ -51,6 +51,12 @@ reports/data/*.local.json
 reports/data/*.local.patch
 reports/data/*.json
 
+# Local operational acquisition evidence (cost, execution, quality, reconciliation)
+reports/data/cost/
+reports/data/execution/
+reports/data/quality/
+reports/data/reconciliation/
+
 # Jupyter
 .ipynb_checkpoints/
 

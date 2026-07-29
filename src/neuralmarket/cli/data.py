@@ -1083,16 +1083,6 @@ def _validate_pilot_request_plan_schema(root: Path, payload: dict[str, Any]) -> 
         )
 
 
-def _pilot_manifest_sort_key(request_json: dict[str, Any]) -> tuple[Any, ...]:
-    return (
-        request_json.get("wave", ""),
-        request_json.get("dataset", ""),
-        request_json.get("schema", ""),
-        request_json.get("session_date") or "0001-01-01",
-        tuple(request_json.get("symbols", ())),
-    )
-
-
 def _recompute_pilot_plan_hash(manifest_payload: dict[str, Any]) -> str:
     """Recompute the canonical pilot hash and validate every finalized request."""
     requests = [AcquisitionRequest.model_validate(item) for item in manifest_payload["requests"]]

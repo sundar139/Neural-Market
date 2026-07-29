@@ -59,10 +59,6 @@ class ManifestValidationError(MarketDataError):
     """Raised when a manifest fails schema or hash validation."""
 
 
-class FinalTestAccessError(MarketDataError):
-    """Raised on any attempt to access sealed final-test data."""
-
-
 class ContractValidationError(MarketDataError):
     """Raised when a record violates a canonical contract invariant."""
 
@@ -77,10 +73,6 @@ class AcquisitionNotAuthorizedError(MarketDataError):
     This milestone permits metadata-only acquisition planning; it never acquires,
     previews, or downloads market records.
     """
-
-
-class BudgetPolicyError(MarketDataError):
-    """Raised when a budget policy is internally inconsistent or unsafe."""
 
 
 class PlanValidationError(MarketDataError):

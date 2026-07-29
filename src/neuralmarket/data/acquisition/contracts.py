@@ -270,12 +270,6 @@ class AcquisitionPolicyManifest(BaseModel):
         return self
 
 
-ACQUISITION_CONTRACT_MODELS: dict[str, type[BaseModel]] = {
-    "acquisition_policy": AcquisitionPolicyManifest,
-    "acquisition_plan": AcquisitionPlanReport,
-}
-
-
 def acquisition_report_to_json(report: AcquisitionPlanReport) -> dict[str, Any]:
     """Serialize an :class:`AcquisitionPlanReport` to a plain JSON-safe dict."""
     return report.model_dump(mode="json")
