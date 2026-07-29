@@ -94,6 +94,51 @@ The adapter validates the DBNStore-like response shape and classifies
 post-response serialization/persistence failures without enabling automatic
 retry. Any retry requires fresh explicit authorization and portal attestation.
 
+## Scoped recheck for the remaining requests
+
+After a request settles, the canonical recheck can quote only the remaining
+scope instead of the full plan. `data pilot recheck-cost` accepts a validated
+remaining-scope artifact; the scope is loaded, byte-checked, and validated
+against the canonical plan **before** any provider is constructed:
+
+```powershell
+& .\.venv\Scripts\neuralmarket.exe data pilot recheck-cost `
+    --checkpoint "<completed-checkpoint>" `
+    --expected-checkpoint-sha256 <sha256> `
+    --remaining-scope "reports/data/execution/remaining_scope_24_<head>.local.json" `
+    --expected-remaining-scope-sha256 <sha256> `
+    --output "reports/data/cost/remaining_scope_quote.local.json"
+```
+
+Validation requires the scope's bound plan hash, its recomputed canonical
+scope hash, exactly 24 requests, no duplicate IDs or hashes, exclusion of every
+completed request, and membership of each scoped ID/hash pair in the canonical
+plan. The runtime request inventory must then equal the scope exactly, in
+order, so a completed request can never reach the provider. The drift baseline
+is rebuilt from the frozen manifest's estimates for exactly those requests; a
+scoped request with no committed estimate fails closed. The full 25-request and
+one-request recovery paths are unchanged, and the three modes are mutually
+exclusive.
+
+## Portal source evidence
+
+A completed portal attestation may carry a `source_evidence` block binding what
+the portal actually displayed to a hashed local sanitized file: observation
+timestamp and timezone, billing-cycle bounds, displayed usage, balance,
+credits, configured limit, remaining capacity, source SHA-256, source
+reference, source classification, reviewer, review method, and expiry. The
+block is optional, so historical attestations remain valid, and it is barred
+from template artifacts. It is covered by the attestation's own hash.
+
+The portal displays bounded values, so usage is stored as all three of the
+display text, a relation, and the exact Decimal bound it implies — `<$0.01`
+becomes `usage_display_text="<$0.01"`, `usage_relation="lt"`,
+`usage_amount_usd="0.01"` — rather than inventing a precision the UI never
+gave. Every capacity check uses that bound conservatively: with a USD 5.00
+limit, `<$0.01` yields USD 4.99 of remaining capacity. All monetary values are
+`Decimal`; none passes through a binary float. Evidence is valid for 30 minutes
+from observation, matching the existing portal-attestation policy.
+
 ## Resilient usage-based cost fallback
 
 Cost estimation follows a fail-closed hierarchy: (1) Databento

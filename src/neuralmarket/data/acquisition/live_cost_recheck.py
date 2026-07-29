@@ -25,6 +25,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 
+from neuralmarket.data.acquisition.authorization import RemainingRequestScope
 from neuralmarket.data.acquisition.cost_estimation import (
     CostSource,
     PlanCostEntry,
@@ -170,12 +171,27 @@ def _validate_quote_plan(
     requests: list[AcquisitionRequest],
     plan_hash: str,
     recovery_plan: RecoveryPlan | None,
+    remaining_scope: RemainingRequestScope | None = None,
 ) -> None:
-    if recovery_plan is None:
+    if recovery_plan is not None and remaining_scope is not None:
+        raise CostRecheckError("recovery plan and remaining scope are mutually exclusive")
+    if recovery_plan is not None:
+        if plan_hash != recovery_plan.plan_hash or tuple(requests) != recovery_plan.requests:
+            raise CostRecheckError("recovery quote plan identity mismatch")
+        return
+    if remaining_scope is None:
         validate_canonical_pilot_plan(requests)
         return
-    if plan_hash != recovery_plan.plan_hash or tuple(requests) != recovery_plan.requests:
-        raise CostRecheckError("recovery quote plan identity mismatch")
+    # Scoped run: the runtime inventory must equal the scope exactly, in order.
+    if remaining_scope.source_plan_hash != plan_hash:
+        raise CostRecheckError("remaining scope is bound to a different plan")
+    if [request.request_id for request in requests] != remaining_scope.remaining_request_ids:
+        raise CostRecheckError("quote inventory does not equal the remaining scope")
+    if [request.request_hash for request in requests] != remaining_scope.remaining_request_hashes:
+        raise CostRecheckError("quote inventory hashes do not equal the remaining scope")
+    completed = set(remaining_scope.completed_request_ids)
+    if any(request.request_id in completed for request in requests):
+        raise CostRecheckError("a completed request may never be quoted")
 
 
 def validate_resume_evidence(
@@ -187,9 +203,10 @@ def validate_resume_evidence(
     request_manifest_sha256: str,
     source_evidence_sha256: str,
     recovery_plan: RecoveryPlan | None = None,
+    remaining_scope: RemainingRequestScope | None = None,
 ) -> ResumeEvidence:
     """Validate prior quote evidence fully before any provider construction."""
-    _validate_quote_plan(requests, plan_hash, recovery_plan)
+    _validate_quote_plan(requests, plan_hash, recovery_plan, remaining_scope)
     version = payload.get("schema_version")
     if version not in {"pilot-fresh-cost-recheck-v1", "pilot-cost-recheck-v2"}:
         raise CostRecheckError("resume evidence schema/version is unsupported")
@@ -413,11 +430,13 @@ def recheck_costs(
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     resume: ResumeEvidence | None = None,
     recovery_plan: RecoveryPlan | None = None,
+    remaining_scope: RemainingRequestScope | None = None,
 ) -> CostRecheckResult:
     """Quote a frozen plan or only its validated unavailable resume targets.
 
-    ``requests`` must be the canonical 25-request pilot plan or the exact request
-    tuple of a validated one-request recovery plan. Any other shape is rejected
+    ``requests`` must be the canonical 25-request pilot plan, the exact request
+    tuple of a validated one-request recovery plan, or exactly the 24 requests of
+    a validated :class:`RemainingRequestScope`. Any other shape is rejected
     before a single quote, preventing cross-product expansion.
     A quote that fails its bounded attempts marks the run ``incomplete`` and
     ``authorization_ready = False`` while preserving partial evidence. Completed
@@ -430,7 +449,7 @@ def recheck_costs(
         raise CostRecheckError("max_attempts must be >= 1")
 
     # Exact frozen shape (rejects any broadened / cross-product plan).
-    _validate_quote_plan(requests, plan_hash, recovery_plan)
+    _validate_quote_plan(requests, plan_hash, recovery_plan, remaining_scope)
     preserved = [quote for quote in resume.quotes if quote.status == "quoted"] if resume else []
     preserved_ids = {quote.request_id for quote in preserved}
     target_ids = (

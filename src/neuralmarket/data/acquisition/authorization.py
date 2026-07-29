@@ -140,6 +140,78 @@ def _scope_canonical(payload: dict[str, object]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def validate_remaining_scope(
+    scope: RemainingRequestScope,
+    *,
+    canonical_requests: list[Any],
+    source_plan_hash: str,
+) -> None:
+    """Fail closed unless ``scope`` is a faithful subset of the canonical plan.
+
+    Checks the bound plan identity, the scope's own canonical hash, the exact
+    24-request size, duplicate IDs and hashes, completed-request exclusion, and
+    that every scoped ID/hash pair appears in the canonical plan with the same
+    pairing. Call this before constructing any provider.
+
+    Args:
+        scope: The remaining-request scope under review.
+        canonical_requests: The canonical 25-request pilot plan.
+        source_plan_hash: The plan hash the scope must be bound to.
+
+    Raises:
+        AuthorizationError: On any mismatch, with a machine-readable reason.
+    """
+    if not hmac.compare_digest(scope.source_plan_hash, source_plan_hash):
+        raise AuthorizationError("scope_plan_hash_mismatch", "scope is bound to a different plan")
+
+    recomputed = _scope_canonical(
+        {
+            "scope_version": scope.scope_version,
+            "source_plan_hash": scope.source_plan_hash,
+            "derivation_rule": scope.derivation_rule,
+            "completed_request_ids": scope.completed_request_ids,
+            "completed_request_hashes": scope.completed_request_hashes,
+            "remaining_request_ids": scope.remaining_request_ids,
+            "remaining_request_hashes": scope.remaining_request_hashes,
+        }
+    )
+    if not hmac.compare_digest(recomputed, scope.scope_hash):
+        raise AuthorizationError("scope_hash_mismatch", "scope_hash does not match the payload")
+
+    if len(scope.remaining_request_ids) != 24:
+        raise AuthorizationError(
+            "scope_request_count",
+            f"remaining scope must contain exactly 24 requests, got "
+            f"{len(scope.remaining_request_ids)}",
+        )
+    if len(set(scope.remaining_request_hashes)) != len(scope.remaining_request_hashes):
+        raise AuthorizationError(
+            "scope_duplicate_hash", "remaining request hashes contain a duplicate"
+        )
+    if set(scope.remaining_request_hashes) & set(scope.completed_request_hashes):
+        raise AuthorizationError(
+            "scope_completed_included", "a completed request hash appears in the remaining scope"
+        )
+
+    canonical_pairs = {(item.request_id, item.request_hash) for item in canonical_requests}
+    for request_id, request_hash in zip(
+        scope.remaining_request_ids, scope.remaining_request_hashes, strict=True
+    ):
+        if (request_id, request_hash) not in canonical_pairs:
+            raise AuthorizationError(
+                "scope_unknown_request",
+                f"scoped request is not in the canonical plan: {request_id}",
+            )
+    for request_id, request_hash in zip(
+        scope.completed_request_ids, scope.completed_request_hashes, strict=True
+    ):
+        if (request_id, request_hash) not in canonical_pairs:
+            raise AuthorizationError(
+                "scope_unknown_completed",
+                f"completed request is not in the canonical plan: {request_id}",
+            )
+
+
 # ── Evidence reference ───────────────────────────────────────────────
 
 

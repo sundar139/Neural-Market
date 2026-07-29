@@ -1,8 +1,8 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "neuralmarket:contract:pilot_portal_attestation:1.2",
+  "$id": "neuralmarket:contract:pilot_portal_attestation:1.3",
   "title": "Pilot portal cost attestation",
-  "description": "Short-lived manual operator record of Databento portal facts for the bound pilot scope. A completed artifact records either the exact displayed request estimate or explicitly that no request estimate was displayed. Historical numeric v1 artifacts without portal_estimate_status retain their original displayed-estimate meaning. Explicitly binds to the approved repository revision. Complements (does not replace) the execution-layer portal_limit_attestation. Never stores portal cookies, account identifiers, credentials, or screenshots.",
+  "description": "Short-lived manual operator record of Databento portal facts for the bound pilot scope. A completed artifact records either the exact displayed request estimate or explicitly that no request estimate was displayed. Historical numeric v1 artifacts without portal_estimate_status retain their original displayed-estimate meaning. The optional source_evidence block binds sanitized portal-account facts (billing cycle, displayed usage, balance, credits, limit, remaining capacity) to a hashed local source file; a bounded display such as \"<$0.01\" is recorded verbatim with a relation and its exact Decimal bound rather than an invented value. Explicitly binds to the approved repository revision. Complements (does not replace) the execution-layer portal_limit_attestation. Never stores portal cookies, account identifiers, credentials, or screenshots.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -95,6 +95,52 @@
     "attestation_hash": {
       "type": ["string", "null"],
       "pattern": "^[0-9a-f]{64}$"
+    },
+    "source_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_version",
+        "observed_at",
+        "timezone",
+        "billing_cycle_start",
+        "billing_cycle_end",
+        "usage_display_text",
+        "usage_relation",
+        "usage_amount_usd",
+        "currency",
+        "configured_limit_usd",
+        "source_evidence_sha256",
+        "source_reference",
+        "source_classification",
+        "reviewer",
+        "review_method",
+        "expires_at"
+      ],
+      "properties": {
+        "contract_version": {"const": "portal-source-evidence-v1"},
+        "observed_at": {"type": "string", "format": "date-time"},
+        "timezone": {"type": "string", "minLength": 1},
+        "billing_cycle_start": {"type": "string", "format": "date-time"},
+        "billing_cycle_end": {"type": "string", "format": "date-time"},
+        "usage_display_text": {"type": "string", "minLength": 1},
+        "usage_relation": {"type": "string", "enum": ["exact", "lt", "lte"]},
+        "usage_amount_usd": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"},
+        "currency": {"const": "USD"},
+        "configured_limit_usd": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+$"},
+        "account_balance_usd": {"type": ["string", "null"], "pattern": "^[0-9]+\\.[0-9]+$"},
+        "remaining_credits_usd": {"type": ["string", "null"], "pattern": "^[0-9]+\\.[0-9]+$"},
+        "remaining_available_usd": {"type": ["string", "null"], "pattern": "^[0-9]+\\.[0-9]+$"},
+        "source_evidence_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "source_reference": {"type": "string", "minLength": 1},
+        "source_classification": {
+          "type": "string",
+          "enum": ["sanitized_screenshot", "sanitized_written_attestation"]
+        },
+        "reviewer": {"type": "string", "minLength": 1},
+        "review_method": {"type": "string", "minLength": 1},
+        "expires_at": {"type": "string", "format": "date-time"}
+      }
     }
   },
   "allOf": [
@@ -104,7 +150,12 @@
         "properties": {"template_only": {"const": true}}
       },
       "then": {
-        "not": {"required": ["portal_estimate_status"]},
+        "not": {
+          "anyOf": [
+            {"required": ["portal_estimate_status"]},
+            {"required": ["source_evidence"]}
+          ]
+        },
         "properties": {
           "attested": {"const": false},
           "portal_estimate_usd": {"type": "null"},

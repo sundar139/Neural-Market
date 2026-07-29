@@ -96,6 +96,190 @@ def _args(checkpoint: Path, manifest: Path, sha: str, out: Path, attempts: Path)
     ]
 
 
+def _scope_artifact(tmp_path: Path, plan_hash: str) -> tuple[Path, str, str, list[str]]:
+    """Write a valid 24-request scope artifact derived from the config-built plan."""
+    from neuralmarket.data.acquisition.authorization import build_remaining_scope
+    from neuralmarket.data.acquisition.requests import (
+        build_pilot_request_plan,
+        load_pilot_config,
+    )
+
+    root = Path(__file__).resolve().parents[2]
+    plan = build_pilot_request_plan(
+        load_pilot_config(root / "configs/data/acquisition/pilot_january_2019.yaml")
+    )
+    completed, remaining = plan[0], plan[1:]
+    scope = build_remaining_scope(
+        source_plan_hash=plan_hash,
+        completed_request_ids=[completed.request_id],
+        completed_request_hashes=[completed.request_hash],
+        remaining_request_ids=[item.request_id for item in remaining],
+        remaining_request_hashes=[item.request_hash for item in remaining],
+    )
+    path = tmp_path / "remaining_scope.json"
+    path.write_text(json.dumps(scope.model_dump(mode="json")), encoding="utf-8")
+    sha = hashlib.sha256(path.read_bytes()).hexdigest()
+    return path, sha, completed.request_id, [item.request_id for item in remaining]
+
+
+def _manifest_with_estimates(tmp_path: Path, plan_hash: str, estimate: str) -> Path:
+    """A frozen manifest carrying a committed estimate per request, as production does."""
+    from neuralmarket.data.acquisition.requests import (
+        build_pilot_request_plan,
+        load_pilot_config,
+    )
+
+    root = Path(__file__).resolve().parents[2]
+    plan = build_pilot_request_plan(
+        load_pilot_config(root / "configs/data/acquisition/pilot_january_2019.yaml")
+    )
+    manifest = tmp_path / "request_manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "plan_hash": plan_hash,
+                "requests": [
+                    {"request_id": item.request_id, "estimated_cost": estimate} for item in plan
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return manifest
+
+
+def test_recheck_cost_with_remaining_scope_quotes_exactly_24(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    checkpoint, _, sha = _prepare(monkeypatch, tmp_path, cost="0.001")
+    manifest = _manifest_with_estimates(tmp_path, "a" * 64, "0.001")
+    scope_path, scope_sha, completed_id, remaining_ids = _scope_artifact(tmp_path, "a" * 64)
+    quoted: list[str] = []
+    monkeypatch.setattr(
+        data_module,
+        "_run_isolated_metadata",
+        lambda **kw: quoted.append(kw["request"].request_id) or _ok("0.001"),
+    )
+    out = tmp_path / "scoped.json"
+    result = runner.invoke(
+        app,
+        [
+            *_args(checkpoint, manifest, sha, out, tmp_path / "scoped-attempts.json"),
+            "--remaining-scope",
+            str(scope_path),
+            "--expected-remaining-scope-sha256",
+            scope_sha,
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert quoted == remaining_ids
+    assert len(quoted) == 24
+    assert completed_id not in quoted
+    evidence = json.loads(out.read_text(encoding="utf-8"))
+    assert evidence["provider_call_inventory"]["get_cost"] == 24
+    assert len(evidence["quotes"]) == 24
+    assert evidence["purchase_authorized"] is False
+
+
+def test_recheck_cost_rejects_scope_sha_mismatch_before_provider(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    checkpoint, manifest, sha = _prepare(monkeypatch, tmp_path, cost="0.001")
+    scope_path, _, _, _ = _scope_artifact(tmp_path, "a" * 64)
+    monkeypatch.setattr(
+        data_module, "_load_dotenv", lambda root: pytest.fail("must reject before key lookup")
+    )
+    monkeypatch.setattr(
+        data_module,
+        "_pilot_metadata_provider_factory",
+        lambda: pytest.fail("must reject before provider construction"),
+    )
+    out = tmp_path / "never.json"
+    result = runner.invoke(
+        app,
+        [
+            *_args(checkpoint, manifest, sha, out, tmp_path / "never-attempts.json"),
+            "--remaining-scope",
+            str(scope_path),
+            "--expected-remaining-scope-sha256",
+            "0" * 64,
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert not out.exists()
+
+
+def test_recheck_cost_rejects_scope_bound_to_another_plan_before_provider(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    checkpoint, manifest, sha = _prepare(monkeypatch, tmp_path, cost="0.001")
+    scope_path, scope_sha, _, _ = _scope_artifact(tmp_path, "b" * 64)
+    monkeypatch.setattr(
+        data_module,
+        "_pilot_metadata_provider_factory",
+        lambda: pytest.fail("must reject before provider construction"),
+    )
+    out = tmp_path / "never.json"
+    result = runner.invoke(
+        app,
+        [
+            *_args(checkpoint, manifest, sha, out, tmp_path / "never-attempts.json"),
+            "--remaining-scope",
+            str(scope_path),
+            "--expected-remaining-scope-sha256",
+            scope_sha,
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert not out.exists()
+
+
+def test_recheck_cost_rejects_a_scope_without_frozen_estimates(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A missing drift baseline must fail closed, never silently count as zero."""
+    checkpoint, manifest, sha = _prepare(monkeypatch, tmp_path, cost="0.001")
+    scope_path, scope_sha, _, _ = _scope_artifact(tmp_path, "a" * 64)
+    monkeypatch.setattr(
+        data_module,
+        "_pilot_metadata_provider_factory",
+        lambda: pytest.fail("must reject before provider construction"),
+    )
+    out = tmp_path / "never.json"
+    result = runner.invoke(
+        app,
+        [
+            *_args(checkpoint, manifest, sha, out, tmp_path / "never-attempts.json"),
+            "--remaining-scope",
+            str(scope_path),
+            "--expected-remaining-scope-sha256",
+            scope_sha,
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert not out.exists()
+
+
+def test_recheck_cost_requires_both_scope_options_together(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    checkpoint, manifest, sha = _prepare(monkeypatch, tmp_path, cost="0.001")
+    scope_path, _, _, _ = _scope_artifact(tmp_path, "a" * 64)
+    result = runner.invoke(
+        app,
+        [
+            *_args(checkpoint, manifest, sha, tmp_path / "never.json", tmp_path / "never-a.json"),
+            "--remaining-scope",
+            str(scope_path),
+        ],
+    )
+    assert result.exit_code != 0
+
+
 def test_next_resume_output_uses_first_absent_suffix(tmp_path: Path) -> None:
     source = tmp_path / "quote.local.json"
     first = tmp_path / "quote_resume1.local.json"

@@ -32,8 +32,10 @@ from neuralmarket.data.acquisition.attestation import (
 )
 from neuralmarket.data.acquisition.authorization import (
     AuthorizationError,
+    RemainingRequestScope,
     load_authorization,
     validate_authorization,
+    validate_remaining_scope,
 )
 from neuralmarket.data.acquisition.billing_reconciliation import (
     BillingReconciliationError,
@@ -1073,6 +1075,34 @@ def _pilot_request_manifest_json(request: AcquisitionRequest) -> dict[str, Any]:
     return request.model_dump(mode="json", by_alias=True)
 
 
+def _scoped_prior_total(scope: RemainingRequestScope, manifest_payload: dict[str, Any]) -> Decimal:
+    """Sum the frozen manifest estimates for exactly the scoped requests.
+
+    The 25-request drift baseline would overstate a 24-request scope, so the
+    baseline is rebuilt from the same frozen manifest the plan hash covers. A
+    scoped request with no committed estimate fails closed rather than
+    contributing zero and inflating the apparent drift.
+    """
+    estimates = {
+        str(item.get("request_id")): item.get("estimated_cost")
+        for item in manifest_payload.get("requests", [])
+        if isinstance(item, dict)
+    }
+    missing = [
+        request_id
+        for request_id in scope.remaining_request_ids
+        if not isinstance(estimates.get(request_id), str)
+    ]
+    if missing:
+        raise PlanValidationError(
+            f"Frozen manifest has no estimate for {len(missing)} scoped request(s)."
+        )
+    return sum(
+        (Decimal(cast(str, estimates[request_id])) for request_id in scope.remaining_request_ids),
+        Decimal(0),
+    )
+
+
 def _validate_pilot_request_plan_schema(root: Path, payload: dict[str, Any]) -> None:
     schema = json.loads((root / _PILOT_REQUEST_PLAN_SCHEMA).read_text(encoding="utf-8"))
     validator: Validator = Draft202012Validator(schema)
@@ -1961,6 +1991,16 @@ def pilot_recheck_cost(
         "--journal",
         help="Journal used to revalidate recovery provenance before quoting.",
     ),
+    remaining_scope: Path | None = typer.Option(
+        None,
+        "--remaining-scope",
+        help="Validated remaining-request scope artifact; quotes only its 24 requests.",
+    ),
+    expected_remaining_scope_sha256: str | None = typer.Option(
+        None,
+        "--expected-remaining-scope-sha256",
+        help="Exact 64-lowercase-hex SHA-256 the remaining-scope artifact bytes must match.",
+    ),
 ) -> None:
     """Fresh-quote the exact frozen pilot requests via metadata.get_cost.
 
@@ -1978,6 +2018,13 @@ def pilot_recheck_cost(
 
     configure_logging("INFO")
     root = find_repository_root()
+    if (remaining_scope is None) != (expected_remaining_scope_sha256 is None):
+        raise typer.BadParameter(
+            "--remaining-scope and --expected-remaining-scope-sha256 must be used together"
+        )
+    remaining_scope = (
+        _resolve_under_root(root, remaining_scope) if remaining_scope is not None else None
+    )
     config = _resolve_under_root(root, config)
     checkpoint = _resolve_under_root(root, checkpoint)
     request_manifest = _resolve_under_root(root, request_manifest)
@@ -2043,6 +2090,38 @@ def pilot_recheck_cost(
             ):
                 raise PlanValidationError("Recovery plan parent-provenance bindings mismatch.")
         requests = list(recovery_plan.requests) if recovery_plan else checkpoint_requests
+        scope: RemainingRequestScope | None = None
+        scoped_prior: Decimal | None = None
+        if remaining_scope is not None:
+            if recovery_plan is not None:
+                raise PlanValidationError(
+                    "A recovery plan and a remaining scope cannot be combined."
+                )
+            if not is_valid_sha256(expected_remaining_scope_sha256 or ""):
+                raise PlanValidationError(
+                    "--expected-remaining-scope-sha256 must be 64 lowercase hex"
+                )
+            if _sha256_file(remaining_scope) != expected_remaining_scope_sha256:
+                raise PlanValidationError("Remaining-scope artifact SHA-256 mismatch; refusing.")
+            scope_payload = load_acquisition_json(remaining_scope)
+            scope = RemainingRequestScope.model_validate(
+                {
+                    key: value
+                    for key, value in scope_payload.items()
+                    if key in RemainingRequestScope.model_fields
+                }
+            )
+            validate_remaining_scope(
+                scope,
+                canonical_requests=checkpoint_requests,
+                source_plan_hash=str(manifest_payload.get("plan_hash", "")),
+            )
+            by_id = {item.request_id: item for item in checkpoint_requests}
+            requests = [by_id[request_id] for request_id in scope.remaining_request_ids]
+            scoped_prior = _scoped_prior_total(scope, manifest_payload)
+    except AuthorizationError as exc:
+        _logger.error("Remaining scope rejected before provider construction: %s", exc)
+        raise typer.Exit(code=1) from exc
     except ConfigurationError as exc:
         _logger.error("Configuration error: %s", exc)
         raise typer.Exit(code=2) from exc
@@ -2082,6 +2161,7 @@ def pilot_recheck_cost(
                 request_manifest_sha256=request_manifest_sha,
                 source_evidence_sha256=_sha256_file(resume_from),
                 recovery_plan=recovery_plan,
+                remaining_scope=scope,
             )
         except (CostRecheckError, PlanValidationError, ValueError) as exc:
             _logger.error(
@@ -2118,21 +2198,28 @@ def pilot_recheck_cost(
             prior_raw_total_usd=(
                 Decimal(recovery_plan.estimated_total_cost_usd)
                 if recovery_plan
+                else scoped_prior
+                if scoped_prior is not None
                 else Decimal("0.460514456032759765625")
             ),
             prior_conservative_total_usd=(
                 Decimal(recovery_plan.estimated_total_cost_usd)
                 if recovery_plan
+                else scoped_prior
+                if scoped_prior is not None
                 else Decimal("0.46298506855869970703125")
             ),
             tracked_total_usd=(
                 Decimal(recovery_plan.estimated_total_cost_usd)
                 if recovery_plan
+                else scoped_prior
+                if scoped_prior is not None
                 else Decimal("0.460514456033")
             ),
             max_attempts=pilot_config.metadata_execution.maximum_timeout_attempts,
             resume=resume_state,
             recovery_plan=recovery_plan,
+            remaining_scope=scope,
         )
     except CostRecheckError as exc:
         _logger.error("Fresh cost recheck failed closed: %s", exc)

@@ -13,10 +13,10 @@ import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import jsonschema
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from neuralmarket.core.environment import find_repository_root
 from neuralmarket.data.acquisition.budget import to_decimal
@@ -24,6 +24,11 @@ from neuralmarket.data.manifests import canonical_dumps
 
 _SCHEMA = "data_contracts/portal_limit_attestation.schema.json"
 _METHOD = "manual_portal_review"
+
+#: Maximum portal source-evidence validity window (observation to expiry).
+#: Mirrors ``purchase_review.ATTESTATION_VALIDITY`` so both portal records age out
+#: on the same 30-minute policy.
+PORTAL_EVIDENCE_VALIDITY = timedelta(minutes=30)
 
 
 class PortalAttestationError(ValueError):
@@ -56,6 +61,98 @@ class PortalLimitAttestation(BaseModel):
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("portal-attestation timestamps must be timezone-aware")
         return value.astimezone(UTC)
+
+
+class PortalSourceEvidence(BaseModel):
+    """Sanitized, source-backed record of what the provider portal displayed.
+
+    The portal shows bounded values such as ``<$0.01``. Rather than inventing a
+    precision the UI never gave, the display text is kept verbatim alongside a
+    relation and the exact Decimal bound it implies, and every capacity check
+    uses that bound conservatively.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    contract_version: Literal["portal-source-evidence-v1"]
+    observed_at: datetime
+    timezone: str = Field(min_length=1)
+    billing_cycle_start: datetime
+    billing_cycle_end: datetime
+    usage_display_text: str = Field(min_length=1)
+    usage_relation: Literal["exact", "lt", "lte"]
+    usage_amount_usd: Decimal = Field(ge=Decimal(0))
+    currency: Literal["USD"]
+    configured_limit_usd: Decimal = Field(ge=Decimal(0))
+    account_balance_usd: Decimal | None = None
+    remaining_credits_usd: Decimal | None = None
+    remaining_available_usd: Decimal | None = None
+    source_evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_reference: str = Field(min_length=1)
+    source_classification: Literal["sanitized_screenshot", "sanitized_written_attestation"]
+    reviewer: str = Field(min_length=1)
+    review_method: str = Field(min_length=1)
+    expires_at: datetime
+
+    @field_validator(
+        "usage_amount_usd",
+        "configured_limit_usd",
+        "account_balance_usd",
+        "remaining_credits_usd",
+        "remaining_available_usd",
+        mode="before",
+    )
+    @classmethod
+    def _money(cls, value: Any) -> Any:
+        return value if value is None else to_decimal(value)
+
+    @field_validator("observed_at", "billing_cycle_start", "billing_cycle_end", "expires_at")
+    @classmethod
+    def _utc(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("portal-source-evidence timestamps must be timezone-aware")
+        return value.astimezone(UTC)
+
+    @model_validator(mode="after")
+    def _check_windows(self) -> PortalSourceEvidence:
+        if self.billing_cycle_end <= self.billing_cycle_start:
+            raise ValueError("billing_cycle_end must be after billing_cycle_start")
+        if self.expires_at <= self.observed_at:
+            raise ValueError("expires_at must be after observed_at")
+        if self.expires_at > self.observed_at + PORTAL_EVIDENCE_VALIDITY:
+            raise ValueError("portal source evidence validity exceeds 30 minutes")
+        return self
+
+    @property
+    def conservative_usage_upper_bound_usd(self) -> Decimal:
+        """Return the highest usage the display can possibly represent.
+
+        ``exact`` is already the value; ``lt`` and ``lte`` are both bounded above
+        by the stated amount, so the amount is the conservative figure in all
+        three cases.
+        """
+        return self.usage_amount_usd
+
+    @property
+    def conservative_remaining_capacity_usd(self) -> Decimal:
+        """Return limit minus the conservative usage bound, floored at zero."""
+        return max(Decimal(0), self.configured_limit_usd - self.conservative_usage_upper_bound_usd)
+
+
+def validate_portal_source_evidence(evidence: PortalSourceEvidence, *, now: datetime) -> None:
+    """Fail closed unless the portal source evidence is still current.
+
+    Raises:
+        PortalAttestationError: If ``now`` is naive, or the evidence is
+            future-dated or expired.
+    """
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise PortalAttestationError("validation time must be timezone-aware")
+    now = now.astimezone(UTC)
+    if evidence.observed_at > now:
+        raise PortalAttestationError("portal source evidence is observed in the future")
+    if evidence.expires_at <= now:
+        raise PortalAttestationError("portal source evidence has expired")
 
 
 def compute_attestation_hash(payload: dict[str, Any]) -> str:
