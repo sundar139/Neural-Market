@@ -483,10 +483,19 @@ def validate_authorization(
         raise AuthorizationError("already_consumed", "authorization already consumed")
 
     # ── spend caps ──────────────────────────────────────────────────
-    if (
-        auth.maximum_spend_usd != expected_maximum_spend_usd
-        or auth.maximum_single_request_usd != expected_maximum_single_request_usd
-    ):
+    # The authorizer may delegate less than the plan allows: a $0.50 ceiling
+    # under a $5.00 plan authorizes $0.50, never $5.00. The per-request cap is
+    # a plan invariant and must still match exactly.
+    if auth.maximum_spend_usd <= Decimal(0):
+        raise AuthorizationError(
+            "authorization_ceiling_not_positive", "maximum_spend_usd must be greater than zero"
+        )
+    if auth.maximum_spend_usd > expected_maximum_spend_usd:
+        raise AuthorizationError(
+            "authorization_ceiling_above_plan",
+            "maximum_spend_usd exceeds the plan maximum",
+        )
+    if auth.maximum_single_request_usd != expected_maximum_single_request_usd:
         raise AuthorizationError("spend_cap_mismatch", "authorization spend caps do not match plan")
 
     # ── currency ────────────────────────────────────────────────────

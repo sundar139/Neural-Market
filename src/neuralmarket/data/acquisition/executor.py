@@ -34,6 +34,7 @@ from neuralmarket.data.acquisition.authorization import (
     build_remaining_scope,
     load_authorization,
     validate_authorization,
+    validate_remaining_scope,
 )
 from neuralmarket.data.acquisition.budget import to_decimal
 from neuralmarket.data.acquisition.estimation import MetadataEstimator
@@ -442,8 +443,14 @@ class PilotExecutor:
                 "invalid_authorization", "authorization artifact hash does not match execution"
             )
 
+        if execution_scope is None:
+            raise ExecutorGuardError(
+                "missing_execution_scope",
+                "a validated remaining-request scope is required before paid provider construction",
+            )
+
         try:
-            _scope = execution_scope or _make_synthetic_scope(auth.pilot_plan_hash)
+            _scope = execution_scope
             _cost_sha = cost_evidence_sha256 or (
                 auth.cost_evidence.evidence_sha256 if auth.cost_evidence else "0" * 64
             )
@@ -487,6 +494,19 @@ class PilotExecutor:
                 "missing_authorized_requests",
                 "finalized request list is required before paid provider construction",
             )
+        # Only the scoped requests may be paid for, so spend is measured over the
+        # scope — not over the whole plan, which still carries the settled request.
+        if recovery_plan is None:
+            scoped_pairs = set(
+                zip(_scope.remaining_request_ids, _scope.remaining_request_hashes, strict=True)
+            )
+        else:
+            # One-request recovery carries its own identity contract, validated
+            # by validate_recovery_plan; it has no remaining-scope subset.
+            scoped_pairs = {
+                (request.request_id, request.request_hash) for request in authorized_requests
+            }
+        scoped_ids = {request_id for request_id, _ in scoped_pairs}
         authorized_hashes: set[str] = set()
         authorized_total = Decimal("0")
         authorized_maximum = Decimal("0")
@@ -499,12 +519,29 @@ class PilotExecutor:
                     "invalid_authorized_request",
                     f"authorized request rejected: {request.request_id}",
                 ) from exc
+            if request.request_id not in scoped_ids:
+                continue
+            if (request.request_id, request.request_hash) not in scoped_pairs:
+                raise ExecutorGuardError(
+                    "execution_scope_request_mismatch",
+                    f"scoped request hash does not match the plan: {request.request_id}",
+                )
             authorized_hashes.add(request.request_hash)
             authorized_total += cost
             authorized_maximum = max(authorized_maximum, cost)
+        if len(authorized_hashes) != len(scoped_pairs):
+            raise ExecutorGuardError(
+                "execution_scope_request_mismatch",
+                "authorized requests do not cover the execution scope exactly",
+            )
         if authorized_total > expected_maximum_spend_usd:
             raise ExecutorGuardError(
                 "plan_cap_exceeded", "authorized request plan exceeds total cap"
+            )
+        if authorized_total > auth.maximum_spend_usd:
+            raise ExecutorGuardError(
+                "authorization_ceiling_exceeded",
+                "scoped request cost exceeds the authorized maximum spend",
             )
         if authorized_maximum > expected_maximum_single_request_usd:
             raise ExecutorGuardError(
@@ -611,6 +648,8 @@ class PilotExecutor:
                 authorization_hash=auth.authorization_hash,
                 execution_id=execution_id,
                 consumed_at=datetime.now(UTC).isoformat(),
+                # The authorizer's exact ceiling, never the plan maximum.
+                maximum_authorized_spend_usd=str(auth.maximum_spend_usd),
             ):
                 raise ExecutorGuardError(
                     "authorization_consumption_failed",
@@ -692,12 +731,30 @@ class PilotExecutionCoordinator:
         now: datetime,
         recovery_plan: RecoveryPlan | None = None,
         recovery_purchase_package: RecoveryPurchasePackage | None = None,
+        execution_scope: RemainingRequestScope | None = None,
     ) -> PilotExecutionResult:
-        """Execute or safely resume requests, stopping at the first unresolved state."""
+        """Execute or safely resume requests, stopping at the first unresolved state.
+
+        ``requests`` is the frozen plan and fixes its hash; ``execution_scope``
+        names the subset that may actually be paid for. Ordinary paid execution
+        requires the scope — there is no whole-plan fallback.
+        """
         if not hmac.compare_digest(
             compute_plan_hash(requests, plan_bindings, plan_metadata), plan_hash
         ):
             raise ExecutorGuardError("plan_hash_mismatch")
+        if recovery_plan is None:
+            if execution_scope is None:
+                raise ExecutorGuardError(
+                    "missing_execution_scope",
+                    "paid execution requires a validated remaining-request scope",
+                )
+            try:
+                validate_remaining_scope(
+                    execution_scope, canonical_requests=requests, source_plan_hash=plan_hash
+                )
+            except AuthorizationError as exc:
+                raise ExecutorGuardError("invalid_execution_scope", exc.reason) from exc
         if recovery_plan is not None and (
             recovery_plan.plan_hash != plan_hash
             or tuple(requests) != recovery_plan.requests
@@ -747,8 +804,16 @@ class PilotExecutionCoordinator:
                 for request in requests:
                     executor.transition(request.request_id, "preflight_validated")
 
+            if execution_scope is None:
+                execution_requests = requests
+            else:
+                by_id = {request.request_id: request for request in requests}
+                execution_requests = [
+                    by_id[request_id] for request_id in execution_scope.remaining_request_ids
+                ]
+
             actions: list[tuple[AcquisitionRequest, RecoveryAction]] = []
-            for request in requests:
+            for request in execution_requests:
                 entry = journal.get(request.request_id)
                 raw, normalized, quality, partial = lifecycle.inspect(request, entry)
                 action = select_recovery_action(
@@ -809,6 +874,16 @@ class PilotExecutionCoordinator:
                     ),
                     recovery_plan=recovery_plan,
                     expected_authorization_hash=authorization_hash,
+                    # ponytail: ordinary paid execution always carries the real
+                    # scope (validated above). One-request recovery has no
+                    # remaining-scope contract — its authorizations are minted
+                    # against the placeholder — so it keeps the placeholder until
+                    # a recovery-scope milestone re-mints them.
+                    execution_scope=(
+                        execution_scope
+                        if execution_scope is not None
+                        else _make_synthetic_scope(plan_hash)
+                    ),
                 )
 
             paid_calls = downloaded_records = skipped = 0

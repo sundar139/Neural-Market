@@ -39,17 +39,31 @@ CONFIG_PATH = (
 )
 
 
-def _write_valid_auth_file(path: Path, *, plan_hash: str = "p" * 64, **overrides: object) -> str:
-    import json
-
-    now = datetime.now(UTC)
-    scope = build_remaining_scope(
+def _default_scope(plan_hash: str = "p" * 64):
+    """Mirror the scope _write_valid_auth_file mints when none is supplied."""
+    return build_remaining_scope(
         source_plan_hash=plan_hash,
         completed_request_ids=["completed-00000000001"],
         completed_request_hashes=["b" * 64],
         remaining_request_ids=[f"remaining-{i:08x}" for i in range(24)],
         remaining_request_hashes=[f"{i:064x}" for i in range(24)],
     )
+
+
+def _write_valid_auth_file(
+    path: Path, *, plan_hash: str = "p" * 64, scope: object = None, **overrides: object
+) -> str:
+    import json
+
+    now = datetime.now(UTC)
+    if scope is None:
+        scope = build_remaining_scope(
+            source_plan_hash=plan_hash,
+            completed_request_ids=["completed-00000000001"],
+            completed_request_hashes=["b" * 64],
+            remaining_request_ids=[f"remaining-{i:08x}" for i in range(24)],
+            remaining_request_hashes=[f"{i:064x}" for i in range(24)],
+        )
     payload = {
         "authorization_version": "2.0",
         "pilot_plan_hash": plan_hash,
@@ -85,8 +99,7 @@ def _write_valid_auth_file(path: Path, *, plan_hash: str = "p" * 64, **overrides
     return str(payload["authorization_hash"])
 
 
-def _finalized_request():
-    draft = build_pilot_request_plan(load_pilot_config(CONFIG_PATH))[0]
+def _finalize(draft):
     estimate = MetadataEstimate(
         dataset=draft.dataset,
         schema=draft.schema_name,
@@ -102,14 +115,29 @@ def _finalized_request():
     return finalize_request(draft, estimate, datetime(2026, 1, 1, tzinfo=UTC))
 
 
-def _authorized_plan() -> tuple[str, list, dict[str, object]]:
-    requests = [_finalized_request()]
+def _finalized_request():
+    return _finalize(build_pilot_request_plan(load_pilot_config(CONFIG_PATH))[0])
+
+
+def _authorized_plan() -> tuple[str, list, dict[str, object], object]:
+    """Return the finalized 25-request plan, its bindings, and its 24-request scope."""
+    requests = [
+        _finalize(draft) for draft in build_pilot_request_plan(load_pilot_config(CONFIG_PATH))
+    ]
     bindings: dict[str, object] = {
         "source_manifest_hash": "s" * 64,
         "split_manifest_hash": "v" * 64,
         "acquisition_policy_hash": "a" * 64,
     }
-    return plan_hash(requests, bindings), requests, bindings
+    computed = plan_hash(requests, bindings)
+    scope = build_remaining_scope(
+        source_plan_hash=computed,
+        completed_request_ids=[requests[0].request_id],
+        completed_request_hashes=[requests[0].request_hash],
+        remaining_request_ids=[request.request_id for request in requests[1:]],
+        remaining_request_hashes=[request.request_hash for request in requests[1:]],
+    )
+    return computed, requests, bindings, scope
 
 
 def _mark_preflight_validated(journal: RequestJournal, requests: list) -> None:
@@ -134,6 +162,7 @@ def test_guard_execute_blocks_when_authorization_file_missing(tmp_path) -> None:
             now=datetime.now(UTC),
             paid_provider_factory=factory,
             preflight_passed=True,
+            execution_scope=_default_scope(),
         )
     assert exc.value.reason == "missing_authorization"
     factory.assert_not_called()
@@ -179,6 +208,7 @@ def test_guard_execute_blocks_when_confirm_plan_hash_mismatched(tmp_path) -> Non
             now=datetime.now(UTC),
             paid_provider_factory=factory,
             preflight_passed=True,
+            execution_scope=_default_scope(),
         )
     assert exc.value.reason == "plan_hash_confirmation_mismatch"
     factory.assert_not_called()
@@ -202,6 +232,7 @@ def test_guard_execute_blocks_invalid_authorization(tmp_path) -> None:
             now=datetime.now(UTC),
             paid_provider_factory=factory,
             preflight_passed=True,
+            execution_scope=_default_scope(),
         )
     assert exc.value.reason == "invalid_authorization"
     factory.assert_not_called()
@@ -226,6 +257,7 @@ def test_guard_execute_blocks_template_authorization(tmp_path) -> None:
             now=datetime.now(UTC),
             paid_provider_factory=factory,
             preflight_passed=True,
+            execution_scope=_default_scope(),
         )
     assert exc.value.reason == "invalid_authorization"
     factory.assert_not_called()
@@ -248,6 +280,7 @@ def test_guard_execute_binds_authorization_to_live_plan_caps(tmp_path) -> None:
             now=datetime.now(UTC),
             paid_provider_factory=factory,
             preflight_passed=True,
+            execution_scope=_default_scope(),
             expected_maximum_spend_usd=Decimal("4.99"),
             expected_maximum_single_request_usd=Decimal("0.99"),
         )
@@ -259,9 +292,9 @@ def test_guard_execute_succeeds_only_with_both_valid_guards(tmp_path) -> None:
     journal = RequestJournal(tmp_path / "journal.sqlite")
     executor = PilotExecutor(journal=journal, metadata_estimator=Mock())
     auth_path = tmp_path / "auth.json"
-    plan, requests, bindings = _authorized_plan()
+    plan, requests, bindings, scope = _authorized_plan()
     _mark_preflight_validated(journal, requests)
-    _write_valid_auth_file(auth_path, plan_hash=plan)
+    _write_valid_auth_file(auth_path, plan_hash=plan, scope=scope)
     sentinel_provider = Mock()
     factory = Mock(return_value=sentinel_provider)
     result = executor.guard_execute(
@@ -276,11 +309,12 @@ def test_guard_execute_succeeds_only_with_both_valid_guards(tmp_path) -> None:
         authorized_requests=requests,
         plan_bindings=bindings,
         preflight_passed=True,
+        execution_scope=scope,
     )
     assert result.acquire_range
     factory.assert_called_once()
     assert journal.consumed_authorization_ids() == set()
-    result.acquire_range(requests[0])
+    result.acquire_range(requests[1])
     assert journal.consumed_authorization_ids() == {plan}
 
 
@@ -288,9 +322,9 @@ def test_provider_factory_failure_releases_authorization_reservation(tmp_path) -
     journal = RequestJournal(tmp_path / "journal.sqlite")
     executor = PilotExecutor(journal=journal, metadata_estimator=Mock())
     auth_path = tmp_path / "auth.json"
-    plan, requests, bindings = _authorized_plan()
+    plan, requests, bindings, scope = _authorized_plan()
     _mark_preflight_validated(journal, requests)
-    _write_valid_auth_file(auth_path, plan_hash=plan)
+    _write_valid_auth_file(auth_path, plan_hash=plan, scope=scope)
     with pytest.raises(ExecutorGuardError, match="construction"):
         executor.guard_execute(
             plan_hash=plan,
@@ -304,6 +338,7 @@ def test_provider_factory_failure_releases_authorization_reservation(tmp_path) -
             authorized_requests=requests,
             plan_bindings=bindings,
             preflight_passed=True,
+            execution_scope=scope,
         )
     assert journal.consumed_authorization_ids() == set()
 
@@ -312,9 +347,9 @@ def test_guarded_provider_rejects_duplicate_acquire(tmp_path) -> None:
     journal = RequestJournal(tmp_path / "journal.sqlite")
     executor = PilotExecutor(journal=journal, metadata_estimator=Mock())
     auth_path = tmp_path / "auth.json"
-    plan, requests, bindings = _authorized_plan()
+    plan, requests, bindings, scope = _authorized_plan()
     _mark_preflight_validated(journal, requests)
-    _write_valid_auth_file(auth_path, plan_hash=plan)
+    _write_valid_auth_file(auth_path, plan_hash=plan, scope=scope)
     inner = Mock()
     result = executor.guard_execute(
         plan_hash=plan,
@@ -328,10 +363,11 @@ def test_guarded_provider_rejects_duplicate_acquire(tmp_path) -> None:
         authorized_requests=requests,
         plan_bindings=bindings,
         preflight_passed=True,
+        execution_scope=scope,
     )
-    result.acquire_range(requests[0])
+    result.acquire_range(requests[1])
     with pytest.raises(ExecutorGuardError, match="already acquired"):
-        result.acquire_range(requests[0])
+        result.acquire_range(requests[1])
     inner.acquire_range.assert_called_once()
 
 
@@ -339,9 +375,9 @@ def test_guard_execute_rejects_requests_not_bound_to_plan_hash(tmp_path) -> None
     journal = RequestJournal(tmp_path / "journal.sqlite")
     executor = PilotExecutor(journal=journal, metadata_estimator=Mock())
     auth_path = tmp_path / "auth.json"
-    plan, requests, bindings = _authorized_plan()
+    plan, requests, bindings, scope = _authorized_plan()
     _mark_preflight_validated(journal, requests)
-    _write_valid_auth_file(auth_path, plan_hash=plan)
+    _write_valid_auth_file(auth_path, plan_hash=plan, scope=scope)
     with pytest.raises(ExecutorGuardError) as exc:
         executor.guard_execute(
             plan_hash=plan,
@@ -355,6 +391,7 @@ def test_guard_execute_rejects_requests_not_bound_to_plan_hash(tmp_path) -> None
             authorized_requests=[*requests, *requests],
             plan_bindings=bindings,
             preflight_passed=True,
+            execution_scope=scope,
         )
     assert exc.value.reason == "authorized_requests_plan_mismatch"
 
@@ -365,9 +402,9 @@ def test_guard_execute_rejects_plan_bindings_that_do_not_match_authorization_inp
     journal = RequestJournal(tmp_path / "journal.sqlite")
     executor = PilotExecutor(journal=journal, metadata_estimator=Mock())
     auth_path = tmp_path / "auth.json"
-    plan, requests, bindings = _authorized_plan()
+    plan, requests, bindings, scope = _authorized_plan()
     _mark_preflight_validated(journal, requests)
-    _write_valid_auth_file(auth_path, plan_hash=plan)
+    _write_valid_auth_file(auth_path, plan_hash=plan, scope=scope)
     with pytest.raises(ExecutorGuardError) as exc:
         executor.guard_execute(
             plan_hash=plan,
@@ -381,6 +418,7 @@ def test_guard_execute_rejects_plan_bindings_that_do_not_match_authorization_inp
             authorized_requests=requests,
             plan_bindings={**bindings, "source_manifest_hash": "x" * 64},
             preflight_passed=True,
+            execution_scope=scope,
         )
     assert exc.value.reason == "plan_dependency_mismatch"
 
@@ -389,8 +427,8 @@ def test_guard_execute_requires_journal_preflight_for_each_request(tmp_path) -> 
     journal = RequestJournal(tmp_path / "journal.sqlite")
     executor = PilotExecutor(journal=journal, metadata_estimator=Mock())
     auth_path = tmp_path / "auth.json"
-    plan, requests, bindings = _authorized_plan()
-    _write_valid_auth_file(auth_path, plan_hash=plan)
+    plan, requests, bindings, scope = _authorized_plan()
+    _write_valid_auth_file(auth_path, plan_hash=plan, scope=scope)
     with pytest.raises(ExecutorGuardError) as exc:
         executor.guard_execute(
             plan_hash=plan,
@@ -404,6 +442,7 @@ def test_guard_execute_requires_journal_preflight_for_each_request(tmp_path) -> 
             authorized_requests=requests,
             plan_bindings=bindings,
             preflight_passed=True,
+            execution_scope=scope,
         )
     assert exc.value.reason == "preflight_not_passed"
 
@@ -411,8 +450,8 @@ def test_guard_execute_requires_journal_preflight_for_each_request(tmp_path) -> 
 def test_guard_execute_rejects_consumed_authorization_after_reopen(tmp_path) -> None:
     db_path = tmp_path / "journal.sqlite"
     auth_path = tmp_path / "auth.json"
-    plan, requests, bindings = _authorized_plan()
-    _write_valid_auth_file(auth_path, plan_hash=plan)
+    plan, requests, bindings, scope = _authorized_plan()
+    _write_valid_auth_file(auth_path, plan_hash=plan, scope=scope)
     with RequestJournal(db_path) as journal:
         _mark_preflight_validated(journal, requests)
         executor = PilotExecutor(journal=journal, metadata_estimator=Mock())
@@ -428,6 +467,7 @@ def test_guard_execute_rejects_consumed_authorization_after_reopen(tmp_path) -> 
             authorized_requests=requests,
             plan_bindings=bindings,
             preflight_passed=True,
+            execution_scope=scope,
         )
 
     factory = Mock()
@@ -446,6 +486,7 @@ def test_guard_execute_rejects_consumed_authorization_after_reopen(tmp_path) -> 
                 authorized_requests=requests,
                 plan_bindings=bindings,
                 preflight_passed=True,
+                execution_scope=scope,
             )
     assert exc.value.reason == "invalid_authorization"
     factory.assert_not_called()
@@ -559,7 +600,7 @@ def _consume(
     )
 
 
-def _guard(executor: PilotExecutor, auth_path: Path, plan: str, requests, bindings, factory):
+def _guard(executor: PilotExecutor, auth_path: Path, plan: str, requests, bindings, factory, scope):
     return executor.guard_execute(
         plan_hash=plan,
         authorization_path=auth_path,
@@ -572,38 +613,39 @@ def _guard(executor: PilotExecutor, auth_path: Path, plan: str, requests, bindin
         authorized_requests=requests,
         plan_bindings=bindings,
         preflight_passed=True,
+        execution_scope=scope,
     )
 
 
 def test_distinct_authorization_not_blocked_by_settled_plan_sibling(tmp_path) -> None:
     """A consumed authorization must not conflate with a distinct one for the same plan."""
     journal = RequestJournal(tmp_path / "journal.sqlite")
-    plan, requests, bindings = _authorized_plan()
+    plan, requests, bindings, scope = _authorized_plan()
     _mark_preflight_validated(journal, requests)
     _consume(journal, authorization_hash="1" * 64, plan=plan, execution="exec-settled")
 
     auth_path = tmp_path / "auth.json"
-    _write_valid_auth_file(auth_path, plan_hash=plan, purchase_authorized=False)
+    _write_valid_auth_file(auth_path, plan_hash=plan, scope=scope, purchase_authorized=False)
     factory = Mock()
     executor = PilotExecutor(journal=journal, metadata_estimator=Mock())
     with pytest.raises(ExecutorGuardError) as exc:
-        _guard(executor, auth_path, plan, requests, bindings, factory)
+        _guard(executor, auth_path, plan, requests, bindings, factory, scope)
     assert "purchase_not_authorized" in str(exc.value)
     factory.assert_not_called()
 
 
 def test_exact_authorization_replay_remains_rejected(tmp_path) -> None:
     journal = RequestJournal(tmp_path / "journal.sqlite")
-    plan, requests, bindings = _authorized_plan()
+    plan, requests, bindings, scope = _authorized_plan()
     _mark_preflight_validated(journal, requests)
     auth_path = tmp_path / "auth.json"
-    authorization_hash = _write_valid_auth_file(auth_path, plan_hash=plan)
+    authorization_hash = _write_valid_auth_file(auth_path, plan_hash=plan, scope=scope)
     _consume(journal, authorization_hash=authorization_hash, plan=plan, execution="exec-first")
 
     factory = Mock()
     executor = PilotExecutor(journal=journal, metadata_estimator=Mock())
     with pytest.raises(ExecutorGuardError) as exc:
-        _guard(executor, auth_path, plan, requests, bindings, factory)
+        _guard(executor, auth_path, plan, requests, bindings, factory, scope)
     assert "already_consumed" in str(exc.value)
     factory.assert_not_called()
 
@@ -611,7 +653,7 @@ def test_exact_authorization_replay_remains_rejected(tmp_path) -> None:
 def test_legacy_consumption_without_authorization_hash_fails_closed(tmp_path) -> None:
     """A legacy row whose authorization identity is unusable still blocks the plan."""
     journal = RequestJournal(tmp_path / "journal.sqlite")
-    plan, requests, bindings = _authorized_plan()
+    plan, requests, bindings, scope = _authorized_plan()
     _mark_preflight_validated(journal, requests)
     with journal._connection:  # simulating a pre-identity journal row
         journal._connection.execute(
@@ -621,10 +663,102 @@ def test_legacy_consumption_without_authorization_hash_fails_closed(tmp_path) ->
         )
 
     auth_path = tmp_path / "auth.json"
-    _write_valid_auth_file(auth_path, plan_hash=plan)
+    _write_valid_auth_file(auth_path, plan_hash=plan, scope=scope)
     factory = Mock()
     executor = PilotExecutor(journal=journal, metadata_estimator=Mock())
     with pytest.raises(ExecutorGuardError) as exc:
-        _guard(executor, auth_path, plan, requests, bindings, factory)
+        _guard(executor, auth_path, plan, requests, bindings, factory, scope)
     assert "already_consumed" in str(exc.value)
     factory.assert_not_called()
+
+
+# ── scoped paid execution ────────────────────────────────────────────
+
+
+def test_guard_execute_requires_an_explicit_execution_scope(tmp_path) -> None:
+    """Paid execution must fail closed rather than fall back to a synthetic scope."""
+    journal = RequestJournal(tmp_path / "journal.sqlite")
+    plan, requests, bindings, scope = _authorized_plan()
+    _mark_preflight_validated(journal, requests)
+    auth_path = tmp_path / "auth.json"
+    _write_valid_auth_file(auth_path, plan_hash=plan, scope=scope)
+    factory = Mock()
+    executor = PilotExecutor(journal=journal, metadata_estimator=Mock())
+    with pytest.raises(ExecutorGuardError) as exc:
+        executor.guard_execute(
+            plan_hash=plan,
+            authorization_path=auth_path,
+            confirm_plan_hash=plan,
+            source_manifest_hash="s" * 64,
+            split_manifest_hash="v" * 64,
+            acquisition_policy_hash="a" * 64,
+            now=datetime.now(UTC),
+            paid_provider_factory=factory,
+            authorized_requests=requests,
+            plan_bindings=bindings,
+            preflight_passed=True,
+        )
+    assert exc.value.reason == "missing_execution_scope"
+    factory.assert_not_called()
+
+
+def test_guard_execute_rejects_scoped_cost_above_the_authorization_ceiling(tmp_path) -> None:
+    """A $0.45 ceiling must reject a scoped plan that costs more than $0.45."""
+    journal = RequestJournal(tmp_path / "journal.sqlite")
+    plan, requests, bindings, scope = _authorized_plan()
+    _mark_preflight_validated(journal, requests)
+    auth_path = tmp_path / "auth.json"
+    _write_valid_auth_file(auth_path, plan_hash=plan, scope=scope, maximum_spend_usd="0.45")
+    factory = Mock()
+    executor = PilotExecutor(journal=journal, metadata_estimator=Mock())
+    with pytest.raises(ExecutorGuardError) as exc:
+        _guard(executor, auth_path, plan, requests, bindings, factory, scope)
+    assert exc.value.reason == "authorization_ceiling_exceeded"
+    factory.assert_not_called()
+
+
+def test_guard_execute_pays_only_the_scoped_requests(tmp_path) -> None:
+    """The paid hash set equals the scope exactly; the completed request is absent."""
+    journal = RequestJournal(tmp_path / "journal.sqlite")
+    plan, requests, bindings, scope = _authorized_plan()
+    _mark_preflight_validated(journal, requests)
+    auth_path = tmp_path / "auth.json"
+    # 24 scoped requests at 0.10 each: a 2.40 ceiling is exact, 2.39 is not.
+    _write_valid_auth_file(auth_path, plan_hash=plan, scope=scope, maximum_spend_usd="2.40")
+    sentinel = Mock()
+    provider = _guard(
+        PilotExecutor(journal=journal, metadata_estimator=Mock()),
+        auth_path,
+        plan,
+        requests,
+        bindings,
+        Mock(return_value=sentinel),
+        scope,
+    )
+    assert len(scope.remaining_request_hashes) == 24
+    assert requests[0].request_id not in set(scope.remaining_request_ids)
+    with pytest.raises(ExecutorGuardError) as exc:
+        provider.acquire_range(requests[0])
+    assert "not in the authorized plan" in str(exc.value)
+
+
+def test_consumption_persists_the_exact_authorization_ceiling(tmp_path) -> None:
+    journal = RequestJournal(tmp_path / "journal.sqlite")
+    plan, requests, bindings, scope = _authorized_plan()
+    _mark_preflight_validated(journal, requests)
+    auth_path = tmp_path / "auth.json"
+    _write_valid_auth_file(auth_path, plan_hash=plan, scope=scope, maximum_spend_usd="2.40")
+    provider = _guard(
+        PilotExecutor(journal=journal, metadata_estimator=Mock()),
+        auth_path,
+        plan,
+        requests,
+        bindings,
+        Mock(return_value=Mock()),
+        scope,
+    )
+    provider.acquire_range(requests[1])
+    row = journal.connection.execute(
+        "SELECT maximum_authorized_spend_usd, currency FROM consumed_authorizations"
+    ).fetchone()
+    assert row == ("2.40", "USD")

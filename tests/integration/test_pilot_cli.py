@@ -37,16 +37,25 @@ _PILOT_CONFIG = "configs/data/acquisition/pilot_january_2019.yaml"
 _AUTH_TEMPLATE = "configs/data/acquisition/pilot_authorization.template.json"
 
 
-def _integration_scope(plan_hash: str) -> Any:
+def _integration_scope(plan: dict[str, Any]) -> Any:
+    """Build the real remaining scope: every planned request but the first."""
     from neuralmarket.data.acquisition.authorization import build_remaining_scope
 
+    requests = plan["requests"]
     return build_remaining_scope(
-        source_plan_hash=plan_hash,
-        completed_request_ids=["completed-00000000001"],
-        completed_request_hashes=["b" * 64],
-        remaining_request_ids=[f"remaining-{i:08x}" for i in range(24)],
-        remaining_request_hashes=[f"{i:064x}" for i in range(24)],
+        source_plan_hash=plan["plan_hash"],
+        completed_request_ids=[requests[0]["request_id"]],
+        completed_request_hashes=[requests[0]["request_hash"]],
+        remaining_request_ids=[item["request_id"] for item in requests[1:]],
+        remaining_request_hashes=[item["request_hash"] for item in requests[1:]],
     )
+
+
+def _write_scope_file(plan: dict[str, Any], tmp_path: Path) -> tuple[Path, str]:
+    scope = _integration_scope(plan)
+    path = tmp_path / "scope.json"
+    path.write_text(scope.model_dump_json(), encoding="utf-8")
+    return path, sha256_of_file(path)
 
 
 class _ZeroCostMetadata:
@@ -465,7 +474,7 @@ def pilot_manifest_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path
 
 def _write_execution_inputs(plan: dict[str, Any], tmp_path: Path) -> tuple[Path, Path]:
     now = data_module.datetime.now(data_module.UTC)
-    _scope = _integration_scope(plan["plan_hash"])
+    _scope = _integration_scope(plan)
     auth_payload: dict[str, object] = {
         "authorization_version": "2.0",
         "pilot_plan_hash": plan["plan_hash"],
@@ -512,6 +521,7 @@ def _write_execution_inputs(plan: dict[str, Any], tmp_path: Path) -> tuple[Path,
     attestation_payload["attestation_hash"] = compute_attestation_hash(attestation_payload)
     attestation_path = tmp_path / "attestation.json"
     attestation_path.write_text(json.dumps(attestation_payload), encoding="utf-8")
+    _write_scope_file(plan, tmp_path)
     return auth_path, attestation_path
 
 
@@ -524,6 +534,7 @@ def _execute_args(
     journal_path: Path,
     output_path: Path | None = None,
     mode: str = "paid",
+    scope_path: Path | None = None,
 ) -> list[str]:
     args = [
         "data",
@@ -542,6 +553,16 @@ def _execute_args(
         "--journal",
         str(journal_path),
     ]
+    scope_path = scope_path or auth_path.parent / "scope.json"
+    if scope_path.exists():
+        args.extend(
+            [
+                "--remaining-scope",
+                str(scope_path),
+                "--expected-remaining-scope-sha256",
+                sha256_of_file(scope_path),
+            ]
+        )
     if output_path is not None:
         args.extend(["--output", str(output_path)])
     return args
@@ -983,6 +1004,7 @@ def test_pilot_execute_rejects_incorrect_cost_summary_before_journal(
     plan["estimated_total_cost_usd"] = "0.00"
     tampered_plan = tmp_path / "tampered-plan.json"
     tampered_plan.write_text(json.dumps(plan), encoding="utf-8")
+    scope_path, scope_sha = _write_scope_file(plan, tmp_path)
     journal_path = tmp_path / "journal.sqlite"
     result = runner.invoke(
         app,
@@ -996,6 +1018,10 @@ def test_pilot_execute_rejects_incorrect_cost_summary_before_journal(
             _AUTH_TEMPLATE,
             "--confirm-plan-hash",
             plan["plan_hash"],
+            "--remaining-scope",
+            str(scope_path),
+            "--expected-remaining-scope-sha256",
+            scope_sha,
             "--journal",
             str(journal_path),
         ],
@@ -1100,7 +1126,7 @@ def test_pilot_validate_only_uses_metadata_capability_without_paid_namespaces(
         "authorized_by": "test_operator",
         "confirmation_phrase": CONFIRMATION_PHRASE,
         "purchase_authorized": True,
-        "remaining_scope_hash": _integration_scope(plan["plan_hash"]).scope_hash,
+        "remaining_scope_hash": _integration_scope(plan).scope_hash,
         "cost_evidence": {
             "evidence_type": "cost_recheck",
             "evidence_sha256": "c" * 64,
@@ -1131,6 +1157,7 @@ def test_pilot_validate_only_uses_metadata_capability_without_paid_namespaces(
     attestation_payload["attestation_hash"] = compute_attestation_hash(attestation_payload)
     attestation_path = tmp_path / "attestation.json"
     attestation_path.write_text(json.dumps(attestation_payload), encoding="utf-8")
+    scope_path, scope_sha = _write_scope_file(plan, tmp_path)
     monkeypatch.setattr(data_module, "_load_dotenv", lambda root: None)
     monkeypatch.setattr(data_module, "_raw_databento_client", HostileClient)
     journal = tmp_path / "journal.sqlite"
@@ -1151,6 +1178,10 @@ def test_pilot_validate_only_uses_metadata_capability_without_paid_namespaces(
             str(attestation_path),
             "--confirm-plan-hash",
             plan["plan_hash"],
+            "--remaining-scope",
+            str(scope_path),
+            "--expected-remaining-scope-sha256",
+            scope_sha,
             "--journal",
             str(journal),
             "--output",
@@ -1367,14 +1398,14 @@ def test_pilot_execute_cli_fake_paid_lifecycle_and_dry_resume(
     assert result.exit_code == 0, result.output
     payload = json.loads((tmp_path / "paid.json").read_text(encoding="utf-8"))
     assert payload["requests_planned"] == 25
-    assert payload["requests_completed"] == 25
+    assert payload["requests_completed"] == 24
     assert payload["paid_provider_constructed"] is True
-    assert payload["paid_request_calls"] == 25
+    assert payload["paid_request_calls"] == 24
     assert constructions == 1
     assert paid.consumed_before_first_call is True
-    assert len(list((tmp_path / "raw").glob("*.dbn"))) == 25
-    assert len(list((tmp_path / "normalized").glob("*.parquet"))) == 25
-    assert len(list((tmp_path / "quality").glob("*.json"))) == 25
+    assert len(list((tmp_path / "raw").glob("*.dbn"))) == 24
+    assert len(list((tmp_path / "normalized").glob("*.parquet"))) == 24
+    assert len(list((tmp_path / "quality").glob("*.json"))) == 24
 
     paid.calls.clear()
     result = runner.invoke(
@@ -1390,7 +1421,7 @@ def test_pilot_execute_cli_fake_paid_lifecycle_and_dry_resume(
     )
     assert result.exit_code == 0, result.output
     resumed = json.loads((tmp_path / "resume.json").read_text(encoding="utf-8"))
-    assert resumed["requests_skipped"] == 25
+    assert resumed["requests_skipped"] == 24
     assert resumed["paid_provider_constructed"] is False
     assert resumed["paid_request_calls"] == 0
     assert paid.calls == []
@@ -1521,7 +1552,7 @@ def test_coordinator_fake_25_request_lifecycle(pilot_manifest_path: Path, tmp_pa
         "authorized_by": "test_operator",
         "confirmation_phrase": CONFIRMATION_PHRASE,
         "purchase_authorized": True,
-        "remaining_scope_hash": _integration_scope(plan["plan_hash"]).scope_hash,
+        "remaining_scope_hash": _integration_scope(plan).scope_hash,
         "cost_evidence": {
             "evidence_type": "cost_recheck",
             "evidence_sha256": "c" * 64,
@@ -1605,6 +1636,7 @@ def test_coordinator_fake_25_request_lifecycle(pilot_manifest_path: Path, tmp_pa
         journal_factory=lambda: RequestJournal(journal_path),
         lifecycle=lifecycle,
         now=now,
+        execution_scope=_integration_scope(plan),
     )
     with RequestJournal(journal_path) as journal:
         assert len(journal.consumed_authorization_ids()) == 1
@@ -1624,13 +1656,79 @@ def test_coordinator_fake_25_request_lifecycle(pilot_manifest_path: Path, tmp_pa
         journal_factory=lambda: RequestJournal(journal_path),
         lifecycle=lifecycle,
         now=now,
+        execution_scope=_integration_scope(plan),
     )
 
-    assert result.requests_completed == 25
-    assert result.paid_request_calls == 25
-    assert resumed.requests_skipped == 25
+    assert result.requests_completed == 24
+    assert result.paid_request_calls == 24
+    assert resumed.requests_skipped == 24
     assert resumed.paid_request_calls == 0
-    assert paid.calls == [request.request_id for request in requests]
-    assert len(list((tmp_path / "raw").glob("*.dbn"))) == 25
-    assert len(list((tmp_path / "normalized").glob("*.parquet"))) == 25
-    assert len(list((tmp_path / "quality").glob("*.json"))) == 25
+    assert paid.calls == [request.request_id for request in requests[1:]]
+    assert len(list((tmp_path / "raw").glob("*.dbn"))) == 24
+    assert len(list((tmp_path / "normalized").glob("*.parquet"))) == 24
+    assert len(list((tmp_path / "quality").glob("*.json"))) == 24
+
+
+@pytest.mark.integration
+def test_pilot_execute_help_documents_the_scope_arguments() -> None:
+    result = runner.invoke(app, ["data", "pilot", "execute", "--help"])
+    assert result.exit_code == 0
+    # Typer truncates long option names in the help table, so match the prefix.
+    collapsed = " ".join(result.output.split())
+    assert "--remaining-scope" in collapsed
+    assert "--expected-remaining-scope-s" in collapsed
+
+
+@pytest.mark.integration
+def test_pilot_execute_paid_requires_a_remaining_scope(
+    pilot_manifest_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Paid execution without a scope stops before credentials or a provider."""
+    plan = json.loads(pilot_manifest_path.read_text(encoding="utf-8"))
+    auth_path, attestation_path = _write_execution_inputs(plan, tmp_path)
+
+    def _no_credentials(root: Any) -> None:
+        raise AssertionError("credentials must not be loaded without a scope")
+
+    monkeypatch.setattr(data_module, "_load_dotenv", _no_credentials)
+    journal_path = tmp_path / "journal.sqlite"
+    result = runner.invoke(
+        app,
+        _execute_args(
+            plan_path=pilot_manifest_path,
+            plan_hash=plan["plan_hash"],
+            auth_path=auth_path,
+            attestation_path=attestation_path,
+            journal_path=journal_path,
+            scope_path=tmp_path / "absent.json",
+        ),
+    )
+    assert result.exit_code != 0
+    assert "remaining-scope" in result.output
+    assert not journal_path.exists()
+
+
+@pytest.mark.integration
+def test_pilot_execute_rejects_scope_sha_mismatch_before_provider(
+    pilot_manifest_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    plan = json.loads(pilot_manifest_path.read_text(encoding="utf-8"))
+    auth_path, attestation_path = _write_execution_inputs(plan, tmp_path)
+
+    def _no_credentials(root: Any) -> None:
+        raise AssertionError("credentials must not be loaded on a scope mismatch")
+
+    monkeypatch.setattr(data_module, "_load_dotenv", _no_credentials)
+    journal_path = tmp_path / "journal.sqlite"
+    args = _execute_args(
+        plan_path=pilot_manifest_path,
+        plan_hash=plan["plan_hash"],
+        auth_path=auth_path,
+        attestation_path=attestation_path,
+        journal_path=journal_path,
+    )
+    args[args.index("--expected-remaining-scope-sha256") + 1] = "f" * 64
+    result = runner.invoke(app, args)
+    assert result.exit_code != 0
+    assert "SHA-256 mismatch" in result.output
+    assert not journal_path.exists()

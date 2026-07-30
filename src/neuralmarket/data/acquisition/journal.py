@@ -653,7 +653,12 @@ class RequestJournal:
         return bool(count)
 
     def consume_reserved_authorization(
-        self, *, authorization_hash: str, execution_id: str, consumed_at: str
+        self,
+        *,
+        authorization_hash: str,
+        execution_id: str,
+        consumed_at: str,
+        maximum_authorized_spend_usd: str | None = None,
     ) -> bool:
         """Consume a reservation immediately before the first paid invocation.
 
@@ -680,9 +685,17 @@ class RequestJournal:
                 ).fetchone()[0]
                 self._connection.execute(
                     "INSERT INTO consumed_authorizations "
-                    "(plan_hash, authorization_hash, consumed_at, execution_id) "
-                    "VALUES (?, ?, ?, ?)",
-                    (plan_hash, authorization_hash, consumed_at, execution_id),
+                    "(plan_hash, authorization_hash, consumed_at, execution_id, "
+                    "maximum_authorized_spend_usd, currency) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        plan_hash,
+                        authorization_hash,
+                        consumed_at,
+                        execution_id,
+                        maximum_authorized_spend_usd,
+                        "USD" if maximum_authorized_spend_usd is not None else None,
+                    ),
                 )
                 self._connection.execute(
                     "INSERT OR IGNORE INTO execution_attempts "

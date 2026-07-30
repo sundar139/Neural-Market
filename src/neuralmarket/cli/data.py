@@ -2097,20 +2097,6 @@ def pilot_recheck_cost(
                 raise PlanValidationError(
                     "A recovery plan and a remaining scope cannot be combined."
                 )
-            if not is_valid_sha256(expected_remaining_scope_sha256 or ""):
-                raise PlanValidationError(
-                    "--expected-remaining-scope-sha256 must be 64 lowercase hex"
-                )
-            if _sha256_file(remaining_scope) != expected_remaining_scope_sha256:
-                raise PlanValidationError("Remaining-scope artifact SHA-256 mismatch; refusing.")
-            scope_payload = load_acquisition_json(remaining_scope)
-            scope = RemainingRequestScope.model_validate(
-                {
-                    key: value
-                    for key, value in scope_payload.items()
-                    if key in RemainingRequestScope.model_fields
-                }
-            )
             # The scope binds finalized request hashes, which include each bound
             # estimate. ``checkpoint_requests`` are drafts whose hashes predate
             # estimation, so they can never match; validate and quote against the
@@ -2119,10 +2105,11 @@ def pilot_recheck_cost(
                 AcquisitionRequest.model_validate(item)
                 for item in manifest_payload.get("requests", [])
             ]
-            validate_remaining_scope(
-                scope,
-                canonical_requests=finalized_requests,
-                source_plan_hash=str(manifest_payload.get("plan_hash", "")),
+            scope = _load_validated_remaining_scope(
+                scope_path=remaining_scope,
+                expected_sha256=expected_remaining_scope_sha256,
+                finalized_requests=finalized_requests,
+                plan_hash=str(manifest_payload.get("plan_hash", "")),
             )
             by_id = {item.request_id: item for item in finalized_requests}
             requests = [by_id[request_id] for request_id in scope.remaining_request_ids]
@@ -2442,6 +2429,16 @@ def pilot_execute(
         "--journal",
         help="Path to the pilot acquisition journal SQLite file.",
     ),
+    remaining_scope: Path | None = typer.Option(
+        None,
+        "--remaining-scope",
+        help="Validated remaining-request scope artifact; paid execution pays only its requests.",
+    ),
+    expected_remaining_scope_sha256: str | None = typer.Option(
+        None,
+        "--expected-remaining-scope-sha256",
+        help="Exact 64-lowercase-hex SHA-256 the remaining-scope artifact bytes must match.",
+    ),
     output: Path | None = typer.Option(
         None, "--output", help="Local execution or validation report path."
     ),
@@ -2484,6 +2481,13 @@ def pilot_execute(
     split_manifest = _resolve_under_root(root, split_manifest)
     policy_manifest = _resolve_under_root(root, policy_manifest)
     journal_full_path = _resolve_under_root(root, journal_path)
+    remaining_scope = (
+        _resolve_under_root(root, remaining_scope) if remaining_scope is not None else None
+    )
+    if (remaining_scope is None) != (expected_remaining_scope_sha256 is None):
+        raise typer.BadParameter(
+            "--remaining-scope and --expected-remaining-scope-sha256 must be used together"
+        )
     try:
         if mode not in {"validate-only", "paid"}:
             raise ValueError("mode must be validate-only or paid")
@@ -2561,7 +2565,21 @@ def pilot_execute(
         split_hash = expected_bindings["split_manifest_hash"]
         policy_hash = expected_bindings["acquisition_policy_hash"]
         auth = load_authorization(authorization)
-        _cli_scope2 = _synthetic_scope_for_cli(auth.pilot_plan_hash)
+        # Paid execution binds the operator's real remaining scope; only the
+        # one-request recovery path, which has no scope contract, keeps the
+        # placeholder. Validated before any credential or provider access.
+        if mode == "paid" and recovery_plan is None and remaining_scope is None:
+            raise PlanValidationError("--remaining-scope is required for paid execution")
+        if remaining_scope is not None and recovery_plan is None:
+            execution_scope = _load_validated_remaining_scope(
+                scope_path=remaining_scope,
+                expected_sha256=expected_remaining_scope_sha256,
+                finalized_requests=list(authorized_requests),
+                plan_hash=str(plan_payload["plan_hash"]),
+            )
+        else:
+            execution_scope = None
+        _cli_scope2 = execution_scope or _synthetic_scope_for_cli(auth.pilot_plan_hash)
         validate_authorization(
             auth,
             expected_plan_hash=plan_hash_value,
@@ -2662,6 +2680,7 @@ def pilot_execute(
             now=datetime.now(UTC),
             recovery_plan=recovery_plan,
             recovery_purchase_package=recovery_purchase_package,
+            execution_scope=execution_scope,
         )
     except ExecutorGuardError as exc:
         message = f"Pilot execution blocked: execution coordinator rejected ({exc.reason}): {exc}"
@@ -2912,6 +2931,36 @@ def pilot_settle_successful_billing(
     payload["settlement_hash"] = artifact.settlement_hash
     write_acquisition_json(output, payload)
     typer.echo(json.dumps(payload, sort_keys=True))
+
+
+def _load_validated_remaining_scope(
+    *,
+    scope_path: Path,
+    expected_sha256: str | None,
+    finalized_requests: list[AcquisitionRequest],
+    plan_hash: str,
+) -> RemainingRequestScope:
+    """Hash-check, parse, and validate a remaining-request scope artifact.
+
+    The single loader for both the scoped cost recheck and scoped paid
+    execution, so the two can never drift apart on what a scope must satisfy.
+
+    Raises:
+        PlanValidationError: On a malformed or mismatched expected SHA-256.
+        AuthorizationError: On any scope-content rejection.
+    """
+    if not is_valid_sha256(expected_sha256 or ""):
+        raise PlanValidationError("--expected-remaining-scope-sha256 must be 64 lowercase hex")
+    if _sha256_file(scope_path) != expected_sha256:
+        raise PlanValidationError("Remaining-scope artifact SHA-256 mismatch; refusing.")
+    payload = load_acquisition_json(scope_path)
+    scope = RemainingRequestScope.model_validate(
+        {key: value for key, value in payload.items() if key in RemainingRequestScope.model_fields}
+    )
+    validate_remaining_scope(
+        scope, canonical_requests=finalized_requests, source_plan_hash=plan_hash
+    )
+    return scope
 
 
 def _synthetic_scope_for_cli(plan_hash: str = "p" * 64) -> Any:

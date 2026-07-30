@@ -1,6 +1,8 @@
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 import pytest
+from pydantic import ValidationError
 
 from neuralmarket.data.acquisition.authorization import (
     CONFIRMATION_PHRASE,
@@ -540,3 +542,37 @@ def test_rejects_replay_of_the_exact_authorization_hash() -> None:
 def test_accepts_distinct_authorization_consumed_under_another_hash() -> None:
     payload = _valid_payload()
     _validate(payload, consumed_ids={"9" * 64})
+
+
+def test_accepts_authorization_ceiling_below_the_plan_maximum() -> None:
+    payload = _valid_payload(maximum_spend_usd="0.50")
+    payload["authorization_hash"] = compute_authorization_hash(payload)
+    _validate(payload)
+
+
+def test_model_rejects_a_ceiling_above_the_frozen_project_cap() -> None:
+    payload = _valid_payload(maximum_spend_usd="5.01")
+    payload["authorization_hash"] = compute_authorization_hash(payload)
+    with pytest.raises(ValidationError):
+        PilotAuthorization.model_validate(payload)
+
+
+def test_rejects_authorization_ceiling_above_the_plan_maximum() -> None:
+    payload = _valid_payload(maximum_spend_usd="0.50")
+    payload["authorization_hash"] = compute_authorization_hash(payload)
+    with pytest.raises(AuthorizationError) as exc:
+        _validate(payload, expected_maximum_spend_usd=Decimal("0.40"))
+    assert exc.value.reason == "authorization_ceiling_above_plan"
+
+
+@pytest.mark.parametrize("ceiling", ["0.00", "0"])
+def test_rejects_nonpositive_authorization_ceiling(ceiling: str) -> None:
+    payload = _valid_payload(maximum_spend_usd=ceiling)
+    payload["authorization_hash"] = compute_authorization_hash(payload)
+    with pytest.raises(AuthorizationError) as exc:
+        _validate(payload)
+    assert exc.value.reason == "authorization_ceiling_not_positive"
+
+
+def test_plan_ceiling_authorization_remains_valid() -> None:
+    _validate(_valid_payload(maximum_spend_usd="5.00"))
