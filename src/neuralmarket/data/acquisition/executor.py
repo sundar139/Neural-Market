@@ -467,7 +467,7 @@ class PilotExecutor:
                 expected_portal_source_evidence_sha256=_source_sha,
                 now=now,
                 consumed_ids=(
-                    set() if resume_consumed else self._journal.consumed_authorization_ids()
+                    set() if resume_consumed else self._journal.consumed_authorization_identities()
                 ),
             )
         except AuthorizationError as exc:
@@ -801,7 +801,8 @@ class PilotExecutionCoordinator:
                     expected_maximum_spend_usd=config.maximum_spend_usd,
                     expected_maximum_single_request_usd=config.maximum_single_request_usd,
                     resume_consumed=(
-                        recovery_plan is None and plan_hash in journal.consumed_authorization_ids()
+                        recovery_plan is None
+                        and authorization_hash in journal.consumed_authorization_identities()
                     ),
                     recovery_request_id=(
                         recovery_plan.recovery.request_id if recovery_plan is not None else None

@@ -39,7 +39,7 @@ CONFIG_PATH = (
 )
 
 
-def _write_valid_auth_file(path: Path, *, plan_hash: str = "p" * 64) -> None:
+def _write_valid_auth_file(path: Path, *, plan_hash: str = "p" * 64, **overrides: object) -> str:
     import json
 
     now = datetime.now(UTC)
@@ -79,8 +79,10 @@ def _write_valid_auth_file(path: Path, *, plan_hash: str = "p" * 64) -> None:
         },
         "portal_source_evidence_sha256": "e" * 64,
     }
+    payload.update(overrides)
     payload["authorization_hash"] = compute_authorization_hash(payload)
     path.write_text(json.dumps(payload), encoding="utf-8")
+    return str(payload["authorization_hash"])
 
 
 def _finalized_request():
@@ -537,3 +539,92 @@ def test_select_recovery_action_fails_closed(
         )
         == expected
     )
+
+
+# ── consumption identity ─────────────────────────────────────────────
+
+
+def _consume(
+    journal: RequestJournal, *, authorization_hash: str, plan: str, execution: str
+) -> None:
+    now = datetime.now(UTC).isoformat()
+    assert journal.reserve_authorization(
+        authorization_hash=authorization_hash,
+        plan_hash=plan,
+        execution_id=execution,
+        reserved_at=now,
+    )
+    assert journal.consume_reserved_authorization(
+        authorization_hash=authorization_hash, execution_id=execution, consumed_at=now
+    )
+
+
+def _guard(executor: PilotExecutor, auth_path: Path, plan: str, requests, bindings, factory):
+    return executor.guard_execute(
+        plan_hash=plan,
+        authorization_path=auth_path,
+        confirm_plan_hash=plan,
+        source_manifest_hash="s" * 64,
+        split_manifest_hash="v" * 64,
+        acquisition_policy_hash="a" * 64,
+        now=datetime.now(UTC),
+        paid_provider_factory=factory,
+        authorized_requests=requests,
+        plan_bindings=bindings,
+        preflight_passed=True,
+    )
+
+
+def test_distinct_authorization_not_blocked_by_settled_plan_sibling(tmp_path) -> None:
+    """A consumed authorization must not conflate with a distinct one for the same plan."""
+    journal = RequestJournal(tmp_path / "journal.sqlite")
+    plan, requests, bindings = _authorized_plan()
+    _mark_preflight_validated(journal, requests)
+    _consume(journal, authorization_hash="1" * 64, plan=plan, execution="exec-settled")
+
+    auth_path = tmp_path / "auth.json"
+    _write_valid_auth_file(auth_path, plan_hash=plan, purchase_authorized=False)
+    factory = Mock()
+    executor = PilotExecutor(journal=journal, metadata_estimator=Mock())
+    with pytest.raises(ExecutorGuardError) as exc:
+        _guard(executor, auth_path, plan, requests, bindings, factory)
+    assert "purchase_not_authorized" in str(exc.value)
+    factory.assert_not_called()
+
+
+def test_exact_authorization_replay_remains_rejected(tmp_path) -> None:
+    journal = RequestJournal(tmp_path / "journal.sqlite")
+    plan, requests, bindings = _authorized_plan()
+    _mark_preflight_validated(journal, requests)
+    auth_path = tmp_path / "auth.json"
+    authorization_hash = _write_valid_auth_file(auth_path, plan_hash=plan)
+    _consume(journal, authorization_hash=authorization_hash, plan=plan, execution="exec-first")
+
+    factory = Mock()
+    executor = PilotExecutor(journal=journal, metadata_estimator=Mock())
+    with pytest.raises(ExecutorGuardError) as exc:
+        _guard(executor, auth_path, plan, requests, bindings, factory)
+    assert "already_consumed" in str(exc.value)
+    factory.assert_not_called()
+
+
+def test_legacy_consumption_without_authorization_hash_fails_closed(tmp_path) -> None:
+    """A legacy row whose authorization identity is unusable still blocks the plan."""
+    journal = RequestJournal(tmp_path / "journal.sqlite")
+    plan, requests, bindings = _authorized_plan()
+    _mark_preflight_validated(journal, requests)
+    with journal._connection:  # simulating a pre-identity journal row
+        journal._connection.execute(
+            "INSERT INTO consumed_authorizations (plan_hash, authorization_hash, consumed_at) "
+            "VALUES (?, '', ?)",
+            (plan, datetime.now(UTC).isoformat()),
+        )
+
+    auth_path = tmp_path / "auth.json"
+    _write_valid_auth_file(auth_path, plan_hash=plan)
+    factory = Mock()
+    executor = PilotExecutor(journal=journal, metadata_estimator=Mock())
+    with pytest.raises(ExecutorGuardError) as exc:
+        _guard(executor, auth_path, plan, requests, bindings, factory)
+    assert "already_consumed" in str(exc.value)
+    factory.assert_not_called()

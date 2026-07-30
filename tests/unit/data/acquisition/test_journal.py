@@ -508,3 +508,31 @@ class TestStaleFkMigration:
         assert req["state"] == "quality_validated"
         assert req["attempt_count"] == 2
         assert req["raw_path"] is not None
+
+
+def test_consumed_authorization_identities_key_on_authorization_hash(tmp_path) -> None:
+    journal = RequestJournal(tmp_path / "journal.sqlite")
+    assert journal.reserve_authorization(
+        authorization_hash="a" * 64,
+        plan_hash="p" * 64,
+        execution_id="exec-1",
+        reserved_at="2026-01-01T00:00:00+00:00",
+    )
+    assert journal.consume_reserved_authorization(
+        authorization_hash="a" * 64,
+        execution_id="exec-1",
+        consumed_at="2026-01-01T00:00:01+00:00",
+    )
+    assert journal.consumed_authorization_identities() == {"a" * 64}
+    assert journal.consumed_authorization_ids() == {"p" * 64}
+
+
+def test_consumed_authorization_identities_fall_back_for_legacy_rows(tmp_path) -> None:
+    journal = RequestJournal(tmp_path / "journal.sqlite")
+    with journal._connection:  # simulating a pre-identity journal row
+        journal._connection.execute(
+            "INSERT INTO consumed_authorizations (plan_hash, authorization_hash, consumed_at) "
+            "VALUES (?, '', ?)",
+            ("p" * 64, "2026-01-01T00:00:00+00:00"),
+        )
+    assert journal.consumed_authorization_identities() == {"p" * 64}

@@ -528,3 +528,15 @@ def test_evidence_reference_requires_timezone_aware() -> None:
                 "expires_at": "2026-01-02T00:00:00",
             }
         )
+
+
+def test_rejects_replay_of_the_exact_authorization_hash() -> None:
+    payload = _valid_payload()
+    with pytest.raises(AuthorizationError) as exc:
+        _validate(payload, consumed_ids={payload["authorization_hash"]})
+    assert exc.value.reason == "already_consumed"
+
+
+def test_accepts_distinct_authorization_consumed_under_another_hash() -> None:
+    payload = _valid_payload()
+    _validate(payload, consumed_ids={"9" * 64})

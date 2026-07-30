@@ -414,6 +414,26 @@ class RequestJournal:
         rows = self._connection.execute("SELECT plan_hash FROM consumed_authorizations").fetchall()
         return {str(row[0]) for row in rows}
 
+    def consumed_authorization_identities(self) -> set[str]:
+        """Return the exact identity of every consumed authorization.
+
+        Replay protection keys on ``authorization_hash``, which distinguishes
+        two authorizations that share the canonical plan hash (for example a
+        settled single-request authorization and a later remaining-scope one).
+        A legacy row whose ``authorization_hash`` is not a usable 64-hex digest
+        cannot be resolved that precisely, so it falls back to its ``plan_hash``
+        and keeps blocking the whole plan rather than silently permitting it.
+        """
+        rows = self._connection.execute(
+            "SELECT plan_hash, authorization_hash FROM consumed_authorizations"
+        ).fetchall()
+        identities: set[str] = set()
+        for plan_hash, authorization_hash in rows:
+            candidate = str(authorization_hash or "")
+            usable = len(candidate) == 64 and all(c in "0123456789abcdef" for c in candidate)
+            identities.add(candidate if usable else str(plan_hash))
+        return identities
+
     def reserve_authorization(
         self, *, authorization_hash: str, plan_hash: str, execution_id: str, reserved_at: str
     ) -> bool:

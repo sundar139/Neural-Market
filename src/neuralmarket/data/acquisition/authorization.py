@@ -355,7 +355,7 @@ def validate_authorization(
     expected_portal_evidence_sha256: str,
     expected_portal_source_evidence_sha256: str,
     now: datetime,
-    consumed_ids: set[str],
+    consumed_ids: set[str],  # authorization hashes, or plan hashes for legacy records
     expected_maximum_spend_usd: Decimal = Decimal("5.00"),
     expected_maximum_single_request_usd: Decimal = Decimal("1.00"),
 ) -> None:
@@ -476,7 +476,10 @@ def validate_authorization(
         raise AuthorizationError("expired", "authorization has expired")
 
     # ── single-use ──────────────────────────────────────────────────
-    if auth.pilot_plan_hash in consumed_ids:
+    # Identity is the authorization hash, so two distinct authorizations for
+    # the same plan do not conflate; a plan hash still matches for legacy
+    # consumption records that carry no usable authorization identity.
+    if auth.authorization_hash in consumed_ids or auth.pilot_plan_hash in consumed_ids:
         raise AuthorizationError("already_consumed", "authorization already consumed")
 
     # ── spend caps ──────────────────────────────────────────────────
