@@ -845,7 +845,7 @@ class TestProdCopyMigration:
         journal = RequestJournal(dst)
         journal.connection.row_factory = sqlite3.Row
         post_v = journal.connection.execute("SELECT version FROM schema_meta").fetchone()[0]
-        assert post_v == 9
+        assert post_v == JOURNAL_SCHEMA_VERSION
         post_cols = {c[1] for c in journal.connection.execute("PRAGMA table_info(requests)")}
         assert "actual_provider_cost_status" in post_cols
         req = journal.connection.execute(

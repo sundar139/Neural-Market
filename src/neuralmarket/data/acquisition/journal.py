@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict
 
 from neuralmarket.data.acquisition.states import ALLOWED_TRANSITIONS
 
-JOURNAL_SCHEMA_VERSION = 9
+JOURNAL_SCHEMA_VERSION = 10
 
 _COLUMNS = (
     "request_id",
@@ -129,8 +129,8 @@ class RequestJournal:
             self._connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS consumed_authorizations (
-                    plan_hash TEXT PRIMARY KEY,
-                    authorization_hash TEXT NOT NULL,
+                    authorization_hash TEXT PRIMARY KEY,
+                    plan_hash TEXT NOT NULL,
                     consumed_at TEXT NOT NULL
                 )
                 """
@@ -405,9 +405,74 @@ class RequestJournal:
                         self._connection.execute(
                             "ALTER TABLE execution_attempts_v8 RENAME TO execution_attempts"
                         )
+                # --- v9 → v10: key consumption on the exact authorization -------
+                if int(row[0]) <= 9:
+                    self._rekey_consumed_authorizations()
                 self._connection.execute(
                     "UPDATE schema_meta SET version = ?", (JOURNAL_SCHEMA_VERSION,)
                 )
+
+    def _rekey_consumed_authorizations(self) -> None:
+        """Rebuild ``consumed_authorizations`` with ``authorization_hash`` as the key.
+
+        Consumption was keyed on ``plan_hash``, so a plan could record only one
+        consumed authorization ever — the settled authorization blocked every
+        later one for the same plan. Runs inside the caller's ``_migrate``
+        transaction: any raise rolls the whole thing back and leaves the
+        original table in place.
+
+        Raises:
+            RuntimeError: If any historical ``authorization_hash`` is absent,
+                not 64-character lowercase hex, or duplicated. Identities are
+                never derived or invented from the plan hash.
+        """
+        table = self._connection.execute("PRAGMA table_info(consumed_authorizations)").fetchall()
+        columns = [str(column[1]) for column in table]
+        if [str(column[1]) for column in table if column[5]] == ["authorization_hash"]:
+            return
+
+        rows = self._connection.execute(
+            "SELECT authorization_hash FROM consumed_authorizations"
+        ).fetchall()
+        seen: set[str] = set()
+        for (authorization_hash,) in rows:
+            candidate = str(authorization_hash or "")
+            if len(candidate) != 64 or not all(c in "0123456789abcdef" for c in candidate):
+                raise RuntimeError(
+                    "consumed_authorizations holds an unusable authorization_hash; "
+                    "refusing to rekey consumption"
+                )
+            if candidate in seen:
+                raise RuntimeError(
+                    "consumed_authorizations holds a duplicate authorization_hash; "
+                    "refusing to rekey consumption"
+                )
+            seen.add(candidate)
+
+        carried = ", ".join(columns)
+        self._connection.execute(
+            "CREATE TABLE consumed_authorizations_v10 ("
+            "authorization_hash TEXT PRIMARY KEY,"
+            "plan_hash TEXT NOT NULL,"
+            "consumed_at TEXT NOT NULL,"
+            "execution_id TEXT,"
+            "maximum_authorized_spend_usd TEXT,"
+            "currency TEXT"
+            ")"
+        )
+        self._connection.execute(
+            f"INSERT INTO consumed_authorizations_v10 ({carried}) "
+            f"SELECT {carried} FROM consumed_authorizations"
+        )
+        migrated = self._connection.execute(
+            "SELECT COUNT(*) FROM consumed_authorizations_v10"
+        ).fetchone()[0]
+        if migrated != len(rows):
+            raise RuntimeError("consumed_authorizations row count mismatch during rekey")
+        self._connection.execute("DROP TABLE consumed_authorizations")
+        self._connection.execute(
+            "ALTER TABLE consumed_authorizations_v10 RENAME TO consumed_authorizations"
+        )
 
     def consumed_authorization_ids(self) -> set[str]:
         """Return plan hashes whose one-time authorization has been consumed."""
@@ -590,8 +655,19 @@ class RequestJournal:
     def consume_reserved_authorization(
         self, *, authorization_hash: str, execution_id: str, consumed_at: str
     ) -> bool:
-        """Consume a reservation immediately before the first paid invocation."""
+        """Consume a reservation immediately before the first paid invocation.
+
+        Returns ``False`` when this exact authorization was already consumed, so
+        the caller fails closed on a clean guard error rather than a raw
+        ``sqlite3.IntegrityError`` from the primary key. A second, distinct
+        authorization sharing the same ``plan_hash`` is permitted.
+        """
         with self._connection:
+            if self._connection.execute(
+                "SELECT 1 FROM consumed_authorizations WHERE authorization_hash = ?",
+                (authorization_hash,),
+            ).fetchone():
+                return False
             count = self._connection.execute(
                 "UPDATE authorization_reservations SET state = 'consumed', consumed_at = ? "
                 "WHERE authorization_hash = ? AND execution_id = ? AND state = 'reserved'",

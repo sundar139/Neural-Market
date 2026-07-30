@@ -141,7 +141,7 @@ def test_journal_migrates_prior_request_columns(tmp_path: Path) -> None:
         columns = {row[1] for row in connection.execute("PRAGMA table_info(requests)")}
         version = connection.execute("SELECT version FROM schema_meta").fetchone()
     assert {"raw_byte_count", "raw_record_count", "provider_response_id"} <= columns
-    assert version == (9,)
+    assert version == (JOURNAL_SCHEMA_VERSION,)
 
 
 def test_release_reservation_terminalizes_provider_construction_attempt(tmp_path: Path) -> None:
@@ -200,9 +200,9 @@ def _historical_v7_db(path: Path) -> Path:
             FOREIGN KEY(plan_hash) REFERENCES consumed_authorizations(plan_hash)
         );
         INSERT INTO consumed_authorizations VALUES
-            ('p','a','2024-01-01T00:00:00+00:00');
+            ('9999999999999999999999999999999999999999999999999999999999999999','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','2024-01-01T00:00:00+00:00');
         INSERT INTO execution_attempts VALUES
-            ('e1','p','a','2024-01-01','ok',
+            ('e1','9999999999999999999999999999999999999999999999999999999999999999','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','2024-01-01','ok',
              NULL,NULL,NULL,1,0,1,10,0);
     """
     )
@@ -239,9 +239,9 @@ def _already_repaired_v7_db(path: Path) -> Path:
             manual_action_required INTEGER
         );
         INSERT INTO consumed_authorizations VALUES
-            ('p','a','2024-01-01T00:00:00+00:00');
+            ('9999999999999999999999999999999999999999999999999999999999999999','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','2024-01-01T00:00:00+00:00');
         INSERT INTO execution_attempts VALUES
-            ('e1','p','a','2024-01-01','ok',
+            ('e1','9999999999999999999999999999999999999999999999999999999999999999','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','2024-01-01','ok',
              NULL,NULL,NULL,1,0,1,10,0);
     """
     )
@@ -467,7 +467,7 @@ class TestStaleFkMigration:
         fks_before = pre.execute("PRAGMA foreign_key_list('execution_attempts')").fetchall()
         assert len(fks_before) == 0
         v_before = pre.execute("SELECT version FROM schema_meta").fetchone()[0]
-        assert v_before == JOURNAL_SCHEMA_VERSION
+        assert v_before <= JOURNAL_SCHEMA_VERSION
         pre_req_count = pre.execute("SELECT COUNT(*) FROM requests").fetchone()[0]
         pre_auths = pre.execute("SELECT COUNT(*) FROM authorization_reservations").fetchone()[0]
         pre.close()
@@ -536,3 +536,151 @@ def test_consumed_authorization_identities_fall_back_for_legacy_rows(tmp_path) -
             ("p" * 64, "2026-01-01T00:00:00+00:00"),
         )
     assert journal.consumed_authorization_identities() == {"p" * 64}
+
+
+# ── v9 → v10 consumption rekey ────────────────────────────────────────
+
+
+_PLAN_A = "9" * 64
+_AUTH_A = "a" * 64
+_AUTH_B = "b" * 64
+
+
+def _v9_db(path: Path, rows: list[tuple[str, str, str]]) -> Path:
+    """Build a v9 journal whose consumed_authorizations is keyed on plan_hash."""
+    conn = sqlite3.connect(str(path))
+    conn.executescript(
+        """
+        CREATE TABLE schema_meta (version INTEGER NOT NULL);
+        INSERT INTO schema_meta VALUES (9);
+        CREATE TABLE consumed_authorizations (
+            plan_hash TEXT PRIMARY KEY,
+            authorization_hash TEXT NOT NULL,
+            consumed_at TEXT NOT NULL,
+            execution_id TEXT,
+            maximum_authorized_spend_usd TEXT,
+            currency TEXT
+        );
+        """
+    )
+    conn.executemany(
+        "INSERT INTO consumed_authorizations "
+        "(plan_hash, authorization_hash, consumed_at, execution_id, "
+        "maximum_authorized_spend_usd, currency) VALUES (?, ?, ?, 'exec-1', '5.00', 'USD')",
+        rows,
+    )
+    conn.commit()
+    conn.close()
+    return path
+
+
+def _consumed_key(connection: sqlite3.Connection) -> list[str]:
+    return [
+        str(column[1])
+        for column in connection.execute("PRAGMA table_info(consumed_authorizations)")
+        if column[5]
+    ]
+
+
+def test_fresh_journal_keys_consumption_on_authorization_hash(tmp_path: Path) -> None:
+    journal = RequestJournal(tmp_path / "journal.sqlite")
+    assert _consumed_key(journal.connection) == ["authorization_hash"]
+    assert (
+        journal.connection.execute("SELECT version FROM schema_meta").fetchone()[0]
+        == JOURNAL_SCHEMA_VERSION
+    )
+
+
+def test_v9_rekey_preserves_every_historical_row(tmp_path: Path) -> None:
+    db = _v9_db(
+        tmp_path / "v9.sqlite",
+        [
+            (_PLAN_A, _AUTH_A, "2026-07-14T05:53:10.891910+00:00"),
+            ("8" * 64, _AUTH_B, "2026-07-26T21:09:14.191283+00:00"),
+        ],
+    )
+    before = sqlite3.connect(str(db))
+    before_rows = sorted(before.execute("SELECT * FROM consumed_authorizations"))
+    before.close()
+
+    journal = RequestJournal(db)
+    assert _consumed_key(journal.connection) == ["authorization_hash"]
+    assert (
+        journal.connection.execute("SELECT version FROM schema_meta").fetchone()[0]
+        == JOURNAL_SCHEMA_VERSION
+    )
+    after_rows = sorted(
+        journal.connection.execute(
+            "SELECT plan_hash, authorization_hash, consumed_at, execution_id, "
+            "maximum_authorized_spend_usd, currency FROM consumed_authorizations"
+        )
+    )
+    assert after_rows == before_rows
+    assert journal.consumed_authorization_identities() == {_AUTH_A, _AUTH_B}
+    assert journal.consumed_authorization_ids() == {_PLAN_A, "8" * 64}
+
+
+def test_migrated_journal_accepts_a_second_authorization_for_one_plan(tmp_path: Path) -> None:
+    db = _v9_db(tmp_path / "v9.sqlite", [(_PLAN_A, _AUTH_A, "2026-07-14T05:53:10+00:00")])
+    journal = RequestJournal(db)
+    now = "2026-07-30T18:00:00+00:00"
+    assert journal.reserve_authorization(
+        authorization_hash=_AUTH_B, plan_hash=_PLAN_A, execution_id="exec-2", reserved_at=now
+    )
+    assert journal.consume_reserved_authorization(
+        authorization_hash=_AUTH_B, execution_id="exec-2", consumed_at=now
+    )
+    assert journal.consumed_authorization_identities() == {_AUTH_A, _AUTH_B}
+    plans = [
+        row[0]
+        for row in journal.connection.execute("SELECT plan_hash FROM consumed_authorizations")
+    ]
+    assert plans == [_PLAN_A, _PLAN_A]
+
+
+def test_exact_consumption_replay_is_rejected_without_integrity_error(tmp_path: Path) -> None:
+    journal = RequestJournal(tmp_path / "journal.sqlite")
+    now = "2026-07-30T18:00:00+00:00"
+    assert journal.reserve_authorization(
+        authorization_hash=_AUTH_A, plan_hash=_PLAN_A, execution_id="exec-1", reserved_at=now
+    )
+    assert journal.consume_reserved_authorization(
+        authorization_hash=_AUTH_A, execution_id="exec-1", consumed_at=now
+    )
+    assert (
+        journal.consume_reserved_authorization(
+            authorization_hash=_AUTH_A, execution_id="exec-1", consumed_at=now
+        )
+        is False
+    )
+    count = journal.connection.execute("SELECT COUNT(*) FROM consumed_authorizations").fetchone()[0]
+    assert count == 1
+
+
+def test_rekey_aborts_on_malformed_historical_authorization_hash(tmp_path: Path) -> None:
+    db = _v9_db(tmp_path / "v9.sqlite", [(_PLAN_A, "not-a-hash", "2026-07-14T05:53:10+00:00")])
+    with pytest.raises(RuntimeError, match="unusable authorization_hash"):
+        RequestJournal(db)
+
+    intact = sqlite3.connect(str(db))
+    assert intact.execute("SELECT version FROM schema_meta").fetchone()[0] == 9
+    assert _consumed_key(intact) == ["plan_hash"]
+    assert intact.execute("SELECT COUNT(*) FROM consumed_authorizations").fetchone()[0] == 1
+    intact.close()
+
+
+def test_rekey_aborts_on_duplicate_historical_authorization_hash(tmp_path: Path) -> None:
+    db = _v9_db(
+        tmp_path / "v9.sqlite",
+        [
+            (_PLAN_A, _AUTH_A, "2026-07-14T05:53:10+00:00"),
+            ("8" * 64, _AUTH_A, "2026-07-26T21:09:14+00:00"),
+        ],
+    )
+    with pytest.raises(RuntimeError, match="duplicate authorization_hash"):
+        RequestJournal(db)
+
+    intact = sqlite3.connect(str(db))
+    assert intact.execute("SELECT version FROM schema_meta").fetchone()[0] == 9
+    assert _consumed_key(intact) == ["plan_hash"]
+    intact.close()
