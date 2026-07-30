@@ -21,6 +21,7 @@ from neuralmarket.data.acquisition.authorization import (
 from neuralmarket.data.acquisition.estimation import MetadataEstimate
 from neuralmarket.data.acquisition.executor import (
     ExecutorGuardError,
+    PilotExecutionCoordinator,
     PilotExecutor,
     select_recovery_action,
 )
@@ -762,3 +763,34 @@ def test_consumption_persists_the_exact_authorization_ceiling(tmp_path) -> None:
         "SELECT maximum_authorized_spend_usd, currency FROM consumed_authorizations"
     ).fetchone()
     assert row == ("2.40", "USD")
+
+
+def test_validate_only_requires_preflight_to_equal_the_execution_scope(tmp_path) -> None:
+    """Preflight covers the scoped requests, never the whole canonical plan."""
+    journal = RequestJournal(tmp_path / "journal.sqlite")
+    plan, requests, bindings, scope = _authorized_plan()
+    coordinator = PilotExecutionCoordinator()
+    config = load_pilot_config(CONFIG_PATH)
+
+    with pytest.raises(ExecutorGuardError) as exc:
+        coordinator.validate_only(
+            requests=requests,  # the canonical 25
+            config=config,
+            plan_bindings=bindings,
+            plan_metadata=None,
+            metadata_provider_factory=Mock(
+                side_effect=AssertionError("provider must not be built on a scope mismatch")
+            ),
+            execution_scope=scope,
+        )
+    assert exc.value.reason == "execution_scope_request_mismatch"
+    assert journal.consumed_authorization_ids() == set()
+
+
+def test_scoped_preflight_excludes_the_completed_request(tmp_path) -> None:
+    plan, requests, bindings, scope = _authorized_plan()
+    scoped = [r for r in requests if r.request_id in set(scope.remaining_request_ids)]
+    assert len(scoped) == 24
+    assert requests[0].request_id not in {r.request_id for r in scoped}
+    assert [r.request_id for r in scoped] == scope.remaining_request_ids
+    assert [r.request_hash for r in scoped] == scope.remaining_request_hashes

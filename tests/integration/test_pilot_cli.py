@@ -535,6 +535,7 @@ def _execute_args(
     output_path: Path | None = None,
     mode: str = "paid",
     scope_path: Path | None = None,
+    frozen_config: str | None = _PILOT_CONFIG,
 ) -> list[str]:
     args = [
         "data",
@@ -553,6 +554,8 @@ def _execute_args(
         "--journal",
         str(journal_path),
     ]
+    if mode == "paid" and frozen_config is not None:
+        args.extend(["--frozen-pilot-config", frozen_config])
     scope_path = scope_path or auth_path.parent / "scope.json"
     if scope_path.exists():
         args.extend(
@@ -1018,6 +1021,8 @@ def test_pilot_execute_rejects_incorrect_cost_summary_before_journal(
             _AUTH_TEMPLATE,
             "--confirm-plan-hash",
             plan["plan_hash"],
+            "--frozen-pilot-config",
+            _PILOT_CONFIG,
             "--remaining-scope",
             str(scope_path),
             "--expected-remaining-scope-sha256",
@@ -1053,6 +1058,8 @@ def test_pilot_execute_rejects_tampered_dependency_before_journal(
             _AUTH_TEMPLATE,
             "--confirm-plan-hash",
             plan["plan_hash"],
+            "--frozen-pilot-config",
+            _PILOT_CONFIG,
             "--source-manifest",
             str(tampered_source),
             "--journal",
@@ -1081,6 +1088,8 @@ def test_pilot_execute_fails_with_invalid_confirm_hash(
             _AUTH_TEMPLATE,
             "--confirm-plan-hash",
             "INVALID",
+            "--frozen-pilot-config",
+            _PILOT_CONFIG,
             "--journal",
             str(journal_path),
         ],
@@ -1178,6 +1187,8 @@ def test_pilot_validate_only_uses_metadata_capability_without_paid_namespaces(
             str(attestation_path),
             "--confirm-plan-hash",
             plan["plan_hash"],
+            "--frozen-pilot-config",
+            _PILOT_CONFIG,
             "--remaining-scope",
             str(scope_path),
             "--expected-remaining-scope-sha256",
@@ -1676,7 +1687,7 @@ def test_pilot_execute_help_documents_the_scope_arguments() -> None:
     # Typer truncates long option names in the help table, so match the prefix.
     collapsed = " ".join(result.output.split())
     assert "--remaining-scope" in collapsed
-    assert "--expected-remaining-scope-s" in collapsed
+    assert "--expected-remaining-scope" in collapsed
 
 
 @pytest.mark.integration
@@ -1732,3 +1743,126 @@ def test_pilot_execute_rejects_scope_sha_mismatch_before_provider(
     assert result.exit_code != 0
     assert "SHA-256 mismatch" in result.output
     assert not journal_path.exists()
+
+
+# ── frozen plan configuration vs runtime deadline ────────────────────
+
+_FROZEN_PILOT_CONFIG = "configs/data/acquisition/pilot_january_2019.frozen_plan_v1.yaml"
+_FROZEN_PILOT_CONFIG_HASH = "b490b3a11d89707d8a9ab6d154eb6c03ee5d312e247a9d936e1caca4d2621426"
+
+
+@pytest.mark.integration
+def test_frozen_snapshot_matches_the_plan_config_binding() -> None:
+    """The immutable snapshot is exactly what the frozen plan was built from."""
+    from neuralmarket.core.configuration import config_sha256
+
+    plan = json.loads(Path("data/manifests/pilot_request_plan_v1.json").read_text(encoding="utf-8"))
+    assert config_sha256(Path(_FROZEN_PILOT_CONFIG)) == _FROZEN_PILOT_CONFIG_HASH
+    assert plan["bindings"]["pilot_config_hash"] == _FROZEN_PILOT_CONFIG_HASH
+    # The mutable working config has drifted and must not satisfy the binding.
+    assert config_sha256(Path(_PILOT_CONFIG)) != _FROZEN_PILOT_CONFIG_HASH
+
+
+@pytest.mark.integration
+def test_paid_execution_rejects_the_drifted_working_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The stale-config failure that blocked execution, reproduced on the real plan."""
+    pilot_manifest_path = Path("data/manifests/pilot_request_plan_v1.json")
+    plan = json.loads(pilot_manifest_path.read_text(encoding="utf-8"))
+    auth_path, attestation_path = _write_execution_inputs(plan, tmp_path)
+
+    def _no_credentials(root: Any) -> None:
+        raise AssertionError("credentials must not be loaded on a config mismatch")
+
+    monkeypatch.setattr(data_module, "_load_dotenv", _no_credentials)
+    journal_path = tmp_path / "journal.sqlite"
+    args = _execute_args(
+        plan_path=pilot_manifest_path,
+        plan_hash=plan["plan_hash"],
+        auth_path=auth_path,
+        attestation_path=attestation_path,
+        journal_path=journal_path,
+    )
+    result = runner.invoke(app, args)
+    assert result.exit_code != 0
+    assert "dependency hash mismatch" in result.output
+    assert not journal_path.exists()
+
+
+@pytest.mark.integration
+def test_paid_execution_requires_a_frozen_pilot_config(
+    pilot_manifest_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    plan = json.loads(pilot_manifest_path.read_text(encoding="utf-8"))
+    auth_path, attestation_path = _write_execution_inputs(plan, tmp_path)
+
+    def _no_credentials(root: Any) -> None:
+        raise AssertionError("credentials must not be loaded without a frozen config")
+
+    monkeypatch.setattr(data_module, "_load_dotenv", _no_credentials)
+    journal_path = tmp_path / "journal.sqlite"
+    result = runner.invoke(
+        app,
+        _execute_args(
+            plan_path=pilot_manifest_path,
+            plan_hash=plan["plan_hash"],
+            auth_path=auth_path,
+            attestation_path=attestation_path,
+            journal_path=journal_path,
+            frozen_config=None,
+        ),
+    )
+    assert result.exit_code != 0
+    assert "frozen-pilot-config" in result.output
+    assert not journal_path.exists()
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("deadline", ["0", "-1"])
+def test_paid_execution_rejects_nonpositive_runtime_deadline(
+    pilot_manifest_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, deadline: str
+) -> None:
+    plan = json.loads(pilot_manifest_path.read_text(encoding="utf-8"))
+    auth_path, attestation_path = _write_execution_inputs(plan, tmp_path)
+
+    def _no_credentials(root: Any) -> None:
+        raise AssertionError("credentials must not be loaded on a bad deadline")
+
+    monkeypatch.setattr(data_module, "_load_dotenv", _no_credentials)
+    journal_path = tmp_path / "journal.sqlite"
+    args = _execute_args(
+        plan_path=pilot_manifest_path,
+        plan_hash=plan["plan_hash"],
+        auth_path=auth_path,
+        attestation_path=attestation_path,
+        journal_path=journal_path,
+    )
+    args.extend(
+        ["--frozen-pilot-config", _FROZEN_PILOT_CONFIG, "--total-run-deadline-seconds", deadline]
+    )
+    result = runner.invoke(app, args)
+    assert result.exit_code != 0
+    assert not journal_path.exists()
+
+
+@pytest.mark.integration
+def test_runtime_deadline_cannot_change_request_or_plan_identity() -> None:
+    """540 vs 7200 changes no request ID, canonical hash, plan hash, or cap."""
+    from neuralmarket.data.acquisition.requests import build_pilot_request_plan, load_pilot_config
+
+    frozen = load_pilot_config(Path(_FROZEN_PILOT_CONFIG))
+    assert frozen.metadata_execution.total_run_deadline_seconds == 540
+    runtime = data_module._runtime_pilot_config(frozen, 7200)
+    assert runtime.metadata_execution.total_run_deadline_seconds == 7200
+
+    frozen_requests = build_pilot_request_plan(frozen)
+    runtime_requests = build_pilot_request_plan(runtime)
+    assert [r.request_id for r in frozen_requests] == [r.request_id for r in runtime_requests]
+    assert [r.request_hash for r in frozen_requests] == [r.request_hash for r in runtime_requests]
+    assert frozen.maximum_spend_usd == runtime.maximum_spend_usd
+    assert frozen.maximum_single_request_usd == runtime.maximum_single_request_usd
+    # The frozen object itself is never mutated, so its hash binding still holds.
+    from neuralmarket.core.configuration import config_sha256
+
+    assert config_sha256(Path(_FROZEN_PILOT_CONFIG)) == _FROZEN_PILOT_CONFIG_HASH

@@ -676,12 +676,32 @@ class PilotExecutionCoordinator:
         plan_metadata: dict[str, Any] | None,
         metadata_provider_factory: Callable[[], MetadataProvider],
         recovery_plan: RecoveryPlan | None = None,
+        execution_scope: RemainingRequestScope | None = None,
     ) -> ValidationOnlyResult:
-        """Run sequential fresh metadata preflight without durable execution state."""
-        if recovery_plan is None:
+        """Run sequential fresh metadata preflight without durable execution state.
+
+        With an ``execution_scope`` the preflight covers exactly the scoped
+        requests — the settled request is neither re-estimated nor executed.
+        Without one it still requires the canonical plan.
+        """
+        if recovery_plan is not None:
+            if tuple(requests) != recovery_plan.requests:
+                raise ExecutorGuardError("recovery_plan_identity_mismatch")
+        elif execution_scope is not None:
+            scoped = list(
+                zip(
+                    execution_scope.remaining_request_ids,
+                    execution_scope.remaining_request_hashes,
+                    strict=True,
+                )
+            )
+            if [(item.request_id, item.request_hash) for item in requests] != scoped:
+                raise ExecutorGuardError(
+                    "execution_scope_request_mismatch",
+                    "preflight requests do not equal the execution scope",
+                )
+        else:
             validate_canonical_pilot_plan(requests)
-        elif tuple(requests) != recovery_plan.requests:
-            raise ExecutorGuardError("recovery_plan_identity_mismatch")
         provider = metadata_provider_factory()
         try:
             retry = config.retry
@@ -769,13 +789,22 @@ class PilotExecutionCoordinator:
                 recovery_plan=recovery_plan,
                 now=now,
             )
+        if execution_scope is None:
+            execution_requests = requests
+        else:
+            by_id = {request.request_id: request for request in requests}
+            execution_requests = [
+                by_id[request_id] for request_id in execution_scope.remaining_request_ids
+            ]
+
         validation = self.validate_only(
-            requests=requests,
+            requests=execution_requests,
             config=config,
             plan_bindings=plan_bindings,
             plan_metadata=plan_metadata,
             metadata_provider_factory=metadata_provider_factory,
             recovery_plan=recovery_plan,
+            execution_scope=execution_scope,
         )
         if not validation.ready_for_paid_execution:
             raise ExecutorGuardError("preflight_not_passed")
@@ -803,14 +832,6 @@ class PilotExecutionCoordinator:
                 executor.prepare(requests)
                 for request in requests:
                     executor.transition(request.request_id, "preflight_validated")
-
-            if execution_scope is None:
-                execution_requests = requests
-            else:
-                by_id = {request.request_id: request for request in requests}
-                execution_requests = [
-                    by_id[request_id] for request_id in execution_scope.remaining_request_ids
-                ]
 
             actions: list[tuple[AcquisitionRequest, RecoveryAction]] = []
             for request in execution_requests:

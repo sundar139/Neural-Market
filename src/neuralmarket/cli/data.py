@@ -2429,6 +2429,16 @@ def pilot_execute(
         "--journal",
         help="Path to the pilot acquisition journal SQLite file.",
     ),
+    frozen_pilot_config: Path | None = typer.Option(
+        None,
+        "--frozen-pilot-config",
+        help="Immutable pilot config the plan was frozen with; must match plan pilot_config_hash.",
+    ),
+    total_run_deadline_seconds: int | None = typer.Option(
+        None,
+        "--total-run-deadline-seconds",
+        help="Runtime-only execution deadline; never part of the frozen plan dependency.",
+    ),
     remaining_scope: Path | None = typer.Option(
         None,
         "--remaining-scope",
@@ -2488,6 +2498,15 @@ def pilot_execute(
         raise typer.BadParameter(
             "--remaining-scope and --expected-remaining-scope-sha256 must be used together"
         )
+    if mode == "paid" and frozen_pilot_config is None:
+        raise typer.BadParameter("--frozen-pilot-config is required for paid execution")
+    if total_run_deadline_seconds is not None and total_run_deadline_seconds <= 0:
+        raise typer.BadParameter("--total-run-deadline-seconds must be a positive integer")
+    if frozen_pilot_config is not None:
+        # The plan's dependency hash binds this exact file, never the mutable
+        # working config; validated by _validate_pilot_plan_artifacts below,
+        # before any credential or provider access.
+        config = _resolve_under_root(root, frozen_pilot_config)
     try:
         if mode not in {"validate-only", "paid"}:
             raise ValueError("mode must be validate-only or paid")
@@ -2665,7 +2684,7 @@ def pilot_execute(
     try:
         result = _pilot_execution_coordinator().execute_paid(
             requests=authorized_requests,
-            config=load_pilot_config(config),
+            config=_runtime_pilot_config(load_pilot_config(config), total_run_deadline_seconds),
             plan_hash=plan_hash_value,
             plan_bindings=plan_payload["bindings"],
             plan_metadata=_pilot_plan_hash_metadata(plan_payload),
@@ -2931,6 +2950,24 @@ def pilot_settle_successful_billing(
     payload["settlement_hash"] = artifact.settlement_hash
     write_acquisition_json(output, payload)
     typer.echo(json.dumps(payload, sort_keys=True))
+
+
+def _runtime_pilot_config(config: Any, total_run_deadline_seconds: int | None) -> Any:
+    """Return a runtime copy carrying an operational deadline override.
+
+    The frozen configuration object is never mutated: its bytes are what the
+    plan's ``pilot_config_hash`` binds, and ``total_run_deadline_seconds`` is a
+    process-lifetime bound that takes no part in request construction, plan
+    hashing, scope, authorization, evidence, or spend caps.
+    """
+    if total_run_deadline_seconds is None:
+        return config
+    if total_run_deadline_seconds <= 0:
+        raise PlanValidationError("total_run_deadline_seconds must be a positive integer")
+    metadata_execution = config.metadata_execution.model_copy(
+        update={"total_run_deadline_seconds": total_run_deadline_seconds}
+    )
+    return config.model_copy(update={"metadata_execution": metadata_execution})
 
 
 def _load_validated_remaining_scope(
