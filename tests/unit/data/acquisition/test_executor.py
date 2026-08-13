@@ -26,7 +26,9 @@ from neuralmarket.data.acquisition.executor import (
     select_recovery_action,
 )
 from neuralmarket.data.acquisition.journal import JournalEntry, RequestJournal
+from neuralmarket.data.acquisition.providers import PaidProviderError
 from neuralmarket.data.acquisition.requests import (
+    AcquisitionRequest,
     build_pilot_request_plan,
     finalize_request,
     load_pilot_config,
@@ -830,3 +832,88 @@ def test_validate_only_offline_preflight_never_constructs_provider() -> None:
 
     assert result.ready_for_paid_execution is True
     assert Decimal(result.estimated_total_cost) == Decimal("0.24")
+
+
+def test_execute_paid_persistence_failure_blocks_uncertain_billing_without_retry(
+    tmp_path: Path,
+) -> None:
+    """A post-response persistence failure stops paid execution with no retry."""
+    plan, requests, bindings, scope = _authorized_plan()
+    journal_path = tmp_path / "journal.sqlite"
+    with RequestJournal(journal_path) as journal:
+        _mark_preflight_validated(journal, requests)
+    auth_path = tmp_path / "auth.json"
+    auth_hash = _write_valid_auth_file(auth_path, plan_hash=plan, scope=scope)
+    scoped = [r for r in requests if r.request_id in set(scope.remaining_request_ids)]
+    estimates = [
+        MetadataEstimate(
+            dataset=request.dataset,
+            schema=request.schema_name,
+            symbol=request.symbols[0],
+            stype_in=request.stype_in,
+            window_start=request.start,
+            window_end=request.end_exclusive,
+            record_count=10,
+            billable_size_bytes=1000,
+            cost_usd=Decimal("0.01"),
+            retries=0,
+        )
+        for request in scoped
+    ]
+    paid_calls: list[str] = []
+
+    class FailingPaidProvider:
+        def acquire_range(self, request: AcquisitionRequest) -> object:
+            paid_calls.append(request.request_id)
+            raise PaidProviderError(
+                "local_persistence_failure",
+                "paid historical provider response could not be persisted locally"
+                " (OSError: simulated write failure)",
+                uncertain_completion=True,
+            )
+
+        def close(self) -> None:
+            return None
+
+    class NoResumeLifecycle:
+        def inspect(self, request: object, entry: object) -> tuple[bool, bool, bool, bool]:
+            return (False, False, False, False)
+
+        def normalize(self, request: object, raw: object) -> object:
+            raise AssertionError("normalization must not run after a persistence failure")
+
+        def quality(self, request: object, path: object) -> bool:
+            raise AssertionError("quality validation must not run after a persistence failure")
+
+    result = PilotExecutionCoordinator().execute_paid(
+        requests=requests,
+        config=load_pilot_config(CONFIG_PATH),
+        plan_hash=plan,
+        plan_bindings=bindings,
+        plan_metadata=None,
+        authorization_path=auth_path,
+        authorization_hash=auth_hash,
+        portal_attestation_hash="t" * 64,
+        confirm_plan_hash=plan,
+        metadata_provider_factory=Mock(
+            side_effect=AssertionError("metadata provider must not be constructed")
+        ),
+        paid_provider_factory=lambda: FailingPaidProvider(),
+        journal_factory=lambda: RequestJournal(journal_path),
+        lifecycle=NoResumeLifecycle(),
+        now=datetime.now(UTC),
+        execution_scope=scope,
+        preflight_estimates=estimates,
+    )
+
+    with RequestJournal(journal_path) as journal:
+        entry = journal.get(paid_calls[0])
+    assert result.blocking_state == "block_uncertain_billing"
+    assert result.manual_action_required is True
+    assert result.paid_request_calls == 1
+    assert result.requests_uncertain == 1
+    assert paid_calls == [scoped[0].request_id]  # exactly one provider call, no retry
+    assert entry is not None and entry.state == "uncertain_billing"
+    assert entry.failure_category == "local_persistence_failure"
+    assert "OSError: simulated write failure" in (entry.failure_message or "")
+    assert entry.actual_billed_cost_usd is None  # no synthetic billing value

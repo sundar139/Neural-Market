@@ -260,6 +260,114 @@ def test_paid_adapter_classifies_local_persistence_failure_after_response(tmp_pa
     assert len(client.timeseries.calls) == 1
 
 
+def test_persistence_failure_preserves_sanitized_underlying_exception(tmp_path: Path) -> None:
+    """The wrapper keeps the underlying class and a redacted message."""
+    request = _finalized_request()
+
+    def validator(_path, _checksum, _request) -> bool:
+        raise RuntimeError("boom DATABENTO_API_KEY=hunter2 secret")
+
+    provider = DatabentoPaidHistoricalProvider(
+        client=_StrictClient(),
+        data_root=tmp_path,
+        validator=validator,
+    )
+
+    with pytest.raises(PaidProviderError) as error:
+        provider.acquire_range(request)
+
+    message = str(error.value)
+    assert error.value.category == "local_persistence_failure"
+    assert error.value.uncertain_completion is True
+    assert "RuntimeError" in message
+    assert "DATABENTO_API_KEY=[REDACTED]" in message
+    assert "hunter2" not in message
+
+
+def test_persistence_failure_cleans_partials_and_leaves_no_final(tmp_path: Path) -> None:
+    """A failed persistence never survives as a corrupt final or partial DBN."""
+    request = _finalized_request()
+    provider = DatabentoPaidHistoricalProvider(
+        client=_StrictClient(),
+        data_root=tmp_path,
+        validator=lambda _path, _checksum, _request: False,
+    )
+
+    with pytest.raises(PaidProviderError):
+        provider.acquire_range(request)
+
+    assert [path.name for path in tmp_path.rglob("*") if path.is_file()] == []
+
+
+def test_existing_destination_refuses_overwrite_with_exception_detail(tmp_path: Path) -> None:
+    """Overwrite refusal keeps the pre-existing artifact and reports FileExistsError."""
+    from neuralmarket.data.acquisition.storage import logical_raw_path
+
+    request = _finalized_request()
+    final_path = tmp_path / logical_raw_path(request)
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    original = b"preexisting-artifact"
+    final_path.write_bytes(original)
+    provider = DatabentoPaidHistoricalProvider(
+        client=_StrictClient(),
+        data_root=tmp_path,
+        validator=lambda _path, _checksum, _request: True,
+    )
+
+    with pytest.raises(PaidProviderError) as error:
+        provider.acquire_range(request)
+
+    assert error.value.category == "local_persistence_failure"
+    assert "FileExistsError" in str(error.value)
+    assert final_path.read_bytes() == original
+    assert not list(tmp_path.rglob("*.partial"))
+
+
+def test_serialization_failure_preserves_underlying_exception(tmp_path: Path) -> None:
+    """to_file failures keep the underlying class and message, sanitized."""
+
+    class ExplodingStore(_FakeStore):
+        def to_file(self, path: Path) -> None:
+            raise OSError("disk exploded")
+
+    provider = DatabentoPaidHistoricalProvider(
+        client=_StrictClient(store=ExplodingStore()),
+        data_root=tmp_path,
+        validator=lambda _path, _checksum, _request: True,
+    )
+
+    with pytest.raises(PaidProviderError) as error:
+        provider.acquire_range(_finalized_request())
+
+    assert error.value.category == "unexpected_provider_response"
+    assert error.value.uncertain_completion is True
+    assert "OSError" in str(error.value)
+    assert "disk exploded" in str(error.value)
+
+
+def test_atomic_publish_failure_cleans_partials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed atomic rename leaves no partial and no final artifact."""
+    from neuralmarket.data.acquisition import storage
+
+    monkeypatch.setattr(
+        storage, "_atomic_publish", lambda _s, _d: (_ for _ in ()).throw(OSError("rename failed"))
+    )
+    provider = DatabentoPaidHistoricalProvider(
+        client=_StrictClient(),
+        data_root=tmp_path,
+        validator=lambda _path, _checksum, _request: True,
+    )
+
+    with pytest.raises(PaidProviderError) as error:
+        provider.acquire_range(_finalized_request())
+
+    assert error.value.category == "local_persistence_failure"
+    assert "OSError" in str(error.value)
+    assert [path.name for path in tmp_path.rglob("*") if path.is_file()] == []
+
+
 def test_metadata_facade_never_accesses_paid_namespaces() -> None:
     class Metadata:
         def get_record_count(self, **kwargs: object) -> int:

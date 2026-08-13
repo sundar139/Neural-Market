@@ -1,5 +1,6 @@
 import json
 import shutil
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -34,8 +35,24 @@ def test_raw_validated_paid_dbn_resumes_offline_without_paid_provider(
     )
     if not source_journal.is_file() or not raw_path.is_file():
         pytest.skip("protected production journal and paid DBN are not present")
+    target_id = "6b46de651d2cf921"
+    completed_id = "2750995e515e4f1a"
     journal_path = tmp_path / "journal.sqlite"
     shutil.copy2(source_journal, journal_path)
+    # Seed the exact fixture state on the temporary copy. The test must not
+    # depend on the mutable production journal still holding the historical
+    # raw_validated state for this request.
+    raw_sha256_before = sha256_of_file(raw_path)
+    with sqlite3.connect(journal_path) as connection:
+        connection.execute(
+            "UPDATE requests SET state = 'raw_validated', raw_path = ?, "
+            "raw_checksum = ?, raw_record_count = 21, raw_byte_count = ?, "
+            "normalized_path = NULL, normalized_checksum = NULL, "
+            "request_completed_at = NULL, failure_category = NULL, "
+            "failure_message = NULL WHERE request_id = ?",
+            (str(raw_path), raw_sha256_before, raw_path.stat().st_size, target_id),
+        )
+        connection.commit()
     plan = json.loads(
         (root / "data/manifests/pilot_request_plan_v1.json").read_text(encoding="utf-8")
     )
@@ -45,9 +62,6 @@ def test_raw_validated_paid_dbn_resumes_offline_without_paid_provider(
             encoding="utf-8"
         )
     )
-    target_id = "6b46de651d2cf921"
-    completed_id = "2750995e515e4f1a"
-    raw_sha256_before = sha256_of_file(raw_path)
     raw_mtime_before = raw_path.stat().st_mtime_ns
 
     with RequestJournal(journal_path) as journal:

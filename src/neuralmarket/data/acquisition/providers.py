@@ -17,6 +17,7 @@ from typing import Any
 from neuralmarket.data.acquisition.executor import PaidHistoricalProvider, RawAcquisitionResult
 from neuralmarket.data.acquisition.requests import AcquisitionRequest, verify_final_request
 from neuralmarket.data.acquisition.storage import atomic_store_raw
+from neuralmarket.data.redaction import redact
 
 
 class DatabentoMetadataProvider:
@@ -173,7 +174,8 @@ class DatabentoPaidHistoricalProvider(PaidHistoricalProvider):
             except Exception as exc:
                 raise PaidProviderError(
                     "unexpected_provider_response",
-                    "paid historical provider response could not be serialized",
+                    "paid historical provider response could not be serialized"
+                    f" ({type(exc).__name__}: {redact(str(exc))})",
                     uncertain_completion=True,
                 ) from exc
             try:
@@ -186,7 +188,8 @@ class DatabentoPaidHistoricalProvider(PaidHistoricalProvider):
             except Exception as exc:
                 raise PaidProviderError(
                     "local_persistence_failure",
-                    "paid historical provider response could not be persisted locally",
+                    "paid historical provider response could not be persisted locally"
+                    f" ({type(exc).__name__}: {redact(str(exc))})",
                     uncertain_completion=True,
                 ) from exc
         finally:
