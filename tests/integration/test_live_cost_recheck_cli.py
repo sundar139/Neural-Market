@@ -39,7 +39,7 @@ class _FakeProvider:
 
 def _ok(cost: str) -> IsolatedMetadataResult:
     return IsolatedMetadataResult(
-        endpoint_values={"cost": cost},
+        endpoint_values={"record-count": 10, "billable-size": 1000, "cost": cost},
         events=[],
         child_pid=1,
         child_exitcode=0,

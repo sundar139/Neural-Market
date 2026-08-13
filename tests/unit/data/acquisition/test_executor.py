@@ -794,3 +794,39 @@ def test_scoped_preflight_excludes_the_completed_request(tmp_path) -> None:
     assert requests[0].request_id not in {r.request_id for r in scoped}
     assert [r.request_id for r in scoped] == scope.remaining_request_ids
     assert [r.request_hash for r in scoped] == scope.remaining_request_hashes
+
+
+def test_validate_only_offline_preflight_never_constructs_provider() -> None:
+    """Complete hash-bound evidence runs the paid preflight with zero metadata calls."""
+    plan, requests, bindings, scope = _authorized_plan()
+    scoped = [r for r in requests if r.request_id in set(scope.remaining_request_ids)]
+    estimates = [
+        MetadataEstimate(
+            dataset=request.dataset,
+            schema=request.schema_name,
+            symbol=request.symbols[0],
+            stype_in=request.stype_in,
+            window_start=request.start,
+            window_end=request.end_exclusive,
+            record_count=10,
+            billable_size_bytes=1000,
+            cost_usd=Decimal("0.01"),
+            retries=0,
+        )
+        for request in scoped
+    ]
+
+    result = PilotExecutionCoordinator().validate_only(
+        requests=scoped,
+        config=load_pilot_config(CONFIG_PATH),
+        plan_bindings=bindings,
+        plan_metadata=None,
+        metadata_provider_factory=Mock(
+            side_effect=AssertionError("provider must not be constructed for offline preflight")
+        ),
+        execution_scope=scope,
+        preflight_estimates=estimates,
+    )
+
+    assert result.ready_for_paid_execution is True
+    assert Decimal(result.estimated_total_cost) == Decimal("0.24")

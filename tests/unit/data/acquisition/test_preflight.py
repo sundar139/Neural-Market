@@ -8,8 +8,13 @@ from threading import Lock
 import pytest
 
 from neuralmarket.data.acquisition.estimation import MetadataEstimate
-from neuralmarket.data.acquisition.preflight import PilotPreflightConfig, run_preflight
+from neuralmarket.data.acquisition.preflight import (
+    EvidenceEstimator,
+    PilotPreflightConfig,
+    run_preflight,
+)
 from neuralmarket.data.acquisition.requests import AcquisitionRequest
+from neuralmarket.data.errors import CostEstimationError
 
 pytestmark = pytest.mark.unit
 
@@ -124,6 +129,82 @@ def test_preflight_rejects_unexplained_estimate_increase() -> None:
     )
     assert result.passed is False
     assert any(r.reason == "unexplained_increase" for r in result.rejections)
+
+
+def _evidence_estimate(request: AcquisitionRequest, cost: str = "0.01") -> MetadataEstimate:
+    return MetadataEstimate(
+        dataset=request.dataset,
+        schema=request.schema_name,
+        symbol=request.symbols[0],
+        stype_in=request.stype_in,
+        window_start=request.start,
+        window_end=request.end_exclusive,
+        record_count=10,
+        billable_size_bytes=1000,
+        cost_usd=Decimal(cost),
+        retries=0,
+    )
+
+
+_EVIDENCE_CONFIG = PilotPreflightConfig(
+    maximum_spend_usd=Decimal("5.00"),
+    maximum_single_request_usd=Decimal("1.00"),
+    estimate_increase_tolerance_fraction=Decimal("0.20"),
+)
+
+
+def test_evidence_estimator_runs_preflight_with_zero_provider_calls() -> None:
+    requests = [_request(f"r{i}", None) for i in range(3)]
+    estimator = EvidenceEstimator([_evidence_estimate(request) for request in requests])
+
+    result = run_preflight(estimator=estimator, requests=requests, config=_EVIDENCE_CONFIG)
+
+    assert result.passed is True
+    assert result.metadata_call_count == 0
+    assert result.metadata_endpoint_call_count == 0
+    assert result.retry_count == 0
+    assert result.fresh_total_usd == "0.03"
+    assert [item.estimated_record_count for item in result.estimated_requests] == [10, 10, 10]
+    assert [item.estimated_billable_size for item in result.estimated_requests] == [
+        1000,
+        1000,
+        1000,
+    ]
+
+
+def test_evidence_estimator_missing_request_fails_closed() -> None:
+    requests = [_request("r0", None), _request("r1", None)]
+    requests[1] = requests[1].model_copy(
+        update={
+            "start": requests[1].start + timedelta(days=1),
+            "end_exclusive": requests[1].end_exclusive + timedelta(days=1),
+        }
+    )
+    estimator = EvidenceEstimator([_evidence_estimate(requests[0])])
+
+    with pytest.raises(CostEstimationError, match="no estimate for request r1"):
+        run_preflight(estimator=estimator, requests=requests, config=_EVIDENCE_CONFIG)
+
+
+def test_evidence_estimator_identity_mismatch_fails_closed() -> None:
+    request = _request("r0", None)
+    mismatched = MetadataEstimate(
+        dataset="OTHER.PILLAR",
+        schema=request.schema_name,
+        symbol=request.symbols[0],
+        stype_in=request.stype_in,
+        window_start=request.start,
+        window_end=request.end_exclusive,
+        record_count=10,
+        billable_size_bytes=1000,
+        cost_usd=Decimal("0.01"),
+        retries=0,
+    )
+
+    with pytest.raises(CostEstimationError, match="no estimate for request r0"):
+        run_preflight(
+            estimator=EvidenceEstimator([mismatched]), requests=[request], config=_EVIDENCE_CONFIG
+        )
 
 
 def test_preflight_uses_decimal_not_float_for_total() -> None:

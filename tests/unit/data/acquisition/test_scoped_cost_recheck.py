@@ -87,7 +87,7 @@ class _Recorder:
     def quoter(self, request: AcquisitionRequest, attempt: int, timeout: float) -> Any:
         self.quoted.append(request.request_id)
         return IsolatedMetadataResult(
-            endpoint_values={"cost": "0.01"},
+            endpoint_values={"record-count": 10, "billable-size": 1000, "cost": "0.01"},
             events=[],
             child_pid=1,
             child_exitcode=0,

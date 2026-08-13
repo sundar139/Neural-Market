@@ -525,6 +525,80 @@ def _write_execution_inputs(plan: dict[str, Any], tmp_path: Path) -> tuple[Path,
     return auth_path, attestation_path
 
 
+def _write_fake_preflight_evidence(plan_path: Path, auth_path: Path, tmp_path: Path) -> Path:
+    """Write complete, hash-bound offline-preflight evidence and rebind the authorization."""
+    from neuralmarket.data.acquisition.live_cost_recheck import _provider_response_sha256
+
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    scope = _integration_scope(plan)
+    by_id = {item["request_id"]: item for item in plan["requests"]}
+    now = data_module.datetime.now(data_module.UTC)
+    quotes = []
+    for request_id in scope.remaining_request_ids:
+        request = AcquisitionRequest.model_validate(by_id[request_id])
+        cost = "0.00000001"
+        record_count = 1
+        billable_size = 1
+        quotes.append(
+            {
+                "request_id": request_id,
+                "dataset": request.dataset,
+                "schema": request.schema_name,
+                "symbols": list(request.symbols),
+                "stype_in": request.stype_in,
+                "start": request.start.isoformat(),
+                "end": request.end_exclusive.isoformat(),
+                "status": "quoted",
+                "cost_usd": cost,
+                "attempts": 1,
+                "last_failure_class": None,
+                "last_http_status": None,
+                "remaining_children": 0,
+                "request_specification_sha256": request.specification_hash,
+                "quote_source": "provider_response",
+                "provider_response_sha256": _provider_response_sha256(
+                    request_id, request.specification_hash, cost, record_count, billable_size
+                ),
+                "provider_observed_at": now.isoformat(),
+                "record_count": record_count,
+                "billable_size_bytes": billable_size,
+            }
+        )
+    total = str(sum(Decimal(quote["cost_usd"]) for quote in quotes))
+    largest = max(Decimal(quote["cost_usd"]) for quote in quotes)
+    payload: dict[str, Any] = {
+        "schema_version": "pilot-cost-recheck-v2",
+        "status": "complete",
+        "authorization_ready": True,
+        "purchase_authorized": False,
+        "observed_at": (now - timedelta(minutes=1)).isoformat(),
+        "expires_at": (now + timedelta(minutes=30)).isoformat(),
+        "checkpoint_sha256": "c" * 64,
+        "plan_hash": plan["plan_hash"],
+        "request_manifest_sha256": sha256_of_file(plan_path),
+        "quotes": quotes,
+        "provider_quote_count": len(quotes),
+        "unavailable_quote_count": 0,
+        "fresh_raw_total_usd": total,
+        "fresh_conservative_total_usd": total,
+        "prior_raw_total_usd": total,
+        "prior_conservative_total_usd": total,
+        "absolute_delta_usd": "0",
+        "relative_delta": "0",
+        "largest_request_usd": str(largest),
+        "schema_validation": {},
+        "attempt_history": [],
+    }
+    evidence_path = tmp_path / "preflight_evidence.json"
+    evidence_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    evidence_sha = sha256_of_file(evidence_path)
+    auth_payload = json.loads(auth_path.read_text(encoding="utf-8"))
+    auth_payload["cost_evidence"]["evidence_sha256"] = evidence_sha
+    auth_payload["authorization_hash"] = compute_authorization_hash(auth_payload)
+    auth_path.write_text(json.dumps(auth_payload, indent=2, sort_keys=True), encoding="utf-8")
+    return evidence_path
+
+
 def _execute_args(
     *,
     plan_path: Path,
@@ -556,6 +630,13 @@ def _execute_args(
     ]
     if mode == "paid" and frozen_config is not None:
         args.extend(["--frozen-pilot-config", frozen_config])
+    if mode == "paid":
+        args.extend(
+            [
+                "--preflight-evidence",
+                str(_write_fake_preflight_evidence(plan_path, auth_path, auth_path.parent)),
+            ]
+        )
     scope_path = scope_path or auth_path.parent / "scope.json"
     if scope_path.exists():
         args.extend(
@@ -1439,38 +1520,43 @@ def test_pilot_execute_cli_fake_paid_lifecycle_and_dry_resume(
 
 
 @pytest.mark.integration
-def test_pilot_execute_fresh_preflight_failure_creates_no_journal_or_paid_provider(
+def test_pilot_execute_incomplete_preflight_evidence_creates_no_journal_or_paid_provider(
     pilot_manifest_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """Incomplete offline preflight evidence fails closed before any provider or journal."""
     plan = json.loads(pilot_manifest_path.read_text(encoding="utf-8"))
     auth_path, attestation_path = _write_execution_inputs(plan, tmp_path)
     journal = tmp_path / "journal.sqlite"
     paid_factory_calls = 0
 
-    class FailingMetadata(_ZeroCostMetadata):
-        def get_cost(self, **kwargs: Any) -> float:
-            raise RuntimeError("metadata failed")
+    def metadata_factory():
+        raise AssertionError("metadata provider must not be constructed on bad evidence")
 
     def paid_factory(root: Path):
         nonlocal paid_factory_calls
         paid_factory_calls += 1
         raise AssertionError("paid provider factory must not be requested")
 
+    args = _execute_args(
+        plan_path=pilot_manifest_path,
+        plan_hash=plan["plan_hash"],
+        auth_path=auth_path,
+        attestation_path=attestation_path,
+        journal_path=journal,
+    )
+    evidence_path = Path(args[args.index("--preflight-evidence") + 1])
+    payload = json.loads(evidence_path.read_text(encoding="utf-8"))
+    for quote in payload["quotes"]:
+        quote.pop("record_count", None)
+    evidence_path.write_text(json.dumps(payload), encoding="utf-8")
+
     monkeypatch.setattr(data_module, "_load_dotenv", lambda root: None)
     monkeypatch.setattr(data_module, "paid_provider_readiness", lambda: SimpleNamespace(ready=True))
-    monkeypatch.setattr(data_module, "_pilot_metadata_provider_factory", FailingMetadata)
+    monkeypatch.setattr(data_module, "_pilot_metadata_provider_factory", metadata_factory)
     monkeypatch.setattr(data_module, "_pilot_paid_provider_factory", paid_factory)
-    result = runner.invoke(
-        app,
-        _execute_args(
-            plan_path=pilot_manifest_path,
-            plan_hash=plan["plan_hash"],
-            auth_path=auth_path,
-            attestation_path=attestation_path,
-            journal_path=journal,
-        ),
-    )
-    assert result.exit_code != 0
+    result = runner.invoke(app, args)
+    assert result.exit_code == 1
+    assert "generate a fresh complete recheck" in result.output
     assert not journal.exists()
     assert paid_factory_calls == 0
 
@@ -1866,3 +1952,59 @@ def test_runtime_deadline_cannot_change_request_or_plan_identity() -> None:
     from neuralmarket.core.configuration import config_sha256
 
     assert config_sha256(Path(_FROZEN_PILOT_CONFIG)) == _FROZEN_PILOT_CONFIG_HASH
+
+
+@pytest.mark.integration
+def test_paid_execution_requires_preflight_evidence_before_credentials(
+    pilot_manifest_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Paid mode without complete evidence stops before any credential access."""
+    plan = json.loads(pilot_manifest_path.read_text(encoding="utf-8"))
+    auth_path, attestation_path = _write_execution_inputs(plan, tmp_path)
+    args = _execute_args(
+        plan_path=pilot_manifest_path,
+        plan_hash=plan["plan_hash"],
+        auth_path=auth_path,
+        attestation_path=attestation_path,
+        journal_path=tmp_path / "journal.sqlite",
+    )
+    args = [arg for arg in args if arg != "--preflight-evidence"]
+    evidence_arg = next(a for a in args if a.endswith("preflight_evidence.json"))
+    args.pop(args.index(evidence_arg))
+
+    def _no_credentials(root: Any) -> None:
+        raise AssertionError("credentials must not load without preflight evidence")
+
+    monkeypatch.setattr(data_module, "_load_dotenv", _no_credentials)
+    result = runner.invoke(app, args)
+    assert result.exit_code != 0
+    assert "preflight-evidence" in result.output
+
+
+@pytest.mark.integration
+def test_paid_execution_rejects_tampered_preflight_evidence_before_credentials(
+    pilot_manifest_path: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Tampered evidence fails closed with zero provider or credential access."""
+    plan = json.loads(pilot_manifest_path.read_text(encoding="utf-8"))
+    auth_path, attestation_path = _write_execution_inputs(plan, tmp_path)
+    args = _execute_args(
+        plan_path=pilot_manifest_path,
+        plan_hash=plan["plan_hash"],
+        auth_path=auth_path,
+        attestation_path=attestation_path,
+        journal_path=tmp_path / "journal.sqlite",
+    )
+    evidence_path = Path(args[args.index("--preflight-evidence") + 1])
+    payload = json.loads(evidence_path.read_text(encoding="utf-8"))
+    payload["quotes"][0]["record_count"] = 11
+    evidence_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    def _no_credentials(root: Any) -> None:
+        raise AssertionError("credentials must not load on tampered evidence")
+
+    monkeypatch.setattr(data_module, "_load_dotenv", _no_credentials)
+    result = runner.invoke(app, args)
+    assert result.exit_code == 1
+    assert "preflight evidence" in result.output
+    assert "generate a fresh complete recheck" in result.output

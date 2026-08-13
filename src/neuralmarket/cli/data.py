@@ -1929,7 +1929,11 @@ def _pilot_schema_lister(provider: DatabentoMetadataProvider) -> Callable[[str],
 def _pilot_cost_quoter(
     *, run_id: str, request_count: int, requests: list[AcquisitionRequest]
 ) -> Callable[[AcquisitionRequest, int, float], Any]:
-    """Return a per-request quoter that isolates each get_cost call in a child."""
+    """Return a per-request quoter that isolates the full metadata trio in a child.
+
+    Each quote captures record-count, billable-size, and cost so paid execution
+    can run its preflight fully offline from this evidence.
+    """
 
     def quoter(request: AcquisitionRequest, attempt: int, timeout_seconds: float) -> Any:
         return _run_isolated_metadata(
@@ -1939,10 +1943,83 @@ def _pilot_cost_quoter(
             request_count=request_count,
             attempt=attempt,
             timeout_seconds=timeout_seconds,
-            only_endpoint="cost",
+            only_endpoint=None,
         )
 
     return quoter
+
+
+def _load_offline_preflight_estimates(
+    *,
+    evidence_path: Path,
+    plan_path: Path,
+    plan_hash: str,
+    authorized_requests: list[AcquisitionRequest],
+    execution_scope: RemainingRequestScope,
+    expected_evidence_sha256: str | None,
+    now: datetime,
+) -> list[MetadataEstimate]:
+    """Validate complete fresh cost-recheck evidence into offline preflight estimates.
+
+    Fail-closed: a missing, stale, incomplete, tampered, or unbound artifact
+    raises before any credential or provider access. The operator must
+    regenerate a fresh complete recheck.
+    """
+    from neuralmarket.data.acquisition.live_cost_recheck import (
+        CostRecheckError,
+        validate_resume_evidence,
+    )
+
+    evidence_payload = load_acquisition_json(evidence_path)
+    validate_no_unresolved_json_secrets(evidence_payload)
+    evidence_sha = _sha256_file(evidence_path)
+    if not expected_evidence_sha256 or not hmac.compare_digest(
+        evidence_sha, expected_evidence_sha256
+    ):
+        raise PlanValidationError(
+            "preflight evidence does not match the authorization cost evidence; "
+            "generate a fresh complete recheck"
+        )
+    by_id = {request.request_id: request for request in authorized_requests}
+    scoped_requests = [by_id[rid] for rid in execution_scope.remaining_request_ids]
+    try:
+        validated = validate_resume_evidence(
+            evidence_payload,
+            requests=scoped_requests,
+            checkpoint_sha256=str(evidence_payload.get("checkpoint_sha256")),
+            plan_hash=plan_hash,
+            request_manifest_sha256=_sha256_file(plan_path),
+            source_evidence_sha256=evidence_sha,
+            remaining_scope=execution_scope,
+        )
+    except CostRecheckError as exc:
+        raise PlanValidationError(
+            f"preflight evidence rejected: generate a fresh complete recheck ({exc})"
+        ) from exc
+    if datetime.fromisoformat(validated.expires_at) <= now:
+        raise PlanValidationError("preflight evidence is stale; generate a fresh complete recheck")
+    if evidence_payload.get("status") != "complete":
+        raise PlanValidationError(
+            "preflight evidence is incomplete; generate a fresh complete recheck"
+        )
+    estimates: list[MetadataEstimate] = []
+    for quote in validated.quotes:
+        assert quote.record_count is not None and quote.billable_size_bytes is not None
+        estimates.append(
+            MetadataEstimate(
+                dataset=quote.dataset,
+                schema=quote.schema,
+                symbol=by_id[quote.request_id].symbols[0],
+                stype_in=quote.stype_in,
+                window_start=datetime.fromisoformat(quote.start),
+                window_end=datetime.fromisoformat(quote.end),
+                record_count=quote.record_count,
+                billable_size_bytes=quote.billable_size_bytes,
+                cost_usd=Decimal(quote.cost_usd or "0"),
+                retries=0,
+            )
+        )
+    return estimates
 
 
 @pilot_app.command("recheck-cost")
@@ -2449,6 +2526,11 @@ def pilot_execute(
         "--expected-remaining-scope-sha256",
         help="Exact 64-lowercase-hex SHA-256 the remaining-scope artifact bytes must match.",
     ),
+    preflight_evidence: Path | None = typer.Option(
+        None,
+        "--preflight-evidence",
+        help="Complete fresh scoped cost-recheck evidence enabling offline paid preflight.",
+    ),
     output: Path | None = typer.Option(
         None, "--output", help="Local execution or validation report path."
     ),
@@ -2629,10 +2711,31 @@ def pilot_execute(
             raise PortalAttestationError("portal attestation is required")
         attestation = load_portal_attestation(portal_attestation)
         validate_portal_attestation(attestation, plan_hash=plan_hash_value, now=datetime.now(UTC))
+        preflight_estimates: list[MetadataEstimate] | None = None
+        if mode == "paid" and recovery_plan is None:
+            if preflight_evidence is None:
+                raise typer.BadParameter(
+                    "--preflight-evidence is required for paid execution; "
+                    "generate a fresh complete scoped recheck first"
+                )
+            assert execution_scope is not None
+            preflight_estimates = _load_offline_preflight_estimates(
+                evidence_path=_resolve_under_root(root, preflight_evidence),
+                plan_path=plan,
+                plan_hash=plan_hash_value,
+                authorized_requests=authorized_requests,
+                execution_scope=execution_scope,
+                expected_evidence_sha256=(
+                    auth.cost_evidence.evidence_sha256 if auth.cost_evidence else None
+                ),
+                now=datetime.now(UTC),
+            )
         seen_paths: set[str] = set()
         for request in authorized_requests:
             validate_logical_path(request.logical_output_path or "", seen_paths)
             seen_paths.add((request.logical_output_path or "").replace(chr(92), "/").lower())
+    except typer.BadParameter:
+        raise
     except Exception as exc:
         message = f"Pilot execution blocked: authorization guard rejected: {redact(str(exc))}"
         typer.echo(message, err=True)
@@ -2700,6 +2803,7 @@ def pilot_execute(
             recovery_plan=recovery_plan,
             recovery_purchase_package=recovery_purchase_package,
             execution_scope=execution_scope,
+            preflight_estimates=preflight_estimates,
         )
     except ExecutorGuardError as exc:
         message = f"Pilot execution blocked: execution coordinator rejected ({exc.reason}): {exc}"

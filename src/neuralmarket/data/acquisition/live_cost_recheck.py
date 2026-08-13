@@ -73,10 +73,12 @@ class RequestQuote:
     last_failure_class: str | None
     last_http_status: int | None
     remaining_children: int | str
-    request_specification_sha256: str | None = None
+    request_specification_sha256: str
     quote_source: str | None = None
     provider_response_sha256: str | None = None
     provider_observed_at: str | None = None
+    record_count: int | None = None
+    billable_size_bytes: int | None = None
 
 
 @dataclass(frozen=True)
@@ -148,11 +150,33 @@ def _quote_cost(value: object) -> Decimal:
     return parsed
 
 
-def _provider_response_sha256(request_id: str, specification_sha256: str, cost_usd: str) -> str:
+def _provider_response_sha256(
+    request_id: str,
+    specification_sha256: str,
+    cost_usd: str,
+    record_count: int,
+    billable_size_bytes: int,
+) -> str:
+    """Hash-bind the provider quote together with its complete metadata values."""
     payload = json.dumps(
-        [request_id, specification_sha256, cost_usd], separators=(",", ":"), ensure_ascii=True
+        [request_id, specification_sha256, cost_usd, record_count, billable_size_bytes],
+        separators=(",", ":"),
+        ensure_ascii=True,
     )
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _nonneg_int_value(value: object) -> int:
+    """Parse a provider metadata value as a non-negative int, rejecting floats/bools."""
+    if isinstance(value, bool):
+        raise CostRecheckError("provider metadata value must not be a bool")
+    try:
+        parsed = int(str(value))
+    except (TypeError, ValueError) as exc:
+        raise CostRecheckError("provider metadata value is not an integer") from exc
+    if parsed < 0:
+        raise CostRecheckError("provider metadata value is negative")
+    return parsed
 
 
 def _aware_timestamp(value: object, label: str) -> str:
@@ -269,6 +293,10 @@ def validate_resume_evidence(
         quote_source = raw.get("quote_source")
         response_sha = raw.get("provider_response_sha256")
         provider_observed_at = raw.get("provider_observed_at")
+        record_count_raw = raw.get("record_count")
+        billable_raw = raw.get("billable_size_bytes")
+        record_count: int | None = None
+        billable_size: int | None = None
         if status == "quoted":
             if not isinstance(cost, str):
                 raise CostRecheckError("resume evidence completed quote value is invalid")
@@ -278,7 +306,16 @@ def validate_resume_evidence(
                 raise CostRecheckError("resume evidence completed quote value is invalid") from exc
             if version != "pilot-cost-recheck-v2" or quote_source != "provider_response":
                 raise CostRecheckError("resume evidence completed quote lacks provider provenance")
-            expected_response = _provider_response_sha256(request_id, specification, cost)
+            try:
+                record_count = _nonneg_int_value(record_count_raw)
+                billable_size = _nonneg_int_value(billable_raw)
+            except CostRecheckError as exc:
+                raise CostRecheckError(
+                    "resume evidence completed quote lacks complete metadata values"
+                ) from exc
+            expected_response = _provider_response_sha256(
+                request_id, specification, cost, record_count, billable_size
+            )
             if response_sha != expected_response:
                 raise CostRecheckError("resume evidence provider quote identity mismatch")
             provider_observed_at = _aware_timestamp(
@@ -288,6 +325,8 @@ def validate_resume_evidence(
             cost is not None
             or quote_source not in {None, "unavailable"}
             or response_sha is not None
+            or record_count_raw is not None
+            or billable_raw is not None
         ):
             raise CostRecheckError("resume evidence unavailable quote is invalid")
         attempts = raw.get("attempts")
@@ -315,6 +354,8 @@ def validate_resume_evidence(
                 quote_source=quote_source,
                 provider_response_sha256=response_sha,
                 provider_observed_at=provider_observed_at,
+                record_count=record_count,
+                billable_size_bytes=billable_size,
             )
         )
     if seen != set(by_id):
@@ -476,10 +517,14 @@ def recheck_costs(
         for quote in preserved
     ]
     get_cost_calls = 0
+    get_record_count_calls = 0
+    get_billable_size_calls = 0
     unavailable = 0
 
     for request in targets:
         cost: Decimal | None = None
+        record_count: int | None = None
+        billable_size: int | None = None
         attempts_used = 0
         last_failure: str | None = None
         last_status: int | None = None
@@ -490,6 +535,12 @@ def recheck_costs(
             isolated = quoter(request, attempt, timeout_seconds)
             remaining = isolated.remaining_children
             last_event = isolated.events[-1] if isolated.events else None
+            get_record_count_calls += sum(
+                1 for event in isolated.events if event.endpoint == "record-count"
+            )
+            get_billable_size_calls += sum(
+                1 for event in isolated.events if event.endpoint == "billable-size"
+            )
             attempt_history.append(
                 {
                     "request_id": request.request_id,
@@ -501,10 +552,18 @@ def recheck_costs(
                     "child_terminated": isolated.child_terminated,
                 }
             )
+            parse_error: str | None = None
             if not isolated.failure_type:
-                cost = _quote_cost(isolated.endpoint_values["cost"])
-                break
-            last_failure = isolated.failure_type
+                try:
+                    record_count = _nonneg_int_value(isolated.endpoint_values.get("record-count"))
+                    billable_size = _nonneg_int_value(isolated.endpoint_values.get("billable-size"))
+                except CostRecheckError as exc:
+                    parse_error = type(exc).__name__
+                    cost = None
+                else:
+                    cost = _quote_cost(isolated.endpoint_values["cost"])
+                    break
+            last_failure = parse_error if parse_error is not None else isolated.failure_type
             last_status = last_event.http_status if last_event else None
         if cost is None:
             unavailable += 1
@@ -532,6 +591,7 @@ def recheck_costs(
             continue
         # Provider-only quote: raw == conservative (no derived 1.25x margin).
         entries.append(PlanCostEntry(request.request_id, CostSource.PROVIDER_GET_COST, cost, cost))
+        assert record_count is not None and billable_size is not None
         quotes.append(
             RequestQuote(
                 request_id=request.request_id,
@@ -550,9 +610,15 @@ def recheck_costs(
                 request_specification_sha256=request.specification_hash,
                 quote_source="provider_response",
                 provider_response_sha256=_provider_response_sha256(
-                    request.request_id, request.specification_hash, str(cost)
+                    request.request_id,
+                    request.specification_hash,
+                    str(cost),
+                    record_count,
+                    billable_size,
                 ),
                 provider_observed_at=now.isoformat(),
+                record_count=record_count,
+                billable_size_bytes=billable_size,
             )
         )
 
@@ -604,8 +670,8 @@ def recheck_costs(
         provider_call_inventory={
             "list_schemas": schema_calls,
             "get_cost": get_cost_calls,
-            "get_record_count": 0,
-            "get_billable_size": 0,
+            "get_record_count": get_record_count_calls,
+            "get_billable_size": get_billable_size_calls,
             "list_unit_prices": 0,
             "timeseries_get_range": 0,
             "batch": 0,

@@ -120,9 +120,28 @@ def _recovery_plan() -> RecoveryPlan:
 
 
 def _ok(cost: str = "0.01") -> IsolatedMetadataResult:
+    events = [
+        MetadataOperationEvent(
+            run_id="r",
+            request_index=1,
+            request_count=25,
+            request_id="x",
+            dataset="OPRA.PILLAR",
+            schema_name="cbbo-1m",
+            session_date=None,
+            endpoint=endpoint,
+            attempt=1,
+            started_at=NOW.isoformat(),
+            completed_at=NOW.isoformat(),
+            elapsed_seconds=0.1,
+            outcome="succeeded",
+            child_pid=1,
+        )
+        for endpoint in ("record-count", "billable-size", "cost")
+    ]
     return IsolatedMetadataResult(
-        endpoint_values={"cost": cost},
-        events=[],
+        endpoint_values={"record-count": 10, "billable-size": 1000, "cost": cost},
+        events=events,
         child_pid=1,
         child_exitcode=0,
         child_joined=True,
@@ -494,7 +513,7 @@ def test_negative_cost_rejected() -> None:
 def test_nonfinite_cost_rejected() -> None:
     def quoter(request, attempt, timeout):
         return IsolatedMetadataResult(
-            endpoint_values={"cost": float("inf")},
+            endpoint_values={"record-count": 10, "billable-size": 1000, "cost": float("inf")},
             events=[],
             child_pid=1,
             child_exitcode=0,
@@ -549,6 +568,7 @@ def test_quote_dataclass_is_frozen() -> None:
         last_failure_class=None,
         last_http_status=None,
         remaining_children=0,
+        request_specification_sha256="c" * 64,
     )
     with pytest.raises((AttributeError, TypeError, ValueError)):
         q.cost_usd = "9.99"  # type: ignore[misc]
@@ -741,3 +761,68 @@ def test_same_hash_in_safe_and_unknown_fields_remains_blocking() -> None:
     )
     uppercase = classify_json_secret_candidates({"checkpoint_sha256": "A" * 64})
     assert uppercase[0].classification == "possible_secret"
+
+
+def test_quotes_carry_complete_metadata_values_for_offline_preflight() -> None:
+    result = _run(quoter=lambda request, attempt, timeout: _ok("0.02"))
+
+    assert result.status == "complete"
+    assert all(quote.record_count == 10 for quote in result.quotes)
+    assert all(quote.billable_size_bytes == 1000 for quote in result.quotes)
+    evidence = _evidence(result)
+    assert all(quote["record_count"] == 10 for quote in evidence["quotes"])
+    assert all(quote["billable_size_bytes"] == 1000 for quote in evidence["quotes"])
+    assert evidence["provider_call_inventory"]["get_record_count"] == 25
+    assert evidence["provider_call_inventory"]["get_billable_size"] == 25
+
+
+def test_resume_evidence_rejects_quotes_missing_metadata_values() -> None:
+    plan = _plan()
+    evidence = _evidence(_run(quoter=lambda request, attempt, timeout: _ok()))
+    for quote in evidence["quotes"]:
+        quote.pop("record_count", None)
+
+    with pytest.raises(CostRecheckError, match="complete metadata values"):
+        validate_resume_evidence(
+            evidence,
+            requests=plan,
+            checkpoint_sha256="e" * 64,
+            plan_hash=PLAN_HASH,
+            request_manifest_sha256="8" * 64,
+            source_evidence_sha256="f" * 64,
+        )
+
+
+def test_resume_evidence_rejects_tampered_metadata_values() -> None:
+    plan = _plan()
+    evidence = _evidence(_run(quoter=lambda request, attempt, timeout: _ok()))
+    evidence["quotes"][0]["record_count"] = 11
+
+    with pytest.raises(CostRecheckError, match="provider quote identity mismatch"):
+        validate_resume_evidence(
+            evidence,
+            requests=plan,
+            checkpoint_sha256="e" * 64,
+            plan_hash=PLAN_HASH,
+            request_manifest_sha256="8" * 64,
+            source_evidence_sha256="f" * 64,
+        )
+
+
+def test_quote_without_metadata_values_is_unavailable_not_synthetic() -> None:
+    def quoter(request, attempt, timeout):
+        return IsolatedMetadataResult(
+            endpoint_values={"cost": "0.01"},
+            events=[],
+            child_pid=1,
+            child_exitcode=0,
+            child_joined=True,
+            remaining_children=0,
+        )
+
+    result = _run(quoter=quoter)
+
+    assert result.status == "incomplete"
+    assert result.unavailable_quote_count == 25
+    assert result.authorization_ready is False
+    assert all(quote.record_count is None for quote in result.quotes)

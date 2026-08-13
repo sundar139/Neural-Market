@@ -37,9 +37,9 @@ from neuralmarket.data.acquisition.authorization import (
     validate_remaining_scope,
 )
 from neuralmarket.data.acquisition.budget import to_decimal
-from neuralmarket.data.acquisition.estimation import MetadataEstimator
+from neuralmarket.data.acquisition.estimation import MetadataEstimate, MetadataEstimator
 from neuralmarket.data.acquisition.journal import JournalEntry, RequestJournal
-from neuralmarket.data.acquisition.preflight import run_preflight
+from neuralmarket.data.acquisition.preflight import EvidenceEstimator, run_preflight
 from neuralmarket.data.acquisition.recovery import RecoveryPlan, validate_recovery_plan
 from neuralmarket.data.acquisition.requests import (
     AcquisitionRequest,
@@ -678,12 +678,16 @@ class PilotExecutionCoordinator:
         metadata_provider_factory: Callable[[], MetadataProvider],
         recovery_plan: RecoveryPlan | None = None,
         execution_scope: RemainingRequestScope | None = None,
+        preflight_estimates: list[MetadataEstimate] | None = None,
     ) -> ValidationOnlyResult:
         """Run sequential fresh metadata preflight without durable execution state.
 
         With an ``execution_scope`` the preflight covers exactly the scoped
         requests — the settled request is neither re-estimated nor executed.
-        Without one it still requires the canonical plan.
+        Without one it still requires the canonical plan. When
+        ``preflight_estimates`` are supplied (fresh, hash-bound evidence
+        validated by the caller) the preflight runs fully offline and the
+        metadata provider factory is never invoked.
         """
         if recovery_plan is not None:
             if tuple(requests) != recovery_plan.requests:
@@ -703,26 +707,35 @@ class PilotExecutionCoordinator:
                 )
         else:
             validate_canonical_pilot_plan(requests)
-        provider = metadata_provider_factory()
-        try:
-            retry = config.retry
-            preflight = run_preflight(
-                estimator=MetadataEstimator(
+        if preflight_estimates is None:
+            provider = metadata_provider_factory()
+            try:
+                retry = config.retry
+                estimator: MetadataEstimator | EvidenceEstimator = MetadataEstimator(
                     provider,
                     maximum_attempts=retry.maximum_attempts,
                     initial_delay_seconds=float(retry.initial_delay_seconds),
                     multiplier=float(retry.multiplier),
                     maximum_delay_seconds=float(retry.maximum_delay_seconds),
                     deterministic_jitter=retry.jitter == "deterministic_seeded",
-                ),
+                )
+                preflight = run_preflight(
+                    estimator=estimator,
+                    requests=requests,
+                    config=config,
+                    maximum_workers=1,
+                )
+            finally:
+                closer = getattr(provider, "close", None)
+                if callable(closer):
+                    closer()
+        else:
+            preflight = run_preflight(
+                estimator=EvidenceEstimator(preflight_estimates),
                 requests=requests,
                 config=config,
                 maximum_workers=1,
             )
-        finally:
-            closer = getattr(provider, "close", None)
-            if callable(closer):
-                closer()
         fresh = preflight.estimated_requests
         return ValidationOnlyResult(
             ready_for_paid_execution=preflight.passed,
@@ -753,6 +766,7 @@ class PilotExecutionCoordinator:
         recovery_plan: RecoveryPlan | None = None,
         recovery_purchase_package: RecoveryPurchasePackage | None = None,
         execution_scope: RemainingRequestScope | None = None,
+        preflight_estimates: list[MetadataEstimate] | None = None,
     ) -> PilotExecutionResult:
         """Execute or safely resume requests, stopping at the first unresolved state.
 
@@ -806,6 +820,7 @@ class PilotExecutionCoordinator:
             metadata_provider_factory=metadata_provider_factory,
             recovery_plan=recovery_plan,
             execution_scope=execution_scope,
+            preflight_estimates=preflight_estimates,
         )
         if not validation.ready_for_paid_execution:
             raise ExecutorGuardError("preflight_not_passed")

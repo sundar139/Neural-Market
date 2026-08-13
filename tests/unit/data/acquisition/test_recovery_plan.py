@@ -307,7 +307,7 @@ def _cost_evidence(recovery: RecoveryPlan, now: datetime) -> dict[str, object]:
         now=now,
         schema_lister=lambda dataset: [recovery.requests[0].schema_name],
         quoter=lambda request, attempt, timeout: IsolatedMetadataResult(
-            endpoint_values={"cost": cost},
+            endpoint_values={"record-count": 10, "billable-size": 1000, "cost": cost},
             events=[],
             child_pid=1,
             child_exitcode=0,

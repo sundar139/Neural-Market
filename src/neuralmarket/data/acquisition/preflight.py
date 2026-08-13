@@ -18,7 +18,7 @@ type is imported into this module.
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -33,6 +33,7 @@ from neuralmarket.data.acquisition.requests import (
     PilotExecutionConfig,
     finalize_request,
 )
+from neuralmarket.data.errors import CostEstimationError
 
 
 class PilotPreflightConfig(BaseModel):
@@ -87,9 +88,51 @@ class PreflightResult(BaseModel):
     elapsed_seconds: float
 
 
+def _estimate_identity(estimate: MetadataEstimate) -> tuple[object, ...]:
+    return (
+        estimate.dataset,
+        estimate.schema,
+        estimate.symbol,
+        estimate.stype_in,
+        estimate.window_start,
+        estimate.window_end,
+    )
+
+
+class EvidenceEstimator:
+    """Static, hash-bound preflight estimates. Performs zero provider calls."""
+
+    metadata_call_count = 0
+    endpoint_call_count = 0
+    retry_count = 0
+
+    def __init__(self, estimates: Sequence[MetadataEstimate]) -> None:
+        """Index estimates by request identity for offline lookup."""
+        self._by_identity = {_estimate_identity(estimate): estimate for estimate in estimates}
+
+    def estimate(
+        self,
+        *,
+        dataset: str,
+        schema: str,
+        symbol: str,
+        stype_in: str,
+        start: datetime,
+        end: datetime,
+        request_id: str | None = None,
+    ) -> MetadataEstimate:
+        """Return the bound estimate for one request, failing closed when absent."""
+        found = self._by_identity.get((dataset, schema, symbol, stype_in, start, end))
+        if found is None:
+            raise CostEstimationError(
+                f"fresh preflight evidence has no estimate for request {request_id}"
+            )
+        return found
+
+
 def run_preflight(
     *,
-    estimator: MetadataEstimator,
+    estimator: MetadataEstimator | EvidenceEstimator,
     requests: list[AcquisitionRequest],
     config: PilotPreflightConfig | PilotExecutionConfig,
     maximum_workers: int = 1,
