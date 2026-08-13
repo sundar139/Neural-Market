@@ -566,6 +566,26 @@ def test_validate_remaining_scope_rejects_reintroducing_quarantined_request() ->
         )
 
 
+def test_validate_remaining_scope_rejects_reintroducing_quality_validated_request() -> None:
+    """A settled quality-validated request cannot be smuggled back into scope."""
+    plan = _plan()
+    states = {r.request_id: "quality_validated" for r in plan[:4]}
+    states[plan[4].request_id] = "uncertain_billing"
+    for request in plan[5:]:
+        states[request.request_id] = "preflight_validated"
+    eligible = derive_currently_eligible_requests(plan, states)
+    assert len(eligible) == 20
+    reintroduced = _scope(plan, [r.request_id for r in eligible] + [plan[0].request_id])
+    with pytest.raises(AuthorizationError) as exc:
+        validate_remaining_scope(
+            reintroduced,
+            canonical_requests=plan,
+            source_plan_hash="p" * 64,
+            expected_eligible_requests=eligible,
+        )
+    assert exc.value.reason == "scope_eligible_set_mismatch"
+
+
 def test_validate_remaining_scope_future_smaller_eligible_set_needs_no_code_change() -> None:
     plan = _plan()
     eligible = list(plan[6:])  # 19 eligible after more completions

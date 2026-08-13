@@ -578,17 +578,30 @@ class PilotExecutor:
             "normalized",
             "quality_validated",
         }
-        for request in authorized_requests:
-            entry = self._journal.get(request.request_id)
+        # Per-request executable-state gating applies ONLY to the exact
+        # validated execution scope. Excluded canonical requests (settled,
+        # quality-validated, uncertain-billing) must neither block execution
+        # nor be considered payment candidates.
+        canonical_by_id = {request.request_id: request for request in authorized_requests}
+        for request_id, request_hash in sorted(scoped_pairs):
+            canonical = canonical_by_id.get(request_id)
+            if canonical is None or canonical.request_hash != request_hash:
+                # The exact-coverage check above already proves this mapping;
+                # kept as this loop's own canonical identity binding.
+                raise ExecutorGuardError(
+                    "execution_scope_request_mismatch",
+                    f"scoped request does not match the canonical plan: {request_id}",
+                )
+            entry = self._journal.get(request_id)
             recovery_ready = (
-                recovery_request_id == request.request_id
+                recovery_request_id == request_id
                 and entry is not None
                 and entry.state == "retry_eligible_after_manual_nonbilling_confirmation"
             )
             if entry is None or (entry.state not in resumable_states and not recovery_ready):
                 raise ExecutorGuardError(
                     "preflight_not_passed",
-                    f"request is not preflight validated: {request.request_id}",
+                    f"request is not preflight validated: {request_id}",
                 )
 
         execution_id = hashlib.sha256(

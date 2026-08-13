@@ -745,6 +745,144 @@ def test_guard_execute_pays_only_the_scoped_requests(tmp_path) -> None:
     assert "not in the authorized plan" in str(exc.value)
 
 
+def _scope_for_remaining(plan_hash: str, requests: list, remaining: list) -> object:
+    """Build a 25-total scope whose remaining set is exactly ``remaining``."""
+    remaining_ids = {request.request_id for request in remaining}
+    completed = [request for request in requests if request.request_id not in remaining_ids]
+    return build_remaining_scope(
+        source_plan_hash=plan_hash,
+        completed_request_ids=[request.request_id for request in completed],
+        completed_request_hashes=[request.request_hash for request in completed],
+        remaining_request_ids=[request.request_id for request in remaining],
+        remaining_request_hashes=[request.request_hash for request in remaining],
+    )
+
+
+def _force_state(journal: RequestJournal, request_id: str, state: str) -> None:
+    """Set a journal state directly, bypassing transition legality (fixtures only)."""
+    journal.connection.execute(
+        "UPDATE requests SET state = ? WHERE request_id = ?", (state, request_id)
+    )
+    journal.connection.commit()
+
+
+def test_guard_execute_state_gate_covers_only_the_scoped_requests(tmp_path) -> None:
+    """Current-style scope: 20 scoped requests pass with excluded canonical states."""
+    journal = RequestJournal(tmp_path / "journal.sqlite")
+    plan, requests, bindings, _ = _authorized_plan()
+    _mark_preflight_validated(journal, requests)
+    for request in requests[:4]:
+        _force_state(journal, request.request_id, "quality_validated")
+    uncertain = requests[4]
+    _force_state(journal, uncertain.request_id, "uncertain_billing")
+    scoped = requests[5:]
+    scope = _scope_for_remaining(plan, requests, scoped)
+    assert len(scope.remaining_request_ids) == 20
+
+    auth_path = tmp_path / "auth.json"
+    _write_valid_auth_file(auth_path, plan_hash=plan, scope=scope)
+    factory = Mock()
+    provider = _guard(
+        PilotExecutor(journal=journal, metadata_estimator=Mock()),
+        auth_path,
+        plan,
+        requests,
+        bindings,
+        factory,
+        scope,
+    )
+    factory.assert_called_once()
+    # Excluded canonical requests are neither blocked on nor payable.
+    with pytest.raises(ExecutorGuardError, match="not in the authorized plan"):
+        provider.acquire_range(uncertain)
+    with pytest.raises(ExecutorGuardError, match="not in the authorized plan"):
+        provider.acquire_range(requests[0])
+    provider.acquire_range(scoped[0])
+
+
+def test_guard_execute_rejects_uncertain_billing_reintroduced_into_scope(tmp_path) -> None:
+    """A malicious scope reintroducing the uncertain-billing request fails closed."""
+    journal = RequestJournal(tmp_path / "journal.sqlite")
+    plan, requests, bindings, _ = _authorized_plan()
+    _mark_preflight_validated(journal, requests)
+    for request in requests[:4]:
+        _force_state(journal, request.request_id, "quality_validated")
+    uncertain = requests[4]
+    _force_state(journal, uncertain.request_id, "uncertain_billing")
+    scope = _scope_for_remaining(plan, requests, [*requests[5:], uncertain])
+    assert len(scope.remaining_request_ids) == 21
+
+    auth_path = tmp_path / "auth.json"
+    _write_valid_auth_file(auth_path, plan_hash=plan, scope=scope)
+    factory = Mock()
+    with pytest.raises(ExecutorGuardError) as exc:
+        _guard(
+            PilotExecutor(journal=journal, metadata_estimator=Mock()),
+            auth_path,
+            plan,
+            requests,
+            bindings,
+            factory,
+            scope,
+        )
+    assert exc.value.reason == "preflight_not_passed"
+    factory.assert_not_called()
+    assert journal.consumed_authorization_ids() == set()
+
+
+def test_guard_execute_state_gate_accepts_a_future_smaller_scope(tmp_path) -> None:
+    """Ten remaining eligible requests execute under the same guard code."""
+    journal = RequestJournal(tmp_path / "journal.sqlite")
+    plan, requests, bindings, _ = _authorized_plan()
+    _mark_preflight_validated(journal, requests)
+    for request in requests[:15]:
+        _force_state(journal, request.request_id, "quality_validated")
+    scoped = requests[15:]
+    assert len(scoped) == 10
+    scope = _scope_for_remaining(plan, requests, scoped)
+
+    auth_path = tmp_path / "auth.json"
+    _write_valid_auth_file(auth_path, plan_hash=plan, scope=scope)
+    factory = Mock()
+    provider = _guard(
+        PilotExecutor(journal=journal, metadata_estimator=Mock()),
+        auth_path,
+        plan,
+        requests,
+        bindings,
+        factory,
+        scope,
+    )
+    factory.assert_called_once()
+    with pytest.raises(ExecutorGuardError, match="not in the authorized plan"):
+        provider.acquire_range(requests[0])
+
+
+def test_guard_execute_rejects_authorization_bound_to_another_scope(tmp_path) -> None:
+    """The authorization's remaining-scope hash must match the exact scope."""
+    journal = RequestJournal(tmp_path / "journal.sqlite")
+    plan, requests, bindings, _ = _authorized_plan()
+    _mark_preflight_validated(journal, requests)
+    scope_a = _scope_for_remaining(plan, requests, requests[1:21])
+    scope_b = _scope_for_remaining(plan, requests, requests[5:])
+
+    auth_path = tmp_path / "auth.json"
+    _write_valid_auth_file(auth_path, plan_hash=plan, scope=scope_a)
+    factory = Mock()
+    with pytest.raises(ExecutorGuardError) as exc:
+        _guard(
+            PilotExecutor(journal=journal, metadata_estimator=Mock()),
+            auth_path,
+            plan,
+            requests,
+            bindings,
+            factory,
+            scope_b,
+        )
+    assert exc.value.reason == "invalid_authorization"
+    factory.assert_not_called()
+
+
 def test_consumption_persists_the_exact_authorization_ceiling(tmp_path) -> None:
     journal = RequestJournal(tmp_path / "journal.sqlite")
     plan, requests, bindings, scope = _authorized_plan()

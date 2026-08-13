@@ -1833,6 +1833,206 @@ def test_coordinator_fake_25_request_lifecycle(pilot_manifest_path: Path, tmp_pa
 
 
 @pytest.mark.integration
+def test_coordinator_executes_exact_current_scope_with_excluded_states(
+    pilot_manifest_path: Path, tmp_path: Path
+) -> None:
+    """Current production shape: 20 scoped requests plus excluded canonical states.
+
+    4 quality-validated and 1 uncertain-billing excluded canonical requests.
+    """
+    from unittest.mock import Mock
+
+    from neuralmarket.data.acquisition.estimation import MetadataEstimate
+    from neuralmarket.data.acquisition.executor import PilotExecutor
+
+    plan = json.loads(pilot_manifest_path.read_text(encoding="utf-8"))
+    requests = [AcquisitionRequest.model_validate(item) for item in plan["requests"]]
+    now = data_module.datetime.now(data_module.UTC)
+    quality = requests[:4]
+    uncertain = requests[4]
+    scoped = requests[5:]
+    assert len(scoped) == 20
+
+    def _scope_for(remaining: list[AcquisitionRequest]) -> Any:
+        completed = [r for r in requests if r not in remaining]
+        return build_remaining_scope(
+            source_plan_hash=plan["plan_hash"],
+            completed_request_ids=[r.request_id for r in completed],
+            completed_request_hashes=[r.request_hash for r in completed],
+            remaining_request_ids=[r.request_id for r in remaining],
+            remaining_request_hashes=[r.request_hash for r in remaining],
+        )
+
+    def _seed(journal_path: Path) -> None:
+        if journal_path.exists():
+            journal_path.unlink()
+        with RequestJournal(journal_path) as journal:
+            executor = PilotExecutor(journal=journal, metadata_estimator=Mock())
+            executor.prepare(requests)
+            for request in requests:
+                executor.transition(request.request_id, "preflight_validated")
+            for request in quality:
+                journal.connection.execute(
+                    "UPDATE requests SET state = 'quality_validated' WHERE request_id = ?",
+                    (request.request_id,),
+                )
+            journal.connection.execute(
+                "UPDATE requests SET state = 'uncertain_billing' WHERE request_id = ?",
+                (uncertain.request_id,),
+            )
+            journal.connection.commit()
+
+    valid_scope = _scope_for(scoped)
+    auth: dict[str, object] = {
+        "authorization_version": "2.0",
+        "pilot_plan_hash": plan["plan_hash"],
+        "source_manifest_hash": plan["bindings"]["source_manifest_hash"],
+        "split_manifest_hash": plan["bindings"]["split_manifest_hash"],
+        "acquisition_policy_hash": plan["bindings"]["acquisition_policy_hash"],
+        "maximum_spend_usd": "5.00",
+        "maximum_single_request_usd": "1.00",
+        "authorized_currency": "USD",
+        "authorized_at": (now - timedelta(minutes=1)).isoformat(),
+        "expires_at": (now + timedelta(minutes=10)).isoformat(),
+        "authorized_by": "test_operator",
+        "confirmation_phrase": CONFIRMATION_PHRASE,
+        "purchase_authorized": True,
+        "remaining_scope_hash": valid_scope.scope_hash,
+        "cost_evidence": {
+            "evidence_type": "cost_recheck",
+            "evidence_sha256": "c" * 64,
+            "observed_at": (now - timedelta(minutes=5)).isoformat(),
+            "expires_at": (now + timedelta(minutes=10)).isoformat(),
+        },
+        "portal_evidence": {
+            "evidence_type": "portal_attestation",
+            "evidence_sha256": "d" * 64,
+            "observed_at": (now - timedelta(minutes=5)).isoformat(),
+            "expires_at": (now + timedelta(minutes=10)).isoformat(),
+        },
+        "portal_source_evidence_sha256": "e" * 64,
+    }
+    auth["authorization_hash"] = compute_authorization_hash(auth)
+    auth_path = tmp_path / "authorization.json"
+    auth_path.write_text(json.dumps(auth), encoding="utf-8")
+
+    estimates = [
+        MetadataEstimate(
+            dataset=request.dataset,
+            schema=request.schema_name,
+            symbol=request.symbols[0],
+            stype_in=request.stype_in,
+            window_start=request.start,
+            window_end=request.end_exclusive,
+            record_count=10,
+            billable_size_bytes=1000,
+            cost_usd=Decimal("0.01"),
+            retries=0,
+        )
+        for request in scoped
+    ]
+
+    class Paid:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def acquire_range(self, request: AcquisitionRequest) -> RawAcquisitionResult:
+            self.calls.append(request.request_id)
+            path = tmp_path / "raw" / f"{request.request_id}.dbn"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(request.request_id.encode())
+            path.with_suffix(".dbn.sha256").write_text(sha256_of_file(path), encoding="utf-8")
+            path.with_suffix(".dbn.json").write_text("{}", encoding="utf-8")
+            return RawAcquisitionResult(
+                request_id=request.request_id,
+                raw_path=str(path),
+                sha256=sha256_of_file(path),
+                record_count=1,
+            )
+
+    class Lifecycle:
+        def __init__(self) -> None:
+            self.quality_ids: set[str] = set()
+
+        def inspect(self, request, entry):
+            return (
+                bool(entry and entry.raw_path and Path(entry.raw_path).exists()),
+                bool(entry and entry.normalized_path and Path(entry.normalized_path).exists()),
+                request.request_id in self.quality_ids,
+                False,
+            )
+
+        def normalize(self, request, raw):
+            path = tmp_path / "normalized" / f"{request.request_id}.parquet"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(Path(raw.raw_path).read_bytes())
+            checksum = sha256_of_file(path)
+            path.with_suffix(".parquet.sha256").write_text(checksum, encoding="utf-8")
+            path.with_suffix(".parquet.json").write_text("{}", encoding="utf-8")
+            return str(path), checksum, path.stat().st_size
+
+        def quality(self, request, normalized_path):
+            self.quality_ids.add(request.request_id)
+            (tmp_path / "quality").mkdir(exist_ok=True)
+            (tmp_path / "quality" / f"{request.request_id}.json").write_text(
+                json.dumps({"status": "passed"}), encoding="utf-8"
+            )
+            return True
+
+    paid = Paid()
+    lifecycle = Lifecycle()
+
+    def execute_with(scope: Any, journal_path_arg: Path) -> PilotExecutionResult:
+        return PilotExecutionCoordinator().execute_paid(
+            requests=requests,
+            config=load_pilot_config(Path(_PILOT_CONFIG)),
+            plan_hash=plan["plan_hash"],
+            plan_bindings=plan["bindings"],
+            plan_metadata=data_module._pilot_plan_hash_metadata(plan),
+            authorization_path=auth_path,
+            authorization_hash=str(auth["authorization_hash"]),
+            portal_attestation_hash="t" * 64,
+            confirm_plan_hash=plan["plan_hash"],
+            metadata_provider_factory=lambda: (_ for _ in ()).throw(
+                AssertionError("metadata provider must not be constructed for offline preflight")
+            ),
+            paid_provider_factory=lambda: paid,
+            journal_factory=lambda: RequestJournal(journal_path_arg),
+            lifecycle=lifecycle,
+            now=now,
+            execution_scope=scope,
+            preflight_estimates=estimates,
+        )
+
+    journal_path = tmp_path / "journal.sqlite"
+    _seed(journal_path)
+    result = execute_with(valid_scope, journal_path)
+    assert result.paid_provider_constructed is True
+    assert result.paid_request_calls == 20
+    assert paid.calls == [request.request_id for request in scoped]
+    with RequestJournal(journal_path) as journal:
+        assert journal.get(uncertain.request_id).state == "uncertain_billing"  # type: ignore[union-attr]
+        assert journal.get(quality[0].request_id).state == "quality_validated"  # type: ignore[union-attr]
+        assert len(journal.consumed_authorization_ids()) == 1
+
+    # Reintroducing any excluded request, dropping one eligible request, or an
+    # arbitrary same-sized subset all fail before any provider construction.
+    invalid_scopes = [
+        _scope_for([*scoped, quality[0]]),  # quality-validated reintroduced
+        _scope_for([*scoped, uncertain]),  # uncertain-billing reintroduced
+        _scope_for(scoped[:-1]),  # 19 of 20 eligible
+        _scope_for([*scoped[1:], quality[0]]),  # arbitrary same-sized subset
+    ]
+    invalid_path = tmp_path / "invalid_journal.sqlite"
+    for bad_scope in invalid_scopes:
+        _seed(invalid_path)
+        with pytest.raises(ExecutorGuardError) as exc:
+            execute_with(bad_scope, invalid_path)
+        assert exc.value.reason == "invalid_execution_scope"
+    assert paid.calls == [request.request_id for request in scoped]
+
+
+@pytest.mark.integration
 def test_pilot_execute_help_documents_the_scope_arguments() -> None:
     result = runner.invoke(app, ["data", "pilot", "execute", "--help"])
     assert result.exit_code == 0
