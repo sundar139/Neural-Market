@@ -842,6 +842,12 @@ def test_execute_paid_persistence_failure_blocks_uncertain_billing_without_retry
     journal_path = tmp_path / "journal.sqlite"
     with RequestJournal(journal_path) as journal:
         _mark_preflight_validated(journal, requests)
+        # The scope excludes requests[0]; reflect that in the journal state.
+        journal.connection.execute(
+            "UPDATE requests SET state = 'quality_validated' WHERE request_id = ?",
+            (requests[0].request_id,),
+        )
+        journal.connection.commit()
     auth_path = tmp_path / "auth.json"
     auth_hash = _write_valid_auth_file(auth_path, plan_hash=plan, scope=scope)
     scoped = [r for r in requests if r.request_id in set(scope.remaining_request_ids)]

@@ -133,41 +133,40 @@ def _run(
 # ── Scope validation (provider-free) ─────────────────────────────────
 
 
-def test_validated_remaining_scope_is_accepted() -> None:
-    validate_remaining_scope(
-        _scope(), canonical_requests=_canonical(), source_plan_hash=_plan_hash()
+def _validated(scope: RemainingRequestScope, requests: list[AcquisitionRequest] | None = None):
+    """Validate ``scope`` against the canonical plan and the completed-excluded set."""
+    requests = requests if requests is not None else _canonical()
+    return validate_remaining_scope(
+        scope,
+        canonical_requests=requests,
+        source_plan_hash=_plan_hash(),
+        expected_eligible_requests=_remaining(requests),
     )
+
+
+def test_validated_remaining_scope_is_accepted() -> None:
+    _validated(_scope())
 
 
 def test_scope_hash_mismatch_is_rejected() -> None:
     tampered = _scope().model_copy(update={"scope_hash": "0" * 64})
     with pytest.raises(AuthorizationError) as exc:
-        validate_remaining_scope(
-            tampered, canonical_requests=_canonical(), source_plan_hash=_plan_hash()
-        )
+        _validated(tampered)
     assert exc.value.reason == "scope_hash_mismatch"
 
 
 def test_source_plan_hash_mismatch_is_rejected() -> None:
     with pytest.raises(AuthorizationError) as exc:
-        validate_remaining_scope(
-            _scope(source_plan_hash="a" * 64),
-            canonical_requests=_canonical(),
-            source_plan_hash=_plan_hash(),
-        )
+        _validated(_scope(source_plan_hash="a" * 64))
     assert exc.value.reason == "scope_plan_hash_mismatch"
 
 
 def test_a_23_request_remaining_scope_is_rejected() -> None:
-    """Two completed + 23 remaining still totals 25, so the model admits it."""
+    """Two completed + 23 remaining still totals 25, but the exact eligible-set check rejects it."""
     requests = _canonical()
     with pytest.raises(AuthorizationError) as exc:
-        validate_remaining_scope(
-            _scope(completed=requests[:2], remaining=requests[2:]),
-            canonical_requests=requests,
-            source_plan_hash=_plan_hash(),
-        )
-    assert exc.value.reason == "scope_request_count"
+        _validated(_scope(completed=requests[:2], remaining=requests[2:]), requests)
+    assert exc.value.reason == "scope_eligible_set_mismatch"
     assert len(requests[2:]) == 23
 
 
@@ -198,7 +197,7 @@ def test_duplicate_request_hash_is_rejected() -> None:
         }
     )
     with pytest.raises(AuthorizationError) as exc:
-        validate_remaining_scope(scope, canonical_requests=requests, source_plan_hash=_plan_hash())
+        _validated(scope, requests)
     assert exc.value.reason in {"scope_hash_mismatch", "scope_duplicate_hash"}
 
 
@@ -224,7 +223,7 @@ def test_completed_request_hash_inside_remaining_scope_is_rejected() -> None:
         }
     )
     with pytest.raises(AuthorizationError) as exc:
-        validate_remaining_scope(scope, canonical_requests=requests, source_plan_hash=_plan_hash())
+        _validated(scope, requests)
     assert exc.value.reason in {"scope_hash_mismatch", "scope_completed_included"}
 
 
@@ -241,7 +240,7 @@ def test_request_outside_the_canonical_plan_is_rejected() -> None:
         remaining_request_hashes=["f" * 64, *[r.request_hash for r in remaining[1:]]],
     )
     with pytest.raises(AuthorizationError) as exc:
-        validate_remaining_scope(scope, canonical_requests=requests, source_plan_hash=_plan_hash())
+        _validated(scope, requests)
     assert exc.value.reason == "scope_unknown_request"
 
 

@@ -78,8 +78,15 @@ def _prepare(
     return checkpoint, manifest, ckpt_sha
 
 
-def _args(checkpoint: Path, manifest: Path, sha: str, out: Path, attempts: Path) -> list[str]:
-    return [
+def _args(
+    checkpoint: Path,
+    manifest: Path,
+    sha: str,
+    out: Path,
+    attempts: Path,
+    journal: Path | None = None,
+) -> list[str]:
+    args = [
         "data",
         "pilot",
         "recheck-cost",
@@ -94,6 +101,26 @@ def _args(checkpoint: Path, manifest: Path, sha: str, out: Path, attempts: Path)
         "--attempt-manifest",
         str(attempts),
     ]
+    if journal is not None:
+        args.extend(["--journal", str(journal)])
+    return args
+
+
+def _seed_journal(path: Path, request_ids: list[str], excluded_ids: set[str]) -> None:
+    """Seed a minimal journal so scope eligibility derives from fixture state."""
+    import sqlite3
+
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TABLE IF NOT EXISTS requests (request_id TEXT PRIMARY KEY, state TEXT NOT NULL)"
+        )
+        for request_id in request_ids:
+            state = "quality_validated" if request_id in excluded_ids else "preflight_validated"
+            connection.execute(
+                "INSERT OR REPLACE INTO requests (request_id, state) VALUES (?, ?)",
+                (request_id, state),
+            )
+        connection.commit()
 
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -134,6 +161,13 @@ def test_scoped_recheck_quotes_finalized_manifest_requests(
     """Regression: the scope binds finalized hashes; drafts must never be quoted."""
     checkpoint, _, ckpt_sha = _prepare(monkeypatch, tmp_path, cost="0.01")
     scope_path, scope_sha, remaining = _finalized_scope_artifact(tmp_path)
+    journal = tmp_path / "journal.sqlite"
+    manifest_payload = json.loads(_TRACKED_MANIFEST.read_text(encoding="utf-8"))
+    _seed_journal(
+        journal,
+        [item["request_id"] for item in manifest_payload["requests"]],
+        {_SETTLED_REQUEST_ID},
+    )
     quoted: list[object] = []
 
     def quoter(**kwargs: object) -> object:
@@ -146,7 +180,14 @@ def test_scoped_recheck_quotes_finalized_manifest_requests(
     result = runner.invoke(
         app,
         [
-            *_args(checkpoint, _TRACKED_MANIFEST, ckpt_sha, out, tmp_path / "finalized-a.json"),
+            *_args(
+                checkpoint,
+                _TRACKED_MANIFEST,
+                ckpt_sha,
+                out,
+                tmp_path / "finalized-a.json",
+                journal=journal,
+            ),
             "--remaining-scope",
             str(scope_path),
             "--expected-remaining-scope-sha256",
@@ -292,6 +333,8 @@ def test_recheck_cost_with_remaining_scope_quotes_exactly_24(
     checkpoint, _, sha = _prepare(monkeypatch, tmp_path, cost="0.001")
     manifest = _manifest_with_estimates(tmp_path, "a" * 64, "0.001")
     scope_path, scope_sha, completed_id, remaining_ids = _scope_artifact(tmp_path, "a" * 64)
+    journal = tmp_path / "journal.sqlite"
+    _seed_journal(journal, [completed_id, *remaining_ids], {completed_id})
     quoted: list[str] = []
     monkeypatch.setattr(
         data_module,
@@ -302,7 +345,14 @@ def test_recheck_cost_with_remaining_scope_quotes_exactly_24(
     result = runner.invoke(
         app,
         [
-            *_args(checkpoint, manifest, sha, out, tmp_path / "scoped-attempts.json"),
+            *_args(
+                checkpoint,
+                manifest,
+                sha,
+                out,
+                tmp_path / "scoped-attempts.json",
+                journal=journal,
+            ),
             "--remaining-scope",
             str(scope_path),
             "--expected-remaining-scope-sha256",

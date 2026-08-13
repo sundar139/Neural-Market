@@ -14,10 +14,12 @@ from neuralmarket.cli.main import app
 from neuralmarket.data.acquisition.attestation import compute_attestation_hash
 from neuralmarket.data.acquisition.authorization import (
     CONFIRMATION_PHRASE,
+    build_remaining_scope,
     compute_authorization_hash,
 )
 from neuralmarket.data.acquisition.billing_reconciliation import build_reconciliation_artifact
 from neuralmarket.data.acquisition.executor import (
+    ExecutorGuardError,
     PilotExecutionCoordinator,
     PilotExecutionResult,
     RawAcquisitionResult,
@@ -56,6 +58,29 @@ def _write_scope_file(plan: dict[str, Any], tmp_path: Path) -> tuple[Path, str]:
     path = tmp_path / "scope.json"
     path.write_text(scope.model_dump_json(), encoding="utf-8")
     return path, sha256_of_file(path)
+
+
+def _seed_journal(journal_path: Path, plan: dict[str, Any]) -> None:
+    """Seed a RequestJournal whose states match the fixture execution scope."""
+    from unittest.mock import Mock
+
+    from neuralmarket.data.acquisition.executor import PilotExecutor
+    from neuralmarket.data.acquisition.journal import RequestJournal
+
+    scope = _integration_scope(plan)
+    excluded = set(scope.completed_request_ids)
+    with RequestJournal(journal_path) as journal:
+        executor = PilotExecutor(journal=journal, metadata_estimator=Mock())
+        executor.prepare([AcquisitionRequest.model_validate(item) for item in plan["requests"]])
+        for item in plan["requests"]:
+            if item["request_id"] not in excluded:
+                executor.transition(item["request_id"], "preflight_validated")
+        for request_id in excluded:
+            journal.connection.execute(
+                "UPDATE requests SET state = 'quality_validated' WHERE request_id = ?",
+                (request_id,),
+            )
+        journal.connection.commit()
 
 
 class _ZeroCostMetadata:
@@ -1251,6 +1276,7 @@ def test_pilot_validate_only_uses_metadata_capability_without_paid_namespaces(
     monkeypatch.setattr(data_module, "_load_dotenv", lambda root: None)
     monkeypatch.setattr(data_module, "_raw_databento_client", HostileClient)
     journal = tmp_path / "journal.sqlite"
+    _seed_journal(journal, plan)
     output = tmp_path / "validation.json"
     result = runner.invoke(
         app,
@@ -1287,7 +1313,6 @@ def test_pilot_validate_only_uses_metadata_capability_without_paid_namespaces(
     assert payload["paid_client_constructed"] is False
     assert payload["journal_created"] is False
     assert payload["timeseries_namespace_accessed"] is False
-    assert not journal.exists()
 
 
 @pytest.mark.integration
@@ -1296,6 +1321,7 @@ def test_pilot_execute_paid_delegates_to_coordinator_once(
 ) -> None:
     plan = json.loads(pilot_manifest_path.read_text(encoding="utf-8"))
     auth_path, attestation_path = _write_execution_inputs(plan, tmp_path)
+    _seed_journal(tmp_path / "journal.sqlite", plan)
     calls = {"execute_paid": 0, "validate_only": 0}
 
     class SpyCoordinator:
@@ -1354,6 +1380,7 @@ def test_pilot_execute_validate_only_delegates_without_paid_factory_or_journal(
 ) -> None:
     plan = json.loads(pilot_manifest_path.read_text(encoding="utf-8"))
     auth_path, attestation_path = _write_execution_inputs(plan, tmp_path)
+    _seed_journal(tmp_path / "journal.sqlite", plan)
     calls = {"execute_paid": 0, "validate_only": 0, "paid_factory": 0}
 
     class SpyCoordinator:
@@ -1391,7 +1418,6 @@ def test_pilot_execute_validate_only_delegates_without_paid_factory_or_journal(
     )
     assert result.exit_code == 0, result.output
     assert calls == {"execute_paid": 0, "validate_only": 1, "paid_factory": 0}
-    assert not journal.exists()
 
 
 @pytest.mark.integration
@@ -1459,6 +1485,7 @@ def test_pilot_execute_cli_fake_paid_lifecycle_and_dry_resume(
     plan = json.loads(pilot_manifest_path.read_text(encoding="utf-8"))
     auth_path, attestation_path = _write_execution_inputs(plan, tmp_path)
     journal = tmp_path / "journal.sqlite"
+    _seed_journal(journal, plan)
     paid = _FakePaid(tmp_path, journal)
     lifecycle = _FakeLifecycle(tmp_path)
     constructions = 0
@@ -1490,7 +1517,8 @@ def test_pilot_execute_cli_fake_paid_lifecycle_and_dry_resume(
     assert result.exit_code == 0, result.output
     payload = json.loads((tmp_path / "paid.json").read_text(encoding="utf-8"))
     assert payload["requests_planned"] == 25
-    assert payload["requests_completed"] == 24
+    # 24 completed this run plus the pre-seeded settled request.
+    assert payload["requests_completed"] == 25
     assert payload["paid_provider_constructed"] is True
     assert payload["paid_request_calls"] == 24
     assert constructions == 1
@@ -1499,6 +1527,8 @@ def test_pilot_execute_cli_fake_paid_lifecycle_and_dry_resume(
     assert len(list((tmp_path / "normalized").glob("*.parquet"))) == 24
     assert len(list((tmp_path / "quality").glob("*.json"))) == 24
 
+    # A stale-scope resume after full completion fails closed: the journal no
+    # longer derives the historical 24-request scope, so nothing may re-run.
     paid.calls.clear()
     result = runner.invoke(
         app,
@@ -1511,11 +1541,8 @@ def test_pilot_execute_cli_fake_paid_lifecycle_and_dry_resume(
             output_path=tmp_path / "resume.json",
         ),
     )
-    assert result.exit_code == 0, result.output
-    resumed = json.loads((tmp_path / "resume.json").read_text(encoding="utf-8"))
-    assert resumed["requests_skipped"] == 24
-    assert resumed["paid_provider_constructed"] is False
-    assert resumed["paid_request_calls"] == 0
+    assert result.exit_code == 1
+    assert "expected 0, got 24" in result.output
     assert paid.calls == []
 
 
@@ -1527,6 +1554,7 @@ def test_pilot_execute_incomplete_preflight_evidence_creates_no_journal_or_paid_
     plan = json.loads(pilot_manifest_path.read_text(encoding="utf-8"))
     auth_path, attestation_path = _write_execution_inputs(plan, tmp_path)
     journal = tmp_path / "journal.sqlite"
+    _seed_journal(journal, plan)
     paid_factory_calls = 0
 
     def metadata_factory():
@@ -1557,7 +1585,8 @@ def test_pilot_execute_incomplete_preflight_evidence_creates_no_journal_or_paid_
     result = runner.invoke(app, args)
     assert result.exit_code == 1
     assert "generate a fresh complete recheck" in result.output
-    assert not journal.exists()
+    with sqlite3.connect(journal) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM consumed_authorizations").fetchone()[0] == 0
     assert paid_factory_calls == 0
 
 
@@ -1568,6 +1597,7 @@ def test_pilot_execute_provider_construction_failure_releases_reservation(
     plan = json.loads(pilot_manifest_path.read_text(encoding="utf-8"))
     auth_path, attestation_path = _write_execution_inputs(plan, tmp_path)
     journal = tmp_path / "journal.sqlite"
+    _seed_journal(journal, plan)
     attempts = 0
 
     def paid_factory(root: Path):
@@ -1718,6 +1748,7 @@ def test_coordinator_fake_25_request_lifecycle(pilot_manifest_path: Path, tmp_pa
     paid = Paid()
     lifecycle = Lifecycle()
     journal_path = tmp_path / "journal.sqlite"
+    _seed_journal(journal_path, plan)
     result = PilotExecutionCoordinator().execute_paid(
         requests=requests,
         config=load_pilot_config(Path(_PILOT_CONFIG)),
@@ -1738,6 +1769,46 @@ def test_coordinator_fake_25_request_lifecycle(pilot_manifest_path: Path, tmp_pa
     with RequestJournal(journal_path) as journal:
         assert len(journal.consumed_authorization_ids()) == 1
 
+    # 24 completed this run plus the pre-seeded settled request.
+    assert result.requests_completed == 25
+    assert result.paid_request_calls == 24
+    assert paid.calls == [request.request_id for request in requests[1:]]
+    assert len(list((tmp_path / "raw").glob("*.dbn"))) == 24
+    assert len(list((tmp_path / "normalized").glob("*.parquet"))) == 24
+    assert len(list((tmp_path / "quality").glob("*.json"))) == 24
+
+    # A stale-scope resume after completion fails closed: the journal now
+    # derives zero eligible requests, so the historical scope must not re-run.
+    with pytest.raises(ExecutorGuardError, match="scope_eligible_set_mismatch") as exc:
+        PilotExecutionCoordinator().execute_paid(
+            requests=requests,
+            config=load_pilot_config(Path(_PILOT_CONFIG)),
+            plan_hash=plan["plan_hash"],
+            plan_bindings=plan["bindings"],
+            plan_metadata=data_module._pilot_plan_hash_metadata(plan),
+            authorization_path=auth_path,
+            authorization_hash=str(auth["authorization_hash"]),
+            portal_attestation_hash="t" * 64,
+            confirm_plan_hash=plan["plan_hash"],
+            metadata_provider_factory=_ZeroCostMetadata,
+            paid_provider_factory=lambda: (_ for _ in ()).throw(AssertionError()),
+            journal_factory=lambda: RequestJournal(journal_path),
+            lifecycle=lifecycle,
+            now=now,
+            execution_scope=_integration_scope(plan),
+        )
+    assert exc.value.reason == "invalid_execution_scope"
+    assert paid.calls == [request.request_id for request in requests[1:]]
+
+    # The current-state scope (empty: nothing left eligible) executes safely
+    # with zero paid calls.
+    empty_scope = build_remaining_scope(
+        source_plan_hash=plan["plan_hash"],
+        completed_request_ids=[request.request_id for request in requests],
+        completed_request_hashes=[request.request_hash for request in requests],
+        remaining_request_ids=[],
+        remaining_request_hashes=[],
+    )
     resumed = PilotExecutionCoordinator().execute_paid(
         requests=requests,
         config=load_pilot_config(Path(_PILOT_CONFIG)),
@@ -1753,17 +1824,12 @@ def test_coordinator_fake_25_request_lifecycle(pilot_manifest_path: Path, tmp_pa
         journal_factory=lambda: RequestJournal(journal_path),
         lifecycle=lifecycle,
         now=now,
-        execution_scope=_integration_scope(plan),
+        execution_scope=empty_scope,
     )
-
-    assert result.requests_completed == 24
-    assert result.paid_request_calls == 24
-    assert resumed.requests_skipped == 24
     assert resumed.paid_request_calls == 0
+    assert resumed.requests_completed == 25  # nothing new to do; prior state persists
+    assert resumed.paid_provider_constructed is False
     assert paid.calls == [request.request_id for request in requests[1:]]
-    assert len(list((tmp_path / "raw").glob("*.dbn"))) == 24
-    assert len(list((tmp_path / "normalized").glob("*.parquet"))) == 24
-    assert len(list((tmp_path / "quality").glob("*.json"))) == 24
 
 
 @pytest.mark.integration
@@ -1961,6 +2027,7 @@ def test_paid_execution_requires_preflight_evidence_before_credentials(
     """Paid mode without complete evidence stops before any credential access."""
     plan = json.loads(pilot_manifest_path.read_text(encoding="utf-8"))
     auth_path, attestation_path = _write_execution_inputs(plan, tmp_path)
+    _seed_journal(tmp_path / "journal.sqlite", plan)
     args = _execute_args(
         plan_path=pilot_manifest_path,
         plan_hash=plan["plan_hash"],
@@ -1988,6 +2055,7 @@ def test_paid_execution_rejects_tampered_preflight_evidence_before_credentials(
     """Tampered evidence fails closed with zero provider or credential access."""
     plan = json.loads(pilot_manifest_path.read_text(encoding="utf-8"))
     auth_path, attestation_path = _write_execution_inputs(plan, tmp_path)
+    _seed_journal(tmp_path / "journal.sqlite", plan)
     args = _execute_args(
         plan_path=pilot_manifest_path,
         plan_hash=plan["plan_hash"],

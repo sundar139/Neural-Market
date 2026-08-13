@@ -11,8 +11,10 @@ from neuralmarket.data.acquisition.authorization import (
     PilotAuthorization,
     build_remaining_scope,
     compute_authorization_hash,
+    derive_currently_eligible_requests,
     load_authorization,
     validate_authorization,
+    validate_remaining_scope,
 )
 
 pytestmark = pytest.mark.unit
@@ -446,17 +448,143 @@ def test_accepts_bounded_authorization_expiry() -> None:
 # ── runtime scope validation ─────────────────────────────────────────
 
 
-def test_rejects_scope_wrong_remaining_count() -> None:
-    wrong = build_remaining_scope(
+def test_authorization_binds_a_non_historical_scope_by_hash_only() -> None:
+    """Exact-set enforcement lives in validate_remaining_scope.
+
+    The authorization binds whatever structural scope it was signed with.
+    """
+    twenty = build_remaining_scope(
         source_plan_hash="p" * 64,
-        completed_request_ids=["2750995e515e4f1a", "extra"],
-        completed_request_hashes=["b" * 64, "x" * 64],
-        remaining_request_ids=[f"{i:016x}" for i in range(23)],
-        remaining_request_hashes=[f"{i:064x}" for i in range(23)],
+        completed_request_ids=[f"c{i:016x}" for i in range(5)],
+        completed_request_hashes=[f"c{i:064x}" for i in range(5)],
+        remaining_request_ids=[f"r{i:016x}" for i in range(20)],
+        remaining_request_hashes=[f"r{i:064x}" for i in range(20)],
     )
+    _validate(_valid_payload(remaining_scope_hash=twenty.scope_hash), expected_scope=twenty)
+
+
+# ── exact eligible-set scope validation ──────────────────────────────
+
+
+def _plan(count: int = 25):
+    from types import SimpleNamespace
+
+    return [
+        SimpleNamespace(request_id=f"r{i:016x}", request_hash=f"{i:064x}") for i in range(count)
+    ]
+
+
+def _scope(plan, eligible_ids: list[str]) -> object:
+    return build_remaining_scope(
+        source_plan_hash="p" * 64,
+        completed_request_ids=[r.request_id for r in plan if r.request_id not in set(eligible_ids)],
+        completed_request_hashes=[
+            r.request_hash for r in plan if r.request_id not in set(eligible_ids)
+        ],
+        remaining_request_ids=[r.request_id for r in plan if r.request_id in set(eligible_ids)],
+        remaining_request_hashes=[
+            r.request_hash for r in plan if r.request_id in set(eligible_ids)
+        ],
+    )
+
+
+def test_derive_currently_eligible_requests_is_deterministic_and_state_exact() -> None:
+    plan = _plan()
+    states = {r.request_id: "preflight_validated" for r in plan}
+    states[plan[0].request_id] = "quality_validated"
+    states[plan[1].request_id] = "uncertain_billing"
+    states[plan[2].request_id] = "normalized"
+    states[plan[3].request_id] = "raw_validated"
+
+    first = derive_currently_eligible_requests(plan, states)
+    second = derive_currently_eligible_requests(plan, states)
+
+    assert [(r.request_id, r.request_hash) for r in first] == [
+        (r.request_id, r.request_hash) for r in second
+    ]
+    assert [r.request_id for r in first] == [r.request_id for r in plan[2:]]
+    assert plan[0].request_id not in {r.request_id for r in first}
+    assert plan[1].request_id not in {r.request_id for r in first}
+
+
+def test_validate_remaining_scope_accepts_exact_eligible_set() -> None:
+    plan = _plan()
+    eligible = [r for r in plan if int(r.request_hash[-2:], 16) >= 5]  # 20 requests
+    assert len(eligible) == 20
+    scope = _scope(plan, [r.request_id for r in eligible])
+    validate_remaining_scope(
+        scope,
+        canonical_requests=plan,
+        source_plan_hash="p" * 64,
+        expected_eligible_requests=eligible,
+    )
+
+
+def test_validate_remaining_scope_rejects_arbitrary_same_size_subset() -> None:
+    plan = _plan()
+    eligible = list(plan[:20])
+    scope = _scope(plan, [r.request_id for r in plan[5:]])  # same count, wrong identities
     with pytest.raises(AuthorizationError) as exc:
-        _validate(_valid_payload(remaining_scope_hash=wrong.scope_hash), expected_scope=wrong)
-    assert exc.value.reason == "scope_remaining_count_mismatch"
+        validate_remaining_scope(
+            scope,
+            canonical_requests=plan,
+            source_plan_hash="p" * 64,
+            expected_eligible_requests=eligible,
+        )
+    assert exc.value.reason == "scope_eligible_set_mismatch"
+
+
+def test_validate_remaining_scope_rejects_19_of_20() -> None:
+    plan = _plan()
+    eligible = list(plan[:20])
+    scope = _scope(plan, [r.request_id for r in plan[:19]])
+    with pytest.raises(AuthorizationError) as exc:
+        validate_remaining_scope(
+            scope,
+            canonical_requests=plan,
+            source_plan_hash="p" * 64,
+            expected_eligible_requests=eligible,
+        )
+    assert exc.value.reason == "scope_eligible_set_mismatch"
+
+
+def test_validate_remaining_scope_rejects_reintroducing_quarantined_request() -> None:
+    plan = _plan()
+    states = {r.request_id: "quality_validated" for r in plan}
+    for request in plan[5:]:
+        states[request.request_id] = "preflight_validated"
+    states[plan[20].request_id] = "uncertain_billing"  # quarantined d5352 stand-in
+    eligible = derive_currently_eligible_requests(plan, states)
+    assert plan[20].request_id not in {r.request_id for r in eligible}
+    reintroduced = _scope(plan, [r.request_id for r in eligible] + [plan[20].request_id])
+    with pytest.raises(AuthorizationError):
+        validate_remaining_scope(
+            reintroduced,
+            canonical_requests=plan,
+            source_plan_hash="p" * 64,
+            expected_eligible_requests=eligible,
+        )
+
+
+def test_validate_remaining_scope_future_smaller_eligible_set_needs_no_code_change() -> None:
+    plan = _plan()
+    eligible = list(plan[6:])  # 19 eligible after more completions
+    assert len(eligible) == 19
+    scope = _scope(plan, [r.request_id for r in eligible])
+    validate_remaining_scope(
+        scope,
+        canonical_requests=plan,
+        source_plan_hash="p" * 64,
+        expected_eligible_requests=eligible,
+    )
+
+
+def test_validate_remaining_scope_zero_eligible_is_explicit_and_safe() -> None:
+    plan = _plan()
+    scope = _scope(plan, [])
+    validate_remaining_scope(
+        scope, canonical_requests=plan, source_plan_hash="p" * 64, expected_eligible_requests=[]
+    )
 
 
 def test_rejects_scope_with_overlap() -> None:

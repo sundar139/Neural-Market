@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 from neuralmarket.cli import data as data_module
-from neuralmarket.data.acquisition.authorization import RemainingRequestScope
+from neuralmarket.data.acquisition.authorization import RemainingRequestScope, build_remaining_scope
 from neuralmarket.data.acquisition.executor import (
     PilotExecutionCoordinator,
     RawAcquisitionResult,
@@ -61,6 +61,21 @@ def test_raw_validated_paid_dbn_resumes_offline_without_paid_provider(
         (root / "reports/data/execution/remaining_scope_24_f79f37a.scope.local.json").read_text(
             encoding="utf-8"
         )
+    )
+    # Derive the execution scope from the seeded journal states so the test
+    # never depends on the historical 24-request scope matching live state.
+    derived_scope = build_remaining_scope(
+        source_plan_hash=plan["plan_hash"],
+        completed_request_ids=[
+            request.request_id for request in requests if request.request_id != target_id
+        ],
+        completed_request_hashes=[
+            request.request_hash for request in requests if request.request_id != target_id
+        ],
+        remaining_request_ids=[target_id],
+        remaining_request_hashes=[
+            request.request_hash for request in requests if request.request_id == target_id
+        ],
     )
     raw_mtime_before = raw_path.stat().st_mtime_ns
 
@@ -151,7 +166,7 @@ def test_raw_validated_paid_dbn_resumes_offline_without_paid_provider(
         "paid_provider_factory": fail_paid_factory,
         "journal_factory": lambda: RequestJournal(journal_path),
         "now": datetime.now(UTC),
-        "execution_scope": scope,
+        "execution_scope": derived_scope,
     }
     failed = PilotExecutionCoordinator().execute_paid(lifecycle=FailingLifecycle(), **common)
     with RequestJournal(journal_path) as journal:

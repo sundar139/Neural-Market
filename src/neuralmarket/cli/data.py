@@ -33,6 +33,7 @@ from neuralmarket.data.acquisition.attestation import (
 from neuralmarket.data.acquisition.authorization import (
     AuthorizationError,
     RemainingRequestScope,
+    derive_currently_eligible_requests,
     load_authorization,
     validate_authorization,
     validate_remaining_scope,
@@ -2187,6 +2188,7 @@ def pilot_recheck_cost(
                 expected_sha256=expected_remaining_scope_sha256,
                 finalized_requests=finalized_requests,
                 plan_hash=str(manifest_payload.get("plan_hash", "")),
+                journal_states=_read_journal_states(journal_path),
             )
             by_id = {item.request_id: item for item in finalized_requests}
             requests = [by_id[request_id] for request_id in scope.remaining_request_ids]
@@ -2677,6 +2679,7 @@ def pilot_execute(
                 expected_sha256=expected_remaining_scope_sha256,
                 finalized_requests=list(authorized_requests),
                 plan_hash=str(plan_payload["plan_hash"]),
+                journal_states=_read_journal_states(journal_full_path),
             )
         else:
             execution_scope = None
@@ -3080,6 +3083,7 @@ def _load_validated_remaining_scope(
     expected_sha256: str | None,
     finalized_requests: list[AcquisitionRequest],
     plan_hash: str,
+    journal_states: dict[str, str],
 ) -> RemainingRequestScope:
     """Hash-check, parse, and validate a remaining-request scope artifact.
 
@@ -3098,10 +3102,25 @@ def _load_validated_remaining_scope(
     scope = RemainingRequestScope.model_validate(
         {key: value for key, value in payload.items() if key in RemainingRequestScope.model_fields}
     )
+    expected_eligible = derive_currently_eligible_requests(finalized_requests, journal_states)
     validate_remaining_scope(
-        scope, canonical_requests=finalized_requests, source_plan_hash=plan_hash
+        scope,
+        canonical_requests=finalized_requests,
+        source_plan_hash=plan_hash,
+        expected_eligible_requests=expected_eligible,
     )
     return scope
+
+
+def _read_journal_states(path: Path) -> dict[str, str]:
+    """Read-only snapshot of request states; an absent journal yields no states."""
+    import sqlite3
+
+    if not path.exists():
+        return {}
+    with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as connection:
+        rows = connection.execute("SELECT request_id, state FROM requests").fetchall()
+    return {str(request_id): str(state) for request_id, state in rows}
 
 
 def _synthetic_scope_for_cli(plan_hash: str = "p" * 64) -> Any:

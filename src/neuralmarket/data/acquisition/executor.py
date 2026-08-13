@@ -32,6 +32,7 @@ from neuralmarket.data.acquisition.authorization import (
     AuthorizationError,
     RemainingRequestScope,
     build_remaining_scope,
+    derive_currently_eligible_requests,
     load_authorization,
     validate_authorization,
     validate_remaining_scope,
@@ -785,8 +786,15 @@ class PilotExecutionCoordinator:
                     "paid execution requires a validated remaining-request scope",
                 )
             try:
+                with journal_factory() as journal:
+                    expected_eligible = derive_currently_eligible_requests(
+                        requests, journal.request_states()
+                    )
                 validate_remaining_scope(
-                    execution_scope, canonical_requests=requests, source_plan_hash=plan_hash
+                    execution_scope,
+                    canonical_requests=requests,
+                    source_plan_hash=plan_hash,
+                    expected_eligible_requests=expected_eligible,
                 )
             except AuthorizationError as exc:
                 raise ExecutorGuardError("invalid_execution_scope", exc.reason) from exc

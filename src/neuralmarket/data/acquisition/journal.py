@@ -779,6 +779,11 @@ class RequestJournal:
         rows = self._connection.execute(f"SELECT {', '.join(_COLUMNS)} FROM requests").fetchall()
         return [JournalEntry(**dict(zip(_COLUMNS, row, strict=True))) for row in rows]
 
+    def request_states(self) -> dict[str, str]:
+        """Return a read-only snapshot of every request's current state."""
+        rows = self._connection.execute("SELECT request_id, state FROM requests").fetchall()
+        return {str(request_id): str(state) for request_id, state in rows}
+
     def close(self) -> None:
         """Close the underlying SQLite connection."""
         self._connection.close()

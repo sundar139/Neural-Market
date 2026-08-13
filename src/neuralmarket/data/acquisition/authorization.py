@@ -67,16 +67,20 @@ class AuthorizationError(ValueError):
 
 
 class RemainingRequestScope(BaseModel):
-    """Deterministic 24-request subset derived from the canonical 25-request plan.
+    """Deterministic subset of the canonical plan eligible for acquisition.
 
-    Excludes exactly the completed, settled request.
+    The remaining set is derived from journal state (completed, quality
+    validated, and quarantined requests are excluded); the historical
+    ``canonical_25_minus_settled`` derivation remains readable as evidence.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     scope_version: Literal["1.0"] = _SCOPE_VERSION
     source_plan_hash: str
-    derivation_rule: Literal["canonical_25_minus_settled"] = "canonical_25_minus_settled"
+    derivation_rule: Literal["canonical_25_minus_settled", "journal_eligible_requests"] = (
+        "canonical_25_minus_settled"
+    )
     completed_request_ids: list[str]
     completed_request_hashes: list[str]
     remaining_request_ids: list[str]
@@ -134,6 +138,33 @@ def build_remaining_scope(
     return RemainingRequestScope.model_validate(payload)
 
 
+# Journal states whose requests may still be acquired or resumed locally.
+_ACQUISITION_ELIGIBLE_STATES = frozenset(
+    {
+        "preflight_validated",
+        "raw_validated",
+        "normalized",
+        "retry_eligible_after_manual_nonbilling_confirmation",
+    }
+)
+
+
+def derive_currently_eligible_requests(
+    canonical_requests: list[Any], states: dict[str, str]
+) -> list[Any]:
+    """Return the canonical-plan requests still eligible, in plan order.
+
+    Completed, quality-validated, quarantined, uncertain-billing, and
+    unknown requests are excluded. Deterministic: plan order, exact
+    identities. Never hardcodes a request count.
+    """
+    return [
+        request
+        for request in canonical_requests
+        if states.get(request.request_id) in _ACQUISITION_ELIGIBLE_STATES
+    ]
+
+
 def _scope_canonical(payload: dict[str, object]) -> str:
     unsigned = {k: v for k, v in payload.items() if k != "scope_hash"}
     canonical = canonical_dumps(unsigned)
@@ -145,18 +176,22 @@ def validate_remaining_scope(
     *,
     canonical_requests: list[Any],
     source_plan_hash: str,
+    expected_eligible_requests: list[Any],
 ) -> None:
     """Fail closed unless ``scope`` is a faithful subset of the canonical plan.
 
     Checks the bound plan identity, the scope's own canonical hash, the exact
-    24-request size, duplicate IDs and hashes, completed-request exclusion, and
-    that every scoped ID/hash pair appears in the canonical plan with the same
-    pairing. Call this before constructing any provider.
+    set of currently eligible requests (derived from journal state), duplicate
+    IDs and hashes, completed-request exclusion, and that every scoped ID/hash
+    pair appears in the canonical plan with the same pairing. Call this before
+    constructing any provider.
 
     Args:
         scope: The remaining-request scope under review.
         canonical_requests: The canonical 25-request pilot plan.
         source_plan_hash: The plan hash the scope must be bound to.
+        expected_eligible_requests: Exact eligible identities (ID, hash, order)
+            derived from the current journal state.
 
     Raises:
         AuthorizationError: On any mismatch, with a machine-readable reason.
@@ -178,12 +213,6 @@ def validate_remaining_scope(
     if not hmac.compare_digest(recomputed, scope.scope_hash):
         raise AuthorizationError("scope_hash_mismatch", "scope_hash does not match the payload")
 
-    if len(scope.remaining_request_ids) != 24:
-        raise AuthorizationError(
-            "scope_request_count",
-            f"remaining scope must contain exactly 24 requests, got "
-            f"{len(scope.remaining_request_ids)}",
-        )
     if len(set(scope.remaining_request_hashes)) != len(scope.remaining_request_hashes):
         raise AuthorizationError(
             "scope_duplicate_hash", "remaining request hashes contain a duplicate"
@@ -210,6 +239,20 @@ def validate_remaining_scope(
                 "scope_unknown_completed",
                 f"completed request is not in the canonical plan: {request_id}",
             )
+    expected_pairs = [(item.request_id, item.request_hash) for item in expected_eligible_requests]
+    actual_pairs = list(
+        zip(
+            scope.remaining_request_ids,
+            scope.remaining_request_hashes,
+            strict=True,
+        )
+    )
+    if actual_pairs != expected_pairs:
+        raise AuthorizationError(
+            "scope_eligible_set_mismatch",
+            "remaining scope must equal exactly the currently eligible requests "
+            f"(expected {len(expected_pairs)}, got {len(actual_pairs)})",
+        )
 
 
 # ── Evidence reference ───────────────────────────────────────────────
@@ -402,11 +445,6 @@ def validate_authorization(
     if not hmac.compare_digest(auth.remaining_scope_hash, expected_scope.scope_hash):
         raise AuthorizationError(
             "scope_hash_mismatch", "remaining_scope_hash does not match expected scope"
-        )
-    if len(expected_scope.remaining_request_ids) != 24:
-        raise AuthorizationError(
-            "scope_remaining_count_mismatch",
-            f"expected 24 remaining requests, got {len(expected_scope.remaining_request_ids)}",
         )
     if expected_scope.duplicate_count != 0:
         raise AuthorizationError("scope_has_duplicates", "scope contains duplicate request IDs")
