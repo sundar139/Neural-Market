@@ -109,6 +109,13 @@ def normalize_frame_to_parquet(
     import pyarrow.parquet as pq  # type: ignore[import-untyped]
 
     normalized = pd.DataFrame(frame).copy()
+    if "raw_symbol" not in normalized and "symbol" in normalized:
+        valid_symbols = normalized["symbol"].map(
+            lambda value: isinstance(value, str) and bool(value.strip())
+        )
+        if not valid_symbols.all():
+            raise ValueError("provider symbol must contain non-empty strings")
+        normalized["raw_symbol"] = normalized["symbol"]
     if not {"raw_symbol", "instrument_id"}.issubset(normalized.columns):
         raise ValueError("normalized data must retain raw_symbol and instrument_id")
     for column in normalized.columns:

@@ -7,10 +7,12 @@ import pytest
 
 from neuralmarket.data.normalization.parquet import (
     build_conversion_plan,
+    normalize_dbn_store_to_parquet,
     normalize_frame_to_parquet,
     reconcile_row_counts,
 )
 from neuralmarket.data.normalization.provenance import ProvenanceColumns, provenance_columns_for
+from neuralmarket.data.raw.integrity import sha256_of_file
 
 pytestmark = pytest.mark.unit
 
@@ -69,6 +71,146 @@ def test_normalize_frame_to_parquet_is_atomic_and_preserves_provenance(
     assert normalized.loc[0, "source_request_id"] == arcx_request.request_id
     assert str(normalized["ts_event"].dtype) == "datetime64[ns, UTC]"
     assert (tmp_path / "normalized.parquet.json").is_file()
+
+
+def test_normalize_frame_to_parquet_preserves_existing_raw_symbol(tmp_path, arcx_request) -> None:
+    import pandas as pd
+
+    output = tmp_path / "existing-raw-symbol.parquet"
+    normalize_frame_to_parquet(
+        frame=pd.DataFrame(
+            {
+                "raw_symbol": ["EXISTING"],
+                "symbol": ["PROVIDER"],
+                "instrument_id": [15144],
+            }
+        ),
+        output_path=output,
+        provenance=provenance_columns_for(
+            arcx_request, raw_checksum="a" * 64, ingested_at=datetime(2026, 1, 1, tzinfo=UTC)
+        ),
+        expected_raw_record_count=1,
+    )
+
+    normalized = pd.read_parquet(output)
+    assert normalized["raw_symbol"].tolist() == ["EXISTING"]
+    assert normalized["symbol"].tolist() == ["PROVIDER"]
+    assert normalized["instrument_id"].tolist() == [15144]
+
+
+def test_normalize_frame_to_parquet_maps_provider_symbols_row_for_row(
+    tmp_path, arcx_request
+) -> None:
+    import pandas as pd
+
+    output = tmp_path / "provider-symbols.parquet"
+    normalize_frame_to_parquet(
+        frame=pd.DataFrame(
+            {
+                "symbol": ["SPY", "QQQ", "SPY"],
+                "instrument_id": [15144, 23456, 15144],
+            }
+        ),
+        output_path=output,
+        provenance=provenance_columns_for(
+            arcx_request, raw_checksum="a" * 64, ingested_at=datetime(2026, 1, 1, tzinfo=UTC)
+        ),
+        expected_raw_record_count=3,
+    )
+
+    normalized = pd.read_parquet(output)
+    assert normalized["raw_symbol"].tolist() == ["SPY", "QQQ", "SPY"]
+    assert normalized["instrument_id"].tolist() == [15144, 23456, 15144]
+
+
+@pytest.mark.parametrize("invalid_symbol", [None, "", "   ", 15144])
+def test_normalize_frame_to_parquet_rejects_invalid_provider_symbol(
+    tmp_path, arcx_request, invalid_symbol
+) -> None:
+    with pytest.raises(ValueError, match="provider symbol must contain non-empty strings"):
+        normalize_frame_to_parquet(
+            frame={"symbol": [invalid_symbol], "instrument_id": [15144]},
+            output_path=tmp_path / "invalid-provider-symbol.parquet",
+            provenance=provenance_columns_for(
+                arcx_request,
+                raw_checksum="a" * 64,
+                ingested_at=datetime(2026, 1, 1, tzinfo=UTC),
+            ),
+            expected_raw_record_count=1,
+        )
+
+
+def test_normalize_frame_to_parquet_rejects_missing_symbol_identity(tmp_path, arcx_request) -> None:
+    with pytest.raises(ValueError, match="must retain raw_symbol and instrument_id"):
+        normalize_frame_to_parquet(
+            frame={"instrument_id": [15144]},
+            output_path=tmp_path / "missing-symbol.parquet",
+            provenance=provenance_columns_for(
+                arcx_request,
+                raw_checksum="a" * 64,
+                ingested_at=datetime(2026, 1, 1, tzinfo=UTC),
+            ),
+            expected_raw_record_count=1,
+        )
+
+
+def test_real_paid_dbn_normalizes_offline_with_identity_and_provenance(
+    tmp_path,
+) -> None:
+    import json
+    from pathlib import Path
+
+    import databento
+    import pandas as pd
+    import pyarrow.parquet as pq
+
+    from neuralmarket.data.acquisition.requests import AcquisitionRequest
+
+    root = Path(__file__).resolve().parents[4]
+    raw_path = (
+        root
+        / "data/raw/databento/pilot_january_2019/ARCX.PILLAR/ohlcv-1d"
+        / "start_date=2019-01-02/end_date=2019-02-01/6b46de651d2cf921.dbn"
+    )
+    if not raw_path.is_file():
+        pytest.skip("protected paid DBN is not present in this checkout")
+    expected_raw_sha256 = (
+        "e70e6ab053b44834f0f9b67543544fda"  # pragma: allowlist secret
+        "0179fb9c19dcd656188d59af1fde8f79"  # pragma: allowlist secret
+    )
+    assert raw_path.stat().st_size == 950
+    assert sha256_of_file(raw_path) == expected_raw_sha256
+    manifest = json.loads(
+        (root / "data/manifests/pilot_request_plan_v1.json").read_text(encoding="utf-8")
+    )
+    request = AcquisitionRequest.model_validate(
+        next(item for item in manifest["requests"] if item["request_id"] == "6b46de651d2cf921")
+    )
+    decoded = databento.DBNStore.from_file(raw_path).to_df()
+    output = tmp_path / "paid-dbn.parquet"
+
+    result = normalize_dbn_store_to_parquet(
+        dbn_store=databento.DBNStore.from_file(raw_path),
+        output_path=output,
+        provenance=provenance_columns_for(
+            request, expected_raw_sha256, datetime(2026, 8, 12, tzinfo=UTC)
+        ),
+        expected_raw_record_count=21,
+    )
+
+    normalized = pd.read_parquet(output)
+    metadata = pq.read_metadata(output)
+    assert result.row_count == len(decoded) == len(normalized) == metadata.num_rows == 21
+    assert {"raw_symbol", "instrument_id"}.issubset(normalized.columns)
+    assert normalized["raw_symbol"].tolist() == decoded["symbol"].tolist()
+    assert normalized["instrument_id"].tolist() == decoded["instrument_id"].tolist()
+    assert normalized["raw_symbol"].unique().tolist() == ["SPY"]
+    assert normalized["instrument_id"].unique().tolist() == [15144]
+    assert normalized["source_request_id"].unique().tolist() == ["6b46de651d2cf921"]
+    assert normalized["source_dataset"].unique().tolist() == ["ARCX.PILLAR"]
+    assert normalized["source_schema"].unique().tolist() == ["ohlcv-1d"]
+    assert normalized["raw_sha256"].unique().tolist() == [expected_raw_sha256]
+    assert set(ProvenanceColumns.model_fields).issubset(normalized.columns)
 
 
 def test_normalize_frame_to_parquet_removes_partial_on_accounting_mismatch(

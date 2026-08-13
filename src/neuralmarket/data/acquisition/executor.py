@@ -51,6 +51,7 @@ from neuralmarket.data.acquisition.requests import (
     plan_hash as compute_plan_hash,
 )
 from neuralmarket.data.acquisition.states import ALLOWED_TRANSITIONS
+from neuralmarket.data.redaction import redact
 
 if TYPE_CHECKING:
     from neuralmarket.data.acquisition.purchase_review import ExpectedPurchaseBindings
@@ -976,6 +977,13 @@ class PilotExecutionCoordinator:
                         blocking_state = "block_uncertain_billing"
                     else:
                         blocking_state = "local_processing_failure"
+                        if current is not None:
+                            executor.transition(
+                                request.request_id,
+                                current.state,
+                                failure_category=type(exc).__name__,
+                                failure_message=redact(str(exc)),
+                            )
                     blocking_request = request.request_id
                     break
 
