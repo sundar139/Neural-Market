@@ -10,6 +10,7 @@ the caller, not to this module.
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -19,6 +20,29 @@ from pydantic import BaseModel, ConfigDict
 
 from neuralmarket.data.acquisition.requests import AcquisitionRequest
 from neuralmarket.data.raw.integrity import sha256_of_file, verify_checksum
+
+
+def _verify_zstd_frames(path: Path) -> None:
+    """Fully decode each Zstandard frame so truncated compressed input fails closed."""
+    import zstandard
+
+    decoder = None
+    with path.open("rb") as source:
+        # decompressobj returns all output for each input chunk; keep chunks
+        # small so a high-ratio frame cannot create one large allocation.
+        while chunk := source.read(256):
+            pending = chunk
+            while pending:
+                if decoder is None:
+                    decoder = zstandard.ZstdDecompressor().decompressobj()
+                decoder.decompress(pending)
+                if decoder.eof:
+                    pending = decoder.unused_data
+                    decoder = None
+                else:
+                    pending = b""
+    if decoder is not None:
+        raise ValueError("truncated Zstandard frame")
 
 
 class DbnValidationError(ValueError):
@@ -125,6 +149,8 @@ def validate_dbn_file(
         store_symbols = tuple(store.symbols)
         store_start = store.start
         store_end = store.end
+        if str(getattr(store, "compression", "")) == "zstd":
+            _verify_zstd_frames(path)
     except Exception as exc:
         err = DbnValidationError("unreadable", f"Failed to open DBN store for {path}: {exc}")
         return _failed_report(path, [str(err)], exists=True, nonempty=True, checksum_ok=True)
@@ -192,7 +218,11 @@ def validate_dbn_file(
     opens_ok = True
     records: list[dict[str, Any]] = []
     try:
-        frame = store.to_df()
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "error", message="DBN file is truncated or contains an incomplete record"
+            )
+            frame = store.to_df()
         actual_count = len(frame)
         if isinstance(frame, list):
             if any(not isinstance(row, dict) for row in frame):
@@ -223,7 +253,9 @@ def validate_dbn_file(
     timestamps_within_interval = bool(records) or (expected_request.estimated_record_count == 0)
     symbology_present = bool(records) or expected_request.estimated_record_count == 0
     for row in records:
-        raw_timestamp = row.get("ts_event") or row.get("timestamp") or row.get("ts_recv")
+        # Historical range filtering uses ts_recv when the schema carries it;
+        # ts_event can legitimately precede the requested receive-time window.
+        raw_timestamp = row.get("ts_recv") or row.get("ts_event") or row.get("timestamp")
         try:
             timestamp = (
                 raw_timestamp

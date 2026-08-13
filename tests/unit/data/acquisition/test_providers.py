@@ -1,4 +1,5 @@
 import inspect
+import json
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -17,6 +18,7 @@ from neuralmarket.data.acquisition.providers import (
     create_databento_paid_provider,
 )
 from neuralmarket.data.acquisition.requests import (
+    AcquisitionRequest,
     build_pilot_request_plan,
     finalize_request,
     load_pilot_config,
@@ -41,6 +43,66 @@ def _finalized_request():
         retries=0,
     )
     return finalize_request(draft, estimate, datetime(2026, 1, 1, tzinfo=UTC))
+
+
+def _opra_cbbo_request() -> AcquisitionRequest:
+    manifest = json.loads(
+        Path("data/manifests/pilot_request_plan_v1.json").read_text(encoding="utf-8")
+    )
+    return AcquisitionRequest.model_validate(
+        next(item for item in manifest["requests"] if item["request_id"] == "ebefaaae3b198092")
+    )
+
+
+def _opra_cbbo_store(
+    request: AcquisitionRequest,
+    *,
+    truncated: bool = False,
+    truncated_zstd_frame: bool = False,
+):
+    import databento
+    import databento_dbn
+    import zstandard
+
+    def nanoseconds(value: datetime) -> int:
+        return int(value.timestamp() * 1_000_000_000)
+
+    metadata = databento_dbn.Metadata(
+        dataset=request.dataset,
+        start=nanoseconds(request.start),
+        end=nanoseconds(request.end_exclusive),
+        stype_in=databento_dbn.SType.PARENT,
+        stype_out=databento_dbn.SType.INSTRUMENT_ID,
+        schema=databento_dbn.Schema.CBBO_1M,
+        symbols=list(request.symbols),
+    )
+    first = databento_dbn.CBBOMsg(
+        rtype=databento_dbn.RType.CBBO_1M,
+        publisher_id=1,
+        instrument_id=123,
+        ts_event=nanoseconds(request.start) - (0 if truncated else 1_000_000_000),
+        price=100_000_000_000,
+        size=1,
+        side=databento_dbn.Side.BID,
+        ts_recv=nanoseconds(request.start),
+    )
+    raw = metadata.encode() + bytes(first)
+    if truncated:
+        second = databento_dbn.CBBOMsg(
+            rtype=databento_dbn.RType.CBBO_1M,
+            publisher_id=1,
+            instrument_id=124,
+            ts_event=nanoseconds(request.start) + 1_000_000_000,
+            price=101_000_000_000,
+            size=1,
+            side=databento_dbn.Side.ASK,
+            ts_recv=nanoseconds(request.start) + 1_000_000_000,
+        )
+        raw += bytes(second)[: len(bytes(second)) // 2]
+    payload = zstandard.ZstdCompressor(write_checksum=True).compress(raw)
+    if truncated_zstd_frame:
+        payload = payload[:-1]
+    return databento.DBNStore.from_bytes(payload)
 
 
 class _FakeStore:
@@ -134,6 +196,74 @@ def test_paid_adapter_writes_fake_store_atomically(tmp_path) -> None:
     assert result.raw_path.endswith(".dbn")
     client.timeseries.get_range.assert_called_once()
     assert not list(tmp_path.glob("*.provider.partial"))
+
+
+def test_paid_factory_publishes_valid_cbbo_filtered_by_receive_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import databento
+
+    request = _opra_cbbo_request()
+    get_range = Mock(return_value=_opra_cbbo_store(request))
+    monkeypatch.setattr(
+        databento,
+        "Historical",
+        lambda _key: SimpleNamespace(timeseries=SimpleNamespace(get_range=get_range)),
+    )
+    provider = create_databento_paid_provider(data_root=tmp_path, api_key="offline-test-key")
+
+    result = provider.acquire_range(request)
+
+    assert result.record_count == 1
+    assert Path(result.raw_path).is_file()
+    assert not list(tmp_path.rglob("*.partial"))
+    get_range.assert_called_once()
+
+
+def test_paid_factory_rejects_truncated_cbbo_with_diagnostic_and_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import databento
+
+    request = _opra_cbbo_request()
+    get_range = Mock(return_value=_opra_cbbo_store(request, truncated=True))
+    monkeypatch.setattr(
+        databento,
+        "Historical",
+        lambda _key: SimpleNamespace(timeseries=SimpleNamespace(get_range=get_range)),
+    )
+    provider = create_databento_paid_provider(data_root=tmp_path, api_key="offline-test-key")
+
+    with pytest.warns(match="truncated"), pytest.raises(PaidProviderError) as error:
+        provider.acquire_range(request)
+
+    assert error.value.category == "local_persistence_failure"
+    assert "truncated" in str(error.value)
+    assert [path.name for path in tmp_path.rglob("*") if path.is_file()] == []
+    get_range.assert_called_once()
+
+
+def test_paid_factory_rejects_truncated_zstd_frame_with_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import databento
+
+    request = _opra_cbbo_request()
+    get_range = Mock(return_value=_opra_cbbo_store(request, truncated_zstd_frame=True))
+    monkeypatch.setattr(
+        databento,
+        "Historical",
+        lambda _key: SimpleNamespace(timeseries=SimpleNamespace(get_range=get_range)),
+    )
+    provider = create_databento_paid_provider(data_root=tmp_path, api_key="offline-test-key")
+
+    with pytest.raises(PaidProviderError) as error:
+        provider.acquire_range(request)
+
+    assert error.value.category == "local_persistence_failure"
+    assert "truncated zstandard frame" in str(error.value).lower()
+    assert [path.name for path in tmp_path.rglob("*") if path.is_file()] == []
+    get_range.assert_called_once()
 
 
 def test_paid_adapter_uses_exact_first_request_databento_contract(tmp_path: Path) -> None:

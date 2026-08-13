@@ -246,11 +246,14 @@ def create_databento_paid_provider(
     client = databento.Historical(key)
 
     def validate(path: Path, checksum: str, request: AcquisitionRequest) -> bool:
-        return validate_dbn_file(
+        report = validate_dbn_file(
             path,
             expected_request=request,
             expected_sha256=checksum,
             dbn_store_factory=lambda item: databento.DBNStore.from_file(item),
-        ).passed
+        )
+        if not report.passed:
+            raise ValueError(f"raw DBN validation failed: {'; '.join(report.errors)}")
+        return True
 
     return DatabentoPaidHistoricalProvider(client=client, data_root=data_root, validator=validate)
