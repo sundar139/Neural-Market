@@ -73,7 +73,7 @@ def load_json(path: Path) -> dict[str, Any]:
     return raw
 
 
-def write_json(path: Path, payload: dict[str, Any]) -> None:
+def write_json(path: Path, payload: dict[str, Any], *, compact: bool = False) -> None:
     """Atomically write sorted UTF-8 JSON with a trailing newline."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary_name = tempfile.mkstemp(
@@ -82,7 +82,12 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
     temporary_path = Path(temporary_name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False))
+            serialized = (
+                canonical_dumps(payload)
+                if compact
+                else json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False)
+            )
+            handle.write(serialized)
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
