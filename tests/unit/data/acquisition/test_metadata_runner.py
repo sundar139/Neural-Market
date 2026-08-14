@@ -16,6 +16,7 @@ from neuralmarket.data.acquisition.cost_estimation import (
 )
 from neuralmarket.data.acquisition.metadata_runner import (
     IsolatedMetadataResult,
+    IsolatedSchemaResult,
     MetadataCheckpoint,
     MetadataEndpointResult,
     MetadataOperationEvent,
@@ -27,7 +28,9 @@ from neuralmarket.data.acquisition.metadata_runner import (
     load_checkpoint,
     plan_cost_rollup,
     run_isolated_metadata_request,
+    run_isolated_schema_list,
     run_isolated_unit_price_request,
+    validate_metadata_request_payload,
     write_checkpoint,
 )
 from neuralmarket.data.acquisition.requests import AcquisitionRequest
@@ -591,4 +594,80 @@ def test_isolated_unit_price_child_timeout_is_killed() -> None:
     assert time.monotonic() - started < 8
     assert result.failure_type == "unit_price_hard_timeout"
     assert result.child_terminated is True
+    assert result.remaining_children == 0
+
+
+def schema_cooperative_worker(output, dataset, *_args) -> None:
+    output.put(("result", [f"{dataset}-schema", "cbbo-1m"]))
+
+
+def schema_hang_worker(output, dataset, *_args) -> None:
+    del output, dataset
+    time.sleep(60)
+
+
+def test_isolated_schema_list_completes_and_joins() -> None:
+    result = run_isolated_schema_list(
+        dataset="OPRA.PILLAR",
+        timeout_seconds=10,
+        worker=schema_cooperative_worker,
+    )
+    assert isinstance(result, IsolatedSchemaResult)
+    assert result.supported_schemas == ("OPRA.PILLAR-schema", "cbbo-1m")
+    assert result.child_joined is True
+    assert result.child_terminated is False
+    assert result.remaining_children == 0
+
+
+def test_isolated_schema_list_timeout_is_killed() -> None:
+    started = time.monotonic()
+    result = run_isolated_schema_list(
+        dataset="OPRA.PILLAR",
+        timeout_seconds=3,
+        worker=schema_hang_worker,
+    )
+    assert time.monotonic() - started < 8
+    assert result.failure_type == "schema_list_hard_timeout"
+    assert result.child_terminated is True
+    assert result.child_joined is True
+    assert result.remaining_children == 0
+
+
+def test_metadata_request_payload_accepts_native_development_request() -> None:
+    from neuralmarket.data.acquisition.development import load_development_plan
+
+    plan = load_development_plan(Path("data/manifests/development_acquisition_plan_v1.json"))
+    request = next(item for item in plan.requests if item.expected_split == "validation")
+    loaded = validate_metadata_request_payload(
+        request.model_dump(mode="json", by_alias=True),
+        request_kind="development",
+    )
+    assert loaded == request
+    assert loaded.request_hash == request.request_hash
+    assert loaded.expected_split == "validation"
+    assert loaded.purpose == request.purpose
+
+
+@pytest.mark.parametrize("endpoint", ["record-count", "billable-size", "cost"])
+def test_development_endpoint_timeout_is_bounded_and_child_is_cleaned(endpoint: str) -> None:
+    from neuralmarket.data.acquisition.development import load_development_plan
+
+    plan = load_development_plan(Path("data/manifests/development_acquisition_plan_v1.json"))
+    request = next(item for item in plan.requests if item.expected_split == "validation")
+    started = time.monotonic()
+    result = run_isolated_metadata_request(
+        request=request,
+        request_kind="development",
+        run_id="development-timeout",
+        request_index=1,
+        request_count=1,
+        attempt=1,
+        timeout_seconds=3,
+        only_endpoint=endpoint,
+        worker=cost_hang_worker,
+    )
+    assert time.monotonic() - started < 8
+    assert result.failure_type == "metadata_hard_timeout"
+    assert result.child_terminated is True
+    assert result.child_joined is True
     assert result.remaining_children == 0

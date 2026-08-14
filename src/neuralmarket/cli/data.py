@@ -7,6 +7,7 @@ import hmac
 import importlib.metadata
 import json
 import subprocess
+import time
 import uuid
 from collections.abc import Callable, Iterable
 from dataclasses import asdict
@@ -57,6 +58,20 @@ from neuralmarket.data.acquisition.contracts import (
     AcquisitionPolicyManifest,
     acquisition_report_to_json,
 )
+from neuralmarket.data.acquisition.development_cost_quote import (
+    CheckpointGenerationMismatchError,
+    DevelopmentQuoteCheckpoint,
+    DevelopmentQuoteError,
+    DevelopmentQuoteRunPolicy,
+    build_complete_development_cost_evidence,
+    build_partial_development_quote_evidence,
+    initialize_development_quote_checkpoint,
+    load_development_quote_checkpoint,
+    prepare_development_quote,
+    run_development_quote,
+    sha256_file,
+    write_development_quote_checkpoint,
+)
 from neuralmarket.data.acquisition.estimation import MetadataEstimate
 from neuralmarket.data.acquisition.executor import (
     ExecutorGuardError,
@@ -93,6 +108,7 @@ from neuralmarket.data.acquisition.metadata_runner import (
     load_checkpoint,
     plan_cost_rollup,
     run_isolated_metadata_request,
+    run_isolated_schema_list,
     run_isolated_unit_price_request,
     write_checkpoint,
 )
@@ -163,6 +179,7 @@ from neuralmarket.data.sources.databento import DatabentoSource
 _logger = get_logger(__name__)
 
 _run_isolated_metadata = run_isolated_metadata_request
+_run_isolated_schema_list = run_isolated_schema_list
 
 #: Single-account pricing context bound to the pilot's derived cross-validation.
 _PILOT_ACCOUNT_PRICING_CONTEXT = "pilot-databento-historical-v1"
@@ -239,8 +256,10 @@ def _maybe_derive_cost_fallback(
 app = typer.Typer(help="Market-data contracts, splits, and source qualification.")
 acquisition_app = typer.Typer(help="Budget-constrained, metadata-only OPRA acquisition planning.")
 pilot_app = typer.Typer(help="Guarded pilot data acquisition: prepare, verify, execute, recover.")
+development_app = typer.Typer(help="Development planning and metadata-only cost quotation.")
 app.add_typer(acquisition_app, name="acquisition")
 app.add_typer(pilot_app, name="pilot")
+app.add_typer(development_app, name="development")
 
 _DEFAULT_REQUEST_MANIFEST = Path("data/manifests/pilot_request_plan_v1.json")
 _DEFAULT_SOURCE_MANIFEST = Path("data/manifests/source_manifest_v1.json")
@@ -3133,4 +3152,246 @@ def _synthetic_scope_for_cli(plan_hash: str = "p" * 64) -> Any:
         completed_request_hashes=["b" * 64],
         remaining_request_ids=[f"remaining-{i:08x}" for i in range(24)],
         remaining_request_hashes=[f"{i:064x}" for i in range(24)],
+    )
+
+
+def _write_development_quote_artifact(
+    *,
+    state: DevelopmentQuoteCheckpoint,
+    checkpoint_path: Path,
+    output_path: Path,
+) -> BaseModel:
+    checkpoint_sha = sha256_file(checkpoint_path)
+    artifact: BaseModel
+    if state.status == "complete":
+        artifact = build_complete_development_cost_evidence(
+            state=state,
+            checkpoint_file_sha256=checkpoint_sha,
+            requests=state.bindings.request_identities,
+        )
+    else:
+        artifact = build_partial_development_quote_evidence(
+            state=state,
+            checkpoint_file_sha256=checkpoint_sha,
+        )
+    write_acquisition_json(output_path, artifact.model_dump(mode="json", by_alias=True))
+    return artifact
+
+
+@development_app.command("quote-cost")
+def development_quote_cost(
+    scope: Path = typer.Option(..., "--scope", help="Exact DevelopmentRequestScope JSON."),
+    checkpoint: Path = typer.Option(..., "--checkpoint", help="Atomic resumable checkpoint."),
+    output: Path = typer.Option(
+        ..., "--output", help="Complete evidence or partial progress JSON."
+    ),
+    plan: Path = typer.Option(
+        Path("data/manifests/development_acquisition_plan_v1.json"),
+        "--plan",
+        help="Canonical DevelopmentPlan JSON.",
+    ),
+    pilot_plan: Path = typer.Option(
+        Path("data/manifests/pilot_request_plan_v1.json"),
+        "--pilot-plan",
+        help="Protected finalized pilot request plan.",
+    ),
+    journal: Path = typer.Option(
+        Path("data/state/pilot_acquisition_journal.sqlite"),
+        "--journal",
+        help="Protected read-only pilot journal.",
+    ),
+    resume: bool = typer.Option(False, "--resume", help="Resume a validated checkpoint."),
+    initialize_only: bool = typer.Option(
+        False,
+        "--initialize-only",
+        help="Verify bindings and emit zero-call progress without loading credentials.",
+    ),
+    hard_timeout_seconds: float = typer.Option(
+        120.0,
+        "--hard-timeout-seconds",
+        min=0.001,
+        max=300.0,
+        help="Hard process timeout for every schema or endpoint operation.",
+    ),
+    maximum_attempts: int = typer.Option(
+        2,
+        "--maximum-attempts",
+        min=1,
+        max=3,
+        help="Maximum attempts per pending operation in this run.",
+    ),
+    total_deadline_seconds: float = typer.Option(
+        3600.0,
+        "--total-deadline-seconds",
+        min=0.001,
+        help="Finite total deadline for this development quote run.",
+    ),
+    expected_repository_head: str = typer.Option(..., "--expected-repository-head"),
+    expected_plan_sha256: str = typer.Option(..., "--expected-plan-sha256"),
+    expected_plan_hash: str = typer.Option(..., "--expected-plan-hash"),
+    expected_scope_sha256: str = typer.Option(..., "--expected-scope-sha256"),
+    expected_scope_hash: str = typer.Option(..., "--expected-scope-hash"),
+    expected_pilot_plan_sha256: str = typer.Option(..., "--expected-pilot-plan-sha256"),
+    expected_journal_sha256: str = typer.Option(..., "--expected-journal-sha256"),
+) -> None:
+    """Quote exact development costs with endpoint checkpoints; never acquire data."""
+    root = find_repository_root()
+    plan_path = _resolve_under_root(root, plan)
+    scope_path = _resolve_under_root(root, scope)
+    pilot_plan_path = _resolve_under_root(root, pilot_plan)
+    journal_path = _resolve_under_root(root, journal)
+    checkpoint_path = _resolve_under_root(root, checkpoint)
+    output_path = _resolve_under_root(root, output)
+    try:
+        if checkpoint_path.resolve() == output_path.resolve():
+            raise DevelopmentQuoteError("checkpoint and output paths must differ")
+        execution_dir = (root / "reports" / "data" / "execution").resolve()
+        for label, target in (("checkpoint", checkpoint_path), ("output", output_path)):
+            resolved = target.resolve()
+            if not resolved.is_relative_to(execution_dir):
+                raise DevelopmentQuoteError(
+                    f"{label} must live under reports/data/execution: {target}"
+                )
+            for protected_label, protected in (
+                ("development plan", plan_path),
+                ("development scope", scope_path),
+                ("pilot plan", pilot_plan_path),
+                ("pilot journal", journal_path),
+            ):
+                if resolved == protected.resolve():
+                    raise DevelopmentQuoteError(
+                        f"{label} path would overwrite protected {protected_label}"
+                    )
+        policy = DevelopmentQuoteRunPolicy(
+            hard_operation_timeout_seconds=hard_timeout_seconds,
+            maximum_attempts=maximum_attempts,
+        )
+        prepared = prepare_development_quote(
+            repository_root=root,
+            development_plan_path=plan_path,
+            development_scope_path=scope_path,
+            pilot_plan_path=pilot_plan_path,
+            pilot_journal_path=journal_path,
+            repository_head=_git_head(root),
+            expected_repository_head=expected_repository_head,
+            expected_plan_file_sha256=expected_plan_sha256,
+            expected_plan_hash=expected_plan_hash,
+            expected_scope_file_sha256=expected_scope_sha256,
+            expected_scope_hash=expected_scope_hash,
+            expected_pilot_plan_file_sha256=expected_pilot_plan_sha256,
+            expected_journal_main_sha256=expected_journal_sha256,
+            databento_client_version=checkpoint_client_version(),
+        )
+        if resume:
+            state = load_development_quote_checkpoint(
+                checkpoint_path,
+                expected_bindings=prepared.bindings,
+                expected_policy=policy,
+            )
+        else:
+            if checkpoint_path.exists():
+                raise DevelopmentQuoteError("checkpoint already exists; use --resume")
+            state = initialize_development_quote_checkpoint(
+                bindings=prepared.bindings,
+                policy=policy,
+                now=datetime.now(UTC),
+            )
+            state = write_development_quote_checkpoint(checkpoint_path, state)
+        if initialize_only:
+            artifact = _write_development_quote_artifact(
+                state=state,
+                checkpoint_path=checkpoint_path,
+                output_path=output_path,
+            )
+            typer.echo(
+                json.dumps(
+                    {
+                        "status": state.status,
+                        "request_count": len(state.bindings.request_identities),
+                        "metadata_operations": (
+                            state.provider_operation_counters.total_metadata_operations
+                        ),
+                        "checkpoint": str(checkpoint_path),
+                        "output": str(output_path),
+                        "schema_version": artifact.model_dump()["schema_version"],
+                    },
+                    sort_keys=True,
+                )
+            )
+            return
+    except CheckpointGenerationMismatchError as exc:
+        typer.echo(f"Development quote checkpoint moved concurrently: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    except (DevelopmentQuoteError, ValueError) as exc:
+        typer.echo(f"Development quote gate failed: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    if _git_dirty(root) is not False:
+        typer.echo("Repository working tree must be clean for live quoting.", err=True)
+        raise typer.Exit(code=2)
+
+    _load_dotenv(root)
+    if not __import__("os").environ.get("DATABENTO_API_KEY"):
+        typer.echo("DATABENTO_API_KEY is required after the offline gate.", err=True)
+        raise typer.Exit(code=2)
+
+    request_positions = {
+        request.request_id: index
+        for index, request in enumerate(state.bindings.request_identities, start=1)
+    }
+    run_id = uuid.uuid4().hex
+
+    def schema_runner(dataset: str, attempt: int, timeout_seconds: float) -> Any:
+        del attempt
+        return _run_isolated_schema_list(dataset=dataset, timeout_seconds=timeout_seconds)
+
+    def endpoint_runner(
+        request: Any,
+        endpoint: Endpoint,
+        attempt: int,
+        timeout_seconds: float,
+    ) -> Any:
+        return _run_isolated_metadata(
+            request=request,
+            run_id=run_id,
+            request_index=request_positions[request.request_id],
+            request_count=len(request_positions),
+            attempt=attempt,
+            timeout_seconds=timeout_seconds,
+            only_endpoint=endpoint,
+            request_kind="development",
+        )
+
+    try:
+        state = run_development_quote(
+            state=state,
+            checkpoint_path=checkpoint_path,
+            schema_runner=schema_runner,
+            endpoint_runner=endpoint_runner,
+            total_deadline_seconds=total_deadline_seconds,
+            monotonic=time.monotonic,
+            now=lambda: datetime.now(UTC),
+            expected_checkpoint_hash=state.checkpoint_hash,
+        )
+        artifact = _write_development_quote_artifact(
+            state=state,
+            checkpoint_path=checkpoint_path,
+            output_path=output_path,
+        )
+    except DevelopmentQuoteError as exc:
+        typer.echo(f"Development quote failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(
+        json.dumps(
+            {
+                "status": state.status,
+                "completed_requests": len(state.completed_request_ids),
+                "pending_requests": len(state.pending_endpoints),
+                "stop_reason": state.stop_reason,
+                "checkpoint": str(checkpoint_path),
+                "output": str(output_path),
+                "schema_version": artifact.model_dump()["schema_version"],
+            },
+            sort_keys=True,
+        )
     )

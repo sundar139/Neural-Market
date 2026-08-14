@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import importlib.metadata
+import inspect
 import json
 import multiprocessing
 import os
 import queue
 import time
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -30,6 +31,10 @@ from neuralmarket.data.acquisition.cost_estimation import (
     parse_unit_price_snapshot,
     summarize_plan,
 )
+from neuralmarket.data.acquisition.development import (
+    DevelopmentRequest,
+    verify_development_request,
+)
 from neuralmarket.data.acquisition.estimation import MetadataEstimate
 from neuralmarket.data.acquisition.providers import DatabentoMetadataProvider
 from neuralmarket.data.acquisition.requests import AcquisitionRequest
@@ -47,8 +52,14 @@ from neuralmarket.data.errors import CostEstimationError
 
 _UNIT_PRICE_TARGET_SCHEMA = "cbbo-1m"
 
+#: Hard cap on serialized child result payloads so a pathological provider
+#: response cannot exhaust parent or child memory outside the hard timeout.
+_MAXIMUM_CHILD_RESULT_BYTES = 1_048_576
+
 ESTIMATOR_VERSION = "pilot-metadata-process-v1"
 Endpoint = Literal["record-count", "billable-size", "cost"]
+RequestKind = Literal["pilot", "development"]
+MetadataRequest = AcquisitionRequest | DevelopmentRequest
 
 
 class MetadataOperationEvent(BaseModel):
@@ -99,6 +110,26 @@ def _status(exc: BaseException) -> int | None:
         return None
 
 
+def _worker_accepts_parameter(worker: Callable[..., object], name: str) -> bool:
+    """Return whether a child worker callable accepts a named positional argument."""
+    try:
+        parameters = inspect.signature(worker).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(parameter.name == name for parameter in parameters)
+
+
+def validate_metadata_request_payload(
+    request_payload: dict[str, Any], *, request_kind: RequestKind
+) -> MetadataRequest:
+    """Validate one explicit pilot or development request without lossy conversion."""
+    if request_kind == "development":
+        request = DevelopmentRequest.model_validate(request_payload)
+        verify_development_request(request)
+        return request
+    return AcquisitionRequest.model_validate(request_payload)
+
+
 def _metadata_child(
     output: Any,
     request_payload: dict[str, Any],
@@ -107,11 +138,12 @@ def _metadata_child(
     request_count: int,
     attempt: int,
     only_endpoint: Endpoint | None,
+    request_kind: RequestKind,
 ) -> None:
     """Construct a restricted client and execute one request in a child process."""
     import databento as db
 
-    request = AcquisitionRequest.model_validate(request_payload)
+    request = validate_metadata_request_payload(request_payload, request_kind=request_kind)
     provider = DatabentoMetadataProvider(db.Historical())
     kwargs = {
         "dataset": request.dataset,
@@ -169,6 +201,15 @@ def _metadata_child(
                 }
             )
             output.put(("event", completed.model_dump(mode="json")))
+        serialized = json.dumps(values)
+        if len(serialized.encode()) > _MAXIMUM_CHILD_RESULT_BYTES:
+            output.put(
+                (
+                    "failure",
+                    {"endpoint": only_endpoint, "message": "result_size_exceeded"},
+                )
+            )
+            return
         output.put(("result", values))
     finally:
         provider.close()
@@ -183,7 +224,7 @@ def _nonnegative(value: object, kind: type[int] | type[float]) -> int | float:
 
 def run_isolated_metadata_request(
     *,
-    request: AcquisitionRequest,
+    request: MetadataRequest,
     run_id: str,
     request_index: int,
     request_count: int,
@@ -191,14 +232,14 @@ def run_isolated_metadata_request(
     timeout_seconds: float,
     event_sink: Callable[[MetadataOperationEvent], None] | None = None,
     only_endpoint: Endpoint | None = None,
+    request_kind: RequestKind = "pilot",
     worker: Callable[..., None] = _metadata_child,
 ) -> IsolatedMetadataResult:
     """Run one metadata request in a spawn child and kill it at the deadline."""
     context = multiprocessing.get_context("spawn")
     output = context.Queue()
-    child = context.Process(
-        target=worker,
-        args=(
+    try:
+        child_args: list[object] = [
             output,
             request.model_dump(mode="json", by_alias=True),
             run_id,
@@ -206,104 +247,264 @@ def run_isolated_metadata_request(
             request_count,
             attempt,
             only_endpoint,
-        ),
-        name=f"neuralmarket-metadata-{request.request_id}",
+        ]
+        if _worker_accepts_parameter(worker, "request_kind"):
+            child_args.append(request_kind)
+        child = context.Process(
+            target=worker,
+            args=child_args,
+            name=f"neuralmarket-metadata-{request.request_id}",
+        )
+        child.start()
+        deadline = time.monotonic() + timeout_seconds
+        events: list[MetadataOperationEvent] = []
+        values: dict[str, object] | None = None
+        failure: dict[str, object] | None = None
+        while time.monotonic() < deadline and child.is_alive():
+            try:
+                kind, payload = output.get(timeout=min(0.1, max(0.01, deadline - time.monotonic())))
+            except queue.Empty:
+                continue
+            if kind == "event":
+                event = MetadataOperationEvent.model_validate(payload)
+                events.append(event)
+                if event_sink:
+                    event_sink(event)
+            elif kind == "result":
+                values = payload
+            elif kind == "failure":
+                failure = payload
+        child.join(timeout=0.2)
+        terminated = False
+        if child.is_alive():
+            terminated = True
+            child.terminate()
+            child.join(timeout=2)
+            if child.is_alive():
+                child.kill()
+                child.join(timeout=2)
+        while True:
+            try:
+                kind, payload = output.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "event":
+                event = MetadataOperationEvent.model_validate(payload)
+                events.append(event)
+                if event_sink:
+                    event_sink(event)
+            elif kind == "result":
+                values = payload
+            elif kind == "failure":
+                failure = payload
+        active = sum(
+            item.name.startswith("neuralmarket-metadata-")
+            for item in multiprocessing.active_children()
+        )
+        active_endpoint = next(
+            (event.endpoint for event in reversed(events) if event.outcome == "started"), None
+        )
+        if terminated:
+            return IsolatedMetadataResult(
+                events=events,
+                failure_type="metadata_hard_timeout",
+                failed_endpoint=active_endpoint,
+                child_pid=child.pid or -1,
+                child_exitcode=child.exitcode,
+                child_terminated=True,
+                child_joined=not child.is_alive(),
+                remaining_children=active,
+            )
+        if failure is not None or values is None:
+            return IsolatedMetadataResult(
+                events=events,
+                failure_type=str((failure or {}).get("message", "metadata_child_failed")),
+                failed_endpoint=cast(Endpoint | None, (failure or {}).get("endpoint")),
+                child_pid=child.pid or -1,
+                child_exitcode=child.exitcode,
+                child_joined=not child.is_alive(),
+                remaining_children=active,
+            )
+        if only_endpoint is not None:
+            estimate = None
+        else:
+            estimate = MetadataEstimate(
+                dataset=request.dataset,
+                schema=request.schema_name,
+                symbol=request.symbols[0],
+                stype_in=request.stype_in,
+                window_start=request.start,
+                window_end=request.end_exclusive,
+                record_count=int(_nonnegative(values["record-count"], int)),
+                billable_size_bytes=int(_nonnegative(values["billable-size"], int)),
+                cost_usd=Decimal(str(_nonnegative(values["cost"], float))),
+                retries=attempt - 1,
+            )
+        return IsolatedMetadataResult(
+            estimate=estimate,
+            endpoint_values={
+                cast(Endpoint, key): cast(int | float | str, value) for key, value in values.items()
+            },
+            events=events,
+            child_pid=child.pid or -1,
+            child_exitcode=child.exitcode,
+            child_joined=not child.is_alive(),
+            remaining_children=active,
+        )
+    finally:
+        if child.is_alive():
+            child.terminate()
+            child.join(timeout=2)
+            if child.is_alive():
+                child.kill()
+                child.join(timeout=2)
+
+
+class IsolatedSchemaResult(BaseModel):
+    """Typed outcome for one bounded dataset schema-list operation."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    supported_schemas: tuple[str, ...] | None = None
+    failure_type: str | None = None
+    http_status: int | None = None
+    child_pid: int
+    child_exitcode: int | None
+    child_terminated: bool = False
+    child_joined: bool
+    remaining_children: int
+
+
+def _schema_list_child(output: Any, dataset: str) -> None:
+    """Construct a restricted client and list one dataset's schemas."""
+    import databento as db
+
+    provider = DatabentoMetadataProvider(db.Historical())
+    try:
+        try:
+            raw = provider.list_schemas(dataset=dataset)
+            if isinstance(raw, str):
+                raise TypeError("schema list must be an iterable of names")
+            schemas = tuple(sorted({str(item) for item in cast(Iterable[object], raw)}))
+            if not schemas or any(not item.strip() for item in schemas):
+                raise ValueError("schema list is empty or invalid")
+        except BaseException as exc:
+            output.put(
+                (
+                    "failure",
+                    {"failure_type": type(exc).__name__, "http_status": _status(exc)},
+                )
+            )
+            return
+        serialized = json.dumps(list(schemas))
+        if len(serialized.encode()) > _MAXIMUM_CHILD_RESULT_BYTES:
+            output.put(
+                (
+                    "failure",
+                    {"failure_type": "result_size_exceeded", "http_status": None},
+                )
+            )
+            return
+        output.put(("result", list(schemas)))
+    finally:
+        provider.close()
+
+
+def run_isolated_schema_list(
+    *,
+    dataset: str,
+    timeout_seconds: float,
+    worker: Callable[..., None] = _schema_list_child,
+) -> IsolatedSchemaResult:
+    """List one dataset's schemas in a spawn child killed at the hard deadline."""
+    if timeout_seconds <= 0:
+        raise ValueError("timeout_seconds must be positive")
+    context = multiprocessing.get_context("spawn")
+    output = context.Queue()
+    child = context.Process(
+        target=worker,
+        args=(output, dataset),
+        name=f"neuralmarket-schema-{dataset}",
     )
     child.start()
-    deadline = time.monotonic() + timeout_seconds
-    events: list[MetadataOperationEvent] = []
-    values: dict[str, object] | None = None
-    failure: dict[str, object] | None = None
-    while time.monotonic() < deadline and child.is_alive():
-        try:
-            kind, payload = output.get(timeout=min(0.1, max(0.01, deadline - time.monotonic())))
-        except queue.Empty:
-            continue
-        if kind == "event":
-            event = MetadataOperationEvent.model_validate(payload)
-            events.append(event)
-            if event_sink:
-                event_sink(event)
-        elif kind == "result":
-            values = payload
-        elif kind == "failure":
-            failure = payload
-    child.join(timeout=0.2)
-    terminated = False
-    if child.is_alive():
-        terminated = True
-        child.terminate()
-        child.join(timeout=2)
+    try:
+        deadline = time.monotonic() + timeout_seconds
+        schemas: tuple[str, ...] | None = None
+        failure: dict[str, object] | None = None
+        while time.monotonic() < deadline and child.is_alive():
+            try:
+                kind, payload = output.get(timeout=min(0.1, max(0.01, deadline - time.monotonic())))
+            except queue.Empty:
+                continue
+            if kind == "result":
+                schemas = tuple(str(item) for item in payload)
+            elif kind == "failure":
+                failure = payload
+        child.join(timeout=0.2)
+        terminated = False
         if child.is_alive():
-            child.kill()
+            terminated = True
+            child.terminate()
             child.join(timeout=2)
-    while True:
-        try:
-            kind, payload = output.get_nowait()
-        except queue.Empty:
-            break
-        if kind == "event":
-            event = MetadataOperationEvent.model_validate(payload)
-            events.append(event)
-            if event_sink:
-                event_sink(event)
-        elif kind == "result":
-            values = payload
-        elif kind == "failure":
-            failure = payload
-    active = sum(
-        item.name.startswith("neuralmarket-metadata-") for item in multiprocessing.active_children()
-    )
-    active_endpoint = next(
-        (event.endpoint for event in reversed(events) if event.outcome == "started"), None
-    )
-    if terminated:
-        return IsolatedMetadataResult(
-            events=events,
-            failure_type="metadata_hard_timeout",
-            failed_endpoint=active_endpoint,
-            child_pid=child.pid or -1,
-            child_exitcode=child.exitcode,
-            child_terminated=True,
-            child_joined=not child.is_alive(),
+            if child.is_alive():
+                child.kill()
+                child.join(timeout=2)
+        while True:
+            try:
+                kind, payload = output.get_nowait()
+            except queue.Empty:
+                break
+            if kind == "result":
+                schemas = tuple(str(item) for item in payload)
+            elif kind == "failure":
+                failure = payload
+        active = sum(
+            item.name.startswith("neuralmarket-schema-")
+            for item in multiprocessing.active_children()
+        )
+        child_pid = child.pid or -1
+        child_exitcode = child.exitcode
+        child_joined = not child.is_alive()
+        if terminated:
+            return IsolatedSchemaResult(
+                failure_type="schema_list_hard_timeout",
+                child_terminated=True,
+                child_pid=child_pid,
+                child_exitcode=child_exitcode,
+                child_joined=child_joined,
+                remaining_children=active,
+            )
+        if failure is not None:
+            return IsolatedSchemaResult(
+                failure_type=str(failure.get("failure_type", "schema_list_child_failed")),
+                http_status=cast(int | None, failure.get("http_status")),
+                child_pid=child_pid,
+                child_exitcode=child_exitcode,
+                child_joined=child_joined,
+                remaining_children=active,
+            )
+        if schemas is None:
+            return IsolatedSchemaResult(
+                failure_type="schema_list_child_failed",
+                child_pid=child_pid,
+                child_exitcode=child_exitcode,
+                child_joined=child_joined,
+                remaining_children=active,
+            )
+        return IsolatedSchemaResult(
+            supported_schemas=schemas,
+            child_pid=child_pid,
+            child_exitcode=child_exitcode,
+            child_joined=child_joined,
             remaining_children=active,
         )
-    if failure is not None or values is None:
-        return IsolatedMetadataResult(
-            events=events,
-            failure_type=str((failure or {}).get("message", "metadata_child_failed")),
-            failed_endpoint=cast(Endpoint | None, (failure or {}).get("endpoint")),
-            child_pid=child.pid or -1,
-            child_exitcode=child.exitcode,
-            child_joined=not child.is_alive(),
-            remaining_children=active,
-        )
-    if only_endpoint is not None:
-        estimate = None
-    else:
-        estimate = MetadataEstimate(
-            dataset=request.dataset,
-            schema=request.schema_name,
-            symbol=request.symbols[0],
-            stype_in=request.stype_in,
-            window_start=request.start,
-            window_end=request.end_exclusive,
-            record_count=int(_nonnegative(values["record-count"], int)),
-            billable_size_bytes=int(_nonnegative(values["billable-size"], int)),
-            cost_usd=Decimal(str(_nonnegative(values["cost"], float))),
-            retries=attempt - 1,
-        )
-    return IsolatedMetadataResult(
-        estimate=estimate,
-        endpoint_values={
-            cast(Endpoint, key): cast(int | float | str, value) for key, value in values.items()
-        },
-        events=events,
-        child_pid=child.pid or -1,
-        child_exitcode=child.exitcode,
-        child_joined=not child.is_alive(),
-        remaining_children=active,
-    )
+    finally:
+        if child.is_alive():
+            child.terminate()
+            child.join(timeout=2)
+            if child.is_alive():
+                child.kill()
+                child.join(timeout=2)
 
 
 def endpoint_response_hash(endpoint: Endpoint, value: int | float | str) -> str:
