@@ -971,12 +971,14 @@ def derive_pilot_development_dispositions(
     dispositions: list[DevelopmentDisposition] = []
     matched_source_ids: set[str] = set()
     for pilot in pilot_requests:
+        development = canonical_by_semantics.get(_provider_semantic_key(pilot))
         state = pilot_states.get(pilot.request_id)
         if state is None:
+            if development is not None:
+                raise PlanValidationError(f"missing pilot journal state: {pilot.request_id}")
             continue
         if state.request_hash != pilot.request_hash:
             raise PlanValidationError(f"pilot journal request hash mismatch: {pilot.request_id}")
-        development = canonical_by_semantics.get(_provider_semantic_key(pilot))
         if development is None:
             continue
         if state.state == "quality_validated":
@@ -1254,17 +1256,22 @@ def derive_current_development_scope_from_pilot(
     pilot_journal_path: Path,
 ) -> DevelopmentRequestScope:
     """Derive the exact current provider scope from accepted pilot state."""
-    pilot_requests = load_finalized_pilot_requests(pilot_plan_path)
-    pilot_states = load_pilot_journal_states(pilot_journal_path)
-    result = derive_pilot_development_dispositions(
-        plan,
-        pilot_requests,
-        pilot_states,
-        repository_root=pilot_plan_path.resolve().parents[2],
-    )
-    return derive_current_development_scope(
-        plan,
-        result.dispositions,
-        other_quarantined_source_request_ids=result.other_quarantined_request_ids,
-        repository_root=pilot_plan_path.resolve().parents[2],
-    )
+    journal_before = _journal_snapshot(pilot_journal_path)
+    try:
+        pilot_requests = load_finalized_pilot_requests(pilot_plan_path)
+        pilot_states = load_pilot_journal_states(pilot_journal_path)
+        result = derive_pilot_development_dispositions(
+            plan,
+            pilot_requests,
+            pilot_states,
+            repository_root=pilot_plan_path.resolve().parents[2],
+        )
+        return derive_current_development_scope(
+            plan,
+            result.dispositions,
+            other_quarantined_source_request_ids=result.other_quarantined_request_ids,
+            repository_root=pilot_plan_path.resolve().parents[2],
+        )
+    finally:
+        if _journal_snapshot(pilot_journal_path) != journal_before:
+            raise PlanValidationError("pilot journal changed during read-only scope derivation")

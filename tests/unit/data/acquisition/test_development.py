@@ -510,6 +510,14 @@ def test_exact_uncertain_pilot_overlap_remains_unavailable_and_accounted(plan: A
     assert scope.unavailable_request_count == 1
 
 
+def test_exact_pilot_overlap_without_journal_state_is_rejected(plan: Any) -> None:
+    development = _development()
+    request = _quotes(plan)[0]
+    pilot = _pilot_for(request, "pilot-missing-state")
+    with pytest.raises(PlanValidationError, match="missing pilot journal state"):
+        development.derive_pilot_development_dispositions(plan, [pilot], {})
+
+
 def test_reconciled_billed_pilot_overlap_remains_unavailable(plan: Any) -> None:
     development = _development()
     request = _quotes(plan)[0]
@@ -735,6 +743,27 @@ def test_pilot_journal_reader_rejects_uncheckpointed_wal(tmp_path: Path) -> None
             development.load_pilot_journal_states(journal)
     finally:
         writer.close()
+
+
+def test_scope_derivation_detects_journal_mutation_after_state_load(
+    monkeypatch: pytest.MonkeyPatch,
+    plan: Any,
+    tmp_path: Path,
+) -> None:
+    development = _development()
+    snapshots = [
+        (b"before", False, 0, b""),
+        (b"after", False, 0, b""),
+    ]
+    monkeypatch.setattr(development, "_journal_snapshot", lambda _: snapshots.pop(0))
+    monkeypatch.setattr(development, "load_finalized_pilot_requests", lambda _: [])
+    monkeypatch.setattr(development, "load_pilot_journal_states", lambda _: {})
+    with pytest.raises(PlanValidationError, match="changed during"):
+        development.derive_current_development_scope_from_pilot(
+            plan,
+            pilot_plan_path=tmp_path / "pilot.json",
+            pilot_journal_path=tmp_path / "journal.sqlite",
+        )
 
 
 def test_builder_rejects_calendar_library_drift(monkeypatch: pytest.MonkeyPatch) -> None:
