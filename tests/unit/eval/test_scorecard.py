@@ -224,3 +224,66 @@ def test_custom_config() -> None:
     r = compute_scorecard(x, config=config)
     assert set(r.return_acf.keys()) == {1, 2, 3}
     assert set(r.aggregated_kurtosis.keys()) == {2, 4, 8}
+
+
+# ── skewness and tail quantiles ─────────────────────────────────────
+
+
+def test_gaussian_skewness_near_zero() -> None:
+    rng = np.random.default_rng(42)
+    x = rng.standard_normal(5000)
+    r = compute_scorecard(x)
+    assert abs(r.skewness) < 0.15
+
+
+def test_skewed_series_detected() -> None:
+    rng = np.random.default_rng(42)
+    x = -rng.standard_t(4, size=5000)  # left-skewed heavy tails
+    r = compute_scorecard(x)
+    assert r.skewness < 0
+
+
+def test_quantiles_match_numpy() -> None:
+    rng = np.random.default_rng(42)
+    x = rng.standard_normal(1000)
+    r = compute_scorecard(x)
+    for level, value in r.quantiles.items():
+        assert value == pytest.approx(float(np.quantile(x, float(level))), abs=1e-12)
+    assert set(r.quantiles.keys()) == {"0.01", "0.05", "0.1", "0.9", "0.95", "0.99"}
+
+
+# ── metric specification ────────────────────────────────────────────
+
+
+def test_spec_hash_deterministic() -> None:
+    from neuralmarket.eval.scorecard import MetricSpecification
+
+    first = MetricSpecification()
+    second = MetricSpecification()
+    assert first.spec_hash() == second.spec_hash()
+
+
+def test_spec_hash_changes_with_config() -> None:
+    from neuralmarket.eval.scorecard import MetricSpecification
+
+    base = MetricSpecification().spec_hash()
+    changed = MetricSpecification(scorecard=ScorecardConfig(lags=(1, 5, 22))).spec_hash()
+    assert changed != base
+
+
+def test_spec_hash_changes_with_seed() -> None:
+    from neuralmarket.eval.scorecard import MetricSpecification
+
+    base = MetricSpecification().spec_hash()
+    changed = MetricSpecification(gbm_seed=9999).spec_hash()
+    assert changed != base
+
+
+def test_spec_has_no_wall_clock_identity() -> None:
+    from neuralmarket.eval.scorecard import MetricSpecification
+
+    spec = MetricSpecification()
+    import time
+
+    time.sleep(0.01)
+    assert spec.spec_hash() == MetricSpecification().spec_hash()

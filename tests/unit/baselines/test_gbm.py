@@ -76,3 +76,39 @@ def test_gbm_no_spurious_clustering() -> None:
     x = sample_gbm(100, 500, sigma=0.2, seed=42)
     r = compute_scorecard(x.flatten())
     assert abs(r.sq_return_acf[1]) < 0.15
+
+
+# ── calibration ──────────────────────────────────────────────────────
+
+
+def test_calibrate_gbm_recovers_known_parameters() -> None:
+    """Calibrated sigma/mu recover a known GBM within sampling tolerance."""
+    from neuralmarket.baselines.gbm import calibrate_gbm
+
+    mu, sigma, dt = 0.10, 0.25, 1.0 / 252.0
+    returns = sample_gbm(1000, 252, mu=mu, sigma=sigma, dt=dt, seed=42).ravel()
+    fit = calibrate_gbm(returns, dt=dt)
+    assert fit.sigma == pytest.approx(sigma, rel=0.05)
+    assert fit.mu == pytest.approx(mu, abs=0.5)
+    assert fit.n_observations == 1000 * 252
+
+
+def test_calibrate_gbm_deterministic() -> None:
+    from neuralmarket.baselines.gbm import calibrate_gbm
+
+    rng = np.random.default_rng(11)
+    returns = rng.standard_normal(500) * 0.01
+    first = calibrate_gbm(returns, dt=1 / 252)
+    second = calibrate_gbm(returns, dt=1 / 252)
+    assert first == second
+
+
+def test_calibrate_gbm_rejects_degenerate() -> None:
+    from neuralmarket.baselines.gbm import calibrate_gbm
+
+    with pytest.raises(ValueError, match="sigma"):
+        calibrate_gbm(np.zeros(100), dt=1.0)
+    with pytest.raises(ValueError, match="dt"):
+        calibrate_gbm(np.ones(100) * 0.01, dt=0.0)
+    with pytest.raises(ValueError, match="NaN"):
+        calibrate_gbm(np.array([0.01, np.nan] * 50), dt=1.0)

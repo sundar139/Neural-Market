@@ -1,10 +1,15 @@
-"""Stylized-fact scorecard for return-series evaluation."""
+"""Stylized-fact scorecard and frozen metric specification for return series."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import hashlib
+from dataclasses import asdict, dataclass, field
 
 import numpy as np
+
+from neuralmarket.data.manifests import canonical_dumps
+
+_METRIC_SPEC_VERSION = "research-metric-spec-v1"
 
 
 @dataclass(frozen=True)
@@ -16,12 +21,42 @@ class ScorecardConfig:
         aggregation_horizons: Non-overlapping aggregation windows (in observations).
         min_observations: Minimum number of observations required.
         hill_sample_fraction: Fraction of largest absolute returns for Hill estimation.
+        tail_quantiles: Quantile levels for the distribution/tail family.
     """
 
     lags: tuple[int, ...] = (1, 5, 22, 66)
     aggregation_horizons: tuple[int, ...] = (5, 22)
     min_observations: int = 252
     hill_sample_fraction: float = 0.1
+    tail_quantiles: tuple[float, ...] = (0.01, 0.05, 0.10, 0.90, 0.95, 0.99)
+
+
+@dataclass(frozen=True)
+class MetricSpecification:
+    """Frozen, versioned research metric specification.
+
+    Freezes every convention the stylized-fact scorecard and baseline
+    simulation comparison depend on, so results remain reproducible and the
+    specification cannot be silently tuned after baselines are evaluated.
+    """
+
+    version: str = _METRIC_SPEC_VERSION
+    scorecard: ScorecardConfig = field(default_factory=ScorecardConfig)
+    leverage_convention: str = "corr(r_t, r2_{t+k}) for k in lags with k > 0"
+    annualization: str = "none (raw daily log returns)"
+    simulation_dt: float = 1.0 / 252.0
+    simulation_horizon_sessions: int = 63
+    simulation_paths: int = 1024
+    calibration_paths: int = 2048
+    gbm_seed: int = 1337
+    heston_seed: int = 1729
+    heston_kappa_annualized: float = 2.0
+    heston_v0_convention: str = "v0 = theta"
+    initial_price_convention: str = "final training-session close"
+
+    def spec_hash(self) -> str:
+        """Deterministic identity of the specification (no wall clock)."""
+        return hashlib.sha256(canonical_dumps(asdict(self)).encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -34,7 +69,9 @@ class ScorecardResult:
     n_observations: int
     mean: float
     variance: float
+    skewness: float
     excess_kurtosis: float
+    quantiles: dict[str, float]
     hill_tail_index: float | None
     return_acf: dict[int, float] = field(default_factory=dict)
     abs_return_acf: dict[int, float] = field(default_factory=dict)
@@ -72,7 +109,9 @@ def compute_scorecard(
     n = len(returns)
     mean = float(np.mean(returns))
     var = float(np.var(returns, ddof=1))
+    skew = _skewness(returns)
     kurt = _excess_kurtosis(returns)
+    quantiles = {str(q): float(np.quantile(returns, q)) for q in config.tail_quantiles}
 
     # Hill tail index
     hill = None
@@ -109,7 +148,9 @@ def compute_scorecard(
         n_observations=n,
         mean=mean,
         variance=var,
+        skewness=skew,
         excess_kurtosis=kurt,
+        quantiles=quantiles,
         hill_tail_index=hill,
         return_acf=return_acf,
         abs_return_acf=abs_acf,
@@ -142,6 +183,16 @@ def _validate_input(returns: np.ndarray, config: ScorecardConfig) -> None:
     for h in config.aggregation_horizons:
         if h < 2:
             raise ValueError(f"aggregation horizon must be >= 2, got {h}")
+
+
+def _skewness(x: np.ndarray) -> float:
+    """Fisher-Pearson standardized skewness (population moments)."""
+    centered = x - np.mean(x)
+    m2 = np.mean(centered**2)
+    m3 = np.mean(centered**3)
+    if m2 < 1e-30:
+        return 0.0
+    return float(m3 / m2**1.5)
 
 
 def _excess_kurtosis(x: np.ndarray) -> float:

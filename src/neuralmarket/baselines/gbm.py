@@ -1,8 +1,50 @@
-"""Deterministic Geometric Brownian Motion simulator."""
+"""Deterministic Geometric Brownian Motion simulator and calibration."""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
+
+
+@dataclass(frozen=True)
+class GbmCalibrationResult:
+    """Closed-form GBM calibration from training log returns."""
+
+    mu: float
+    sigma: float
+    dt: float
+    n_observations: int
+    empirical_mean_return: float
+    empirical_return_std: float
+
+
+def calibrate_gbm(returns: np.ndarray, *, dt: float = 1.0) -> GbmCalibrationResult:
+    """Calibrate GBM drift and volatility from log returns.
+
+    Formulas: ``sigma = std(r, ddof=1) / sqrt(dt)`` and
+    ``mu = mean(r)/dt + 0.5 * sigma^2`` (inverting
+    ``E[r] = (mu - 0.5*sigma^2) * dt``).
+    """
+    returns = np.asarray(returns, dtype=np.float64)
+    if returns.ndim != 1 or len(returns) < 2:
+        raise ValueError("returns must be a 1-D array with >= 2 observations")
+    if dt <= 0:
+        raise ValueError("dt must be positive")
+    if np.any(~np.isfinite(returns)):
+        raise ValueError("returns must not contain NaN or infinity")
+    sigma = float(np.std(returns, ddof=1) / np.sqrt(dt))
+    if sigma <= 0:
+        raise ValueError("calibrated sigma must be positive")
+    mu = float(np.mean(returns) / dt + 0.5 * sigma**2)
+    return GbmCalibrationResult(
+        mu=mu,
+        sigma=sigma,
+        dt=dt,
+        n_observations=len(returns),
+        empirical_mean_return=float(np.mean(returns)),
+        empirical_return_std=float(np.std(returns, ddof=1)),
+    )
 
 
 def sample_gbm(
