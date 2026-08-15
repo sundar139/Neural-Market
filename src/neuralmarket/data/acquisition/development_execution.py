@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import itertools
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -218,6 +218,21 @@ class DevelopmentExecutionRequest(BaseModel):
     observation_time_source: Literal["ts_recv"] | None = None
     normalized_event_time_receive_fallback_allowed: Literal[False] = False
     fresh_quote_required: bool = True
+
+    @property
+    def specification_hash(self) -> str:
+        """Alias for the execution specification hash (quote machinery convention)."""
+        return self.execution_specification_hash
+
+    @property
+    def request_hash(self) -> str:
+        """Alias for the execution request hash (quote machinery convention)."""
+        return self.execution_request_hash
+
+    @property
+    def request_id(self) -> str:
+        """Alias for the execution request id (quote machinery convention)."""
+        return self.execution_request_id
 
     @model_validator(mode="after")
     def _validate_identity(self) -> DevelopmentExecutionRequest:
@@ -486,7 +501,13 @@ def load_development_execution_manifest(path: Path) -> DevelopmentExecutionManif
 
 
 class DevelopmentExecutionQuote(BaseModel):
-    """One fresh, exact provider cost quote for one execution request/fragment."""
+    """One exact provider cost quote for one execution request/fragment.
+
+    ``quote_origin`` separates two provenance classes: ``provider_observed``
+    (a fresh native execution quote) and ``bound_parent_quote`` (a strict
+    validator-backed promotion of an accepted one-to-one parent quote; no new
+    provider observation occurred).
+    """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -494,15 +515,66 @@ class DevelopmentExecutionQuote(BaseModel):
     execution_request_hash: str
     cost_usd: str
     currency: Literal["USD"] = "USD"
+    quote_origin: Literal["provider_observed", "bound_parent_quote"] = "provider_observed"
     quote_source: Literal["provider_response"] = "provider_response"
     response_sha256: str
     observed_at: AwareUTCDatetime
+    provider_observed_start: AwareUTCDatetime | None = None
+    provider_observed_end: AwareUTCDatetime | None = None
+    endpoint_response_sha256: dict[str, str] | None = None
+    record_count: int | None = None
+    billable_size_bytes: int | None = None
+    attempt_sequences: tuple[int, ...] | None = None
+    parent_request_id: str | None = None
+    parent_request_hash: str | None = None
+    parent_specification_hash: str | None = None
+    source_parent_cost_evidence_file_sha256: str | None = None
+    source_parent_cost_evidence_hash: str | None = None
 
     @model_validator(mode="after")
     def _validate_quote(self) -> DevelopmentExecutionQuote:
         _require_sha256(self.execution_request_hash, "quoted execution request hash")
         _require_sha256(self.response_sha256, "quote response SHA-256")
         _strict_decimal_string(self.cost_usd, "execution quote cost")
+        if self.quote_origin == "bound_parent_quote":
+            for label, value in (
+                ("parent request ID", self.parent_request_id),
+                ("parent request hash", self.parent_request_hash),
+                ("parent specification hash", self.parent_specification_hash),
+                (
+                    "source parent cost evidence file SHA-256",
+                    self.source_parent_cost_evidence_file_sha256,
+                ),
+                ("source parent cost evidence hash", self.source_parent_cost_evidence_hash),
+                ("provider observed start", self.provider_observed_start),
+                ("provider observed end", self.provider_observed_end),
+                ("endpoint response SHA-256 partition", self.endpoint_response_sha256),
+            ):
+                if value is None:
+                    raise ValueError(f"bound parent execution quote requires {label} provenance")
+            _require_sha256(self.parent_request_hash, "bound quote parent request hash")
+            _require_sha256(self.parent_specification_hash, "bound quote parent specification hash")
+            _require_sha256(
+                self.source_parent_cost_evidence_file_sha256,
+                "bound quote source parent cost evidence file SHA-256",
+            )
+            _require_sha256(
+                self.source_parent_cost_evidence_hash,
+                "bound quote source parent cost evidence hash",
+            )
+        else:
+            for label, value in (
+                ("parent request ID", self.parent_request_id),
+                ("parent request hash", self.parent_request_hash),
+                ("parent specification hash", self.parent_specification_hash),
+                (
+                    "source parent cost evidence file SHA-256",
+                    self.source_parent_cost_evidence_file_sha256,
+                ),
+                ("source parent cost evidence hash", self.source_parent_cost_evidence_hash),
+            ):
+                if value is not None:
+                    raise ValueError(f"provider-observed execution quote must not carry {label}")
         return self
 
 
@@ -715,3 +787,549 @@ def validate_development_authorization(
         raise DevelopmentExecutionError("development authorization does not authorize purchase")
     if authorization.authorization_hash in consumed_ids:
         raise DevelopmentExecutionError("development authorization was already consumed")
+
+
+# ---------------------------------------------------------------------------
+# Validator-backed parent quote promotion, execution quote classification,
+# fresh quote scope, and development execution cost evidence.
+
+
+def _execution_quote_response_hash(endpoint_responses: Mapping[str, str]) -> str:
+    return hashlib.sha256(canonical_dumps(dict(endpoint_responses)).encode("utf-8")).hexdigest()
+
+
+def _parent_quote_promotion_error(
+    execution_request: DevelopmentExecutionRequest,
+    parent: DevelopmentRequest,
+    parent_quote: Any,
+) -> str | None:
+    """Return the first promotion blocker, or None when promotion is exact.
+
+    Promotion is ONLY for one-to-one execution mappings: a fragment
+    (fragment_count > 1) can never inherit its parent quote.
+    """
+    if execution_request.fragment_count != 1:
+        return "fragment_count must be 1 to promote a parent quote"
+    if execution_request.fragment_index != 1:
+        return "fragment_index must be the one-and-only fragment index"
+    for label, actual, expected in (
+        ("parent request id", execution_request.parent_request_id, parent.request_id),
+        ("parent request hash", execution_request.parent_request_hash, parent.request_hash),
+        (
+            "parent specification hash",
+            execution_request.parent_specification_hash,
+            parent.specification_hash,
+        ),
+    ):
+        if actual != expected:
+            return f"execution {label} does not match its parent"
+    for label, actual, expected in (
+        ("request id", parent_quote.request_id, parent.request_id),
+        ("request hash", parent_quote.request_hash, parent.request_hash),
+        ("specification hash", parent_quote.specification_hash, parent.specification_hash),
+    ):
+        if actual != expected:
+            return f"parent quote {label} does not match its parent"
+    for field_label, actual_field, expected_field in (
+        ("dataset", execution_request.dataset, parent_quote.dataset),
+        ("schema", execution_request.schema_name, parent_quote.schema_name),
+        ("symbols", tuple(execution_request.symbols), tuple(parent_quote.symbols)),
+        ("stype_in", execution_request.stype_in, parent_quote.stype_in),
+        (
+            "start",
+            execution_request.start.isoformat(),
+            _aware(parent_quote.start).isoformat(),
+        ),
+        (
+            "end_exclusive",
+            execution_request.end_exclusive.isoformat(),
+            _aware(parent_quote.end_exclusive).isoformat(),
+        ),
+        ("expected_split", execution_request.expected_split, parent_quote.expected_split),
+        ("purpose", execution_request.purpose, parent_quote.purpose),
+        (
+            "raw_dbn_retention_required",
+            execution_request.raw_dbn_retention_required,
+            parent_quote.raw_dbn_retention_required,
+        ),
+        (
+            "observation_time_source",
+            execution_request.observation_time_source,
+            parent_quote.observation_time_source,
+        ),
+        (
+            "normalized_event_time_receive_fallback_allowed",
+            execution_request.normalized_event_time_receive_fallback_allowed,
+            parent_quote.normalized_event_time_receive_fallback_allowed,
+        ),
+    ):
+        if actual_field != expected_field:
+            return f"provider-call field mismatch: {field_label}"
+    for parent_label, actual_parent, expected_parent in (
+        ("stype_out", execution_request.stype_out, parent.stype_out),
+        ("encoding", execution_request.encoding, parent.encoding),
+        ("compression", execution_request.compression, parent.compression),
+        ("calendar", execution_request.calendar, parent.calendar),
+        ("wave", execution_request.wave, parent.wave),
+        (
+            "session_date",
+            execution_request.session_date,
+            str(parent.session_date) if parent.session_date is not None else None,
+        ),
+    ):
+        if actual_parent != expected_parent:
+            return f"execution {parent_label} differs from its parent"
+    return None
+
+
+def _aware(value: Any) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    return datetime.fromisoformat(str(value))
+
+
+def promote_parent_quote_to_execution(
+    execution_request: DevelopmentExecutionRequest,
+    parent: DevelopmentRequest,
+    parent_quote: Any,
+    *,
+    source_parent_cost_evidence_file_sha256: str,
+    source_parent_cost_evidence_hash: str,
+) -> DevelopmentExecutionQuote:
+    """Promote an accepted one-to-one parent quote to an execution identity.
+
+    Fails closed on ANY identity, provider-field, policy-field, or evidence
+    binding difference.  Provider observation timestamps and values are
+    copied unchanged; no new observation is fabricated.
+    """
+    _require_sha256(
+        source_parent_cost_evidence_file_sha256,
+        "source parent cost evidence file SHA-256",
+    )
+    _require_sha256(source_parent_cost_evidence_hash, "source parent cost evidence hash")
+    blocker = _parent_quote_promotion_error(execution_request, parent, parent_quote)
+    if blocker is not None:
+        raise DevelopmentExecutionError(f"parent quote promotion rejected: {blocker}")
+    endpoint_responses = {
+        str(endpoint): str(sha)
+        for endpoint, sha in dict(parent_quote.endpoint_response_sha256).items()
+    }
+    observed_end = _aware(parent_quote.provider_observed_end)
+    return DevelopmentExecutionQuote.model_validate(
+        {
+            "execution_request_id": execution_request.execution_request_id,
+            "execution_request_hash": execution_request.execution_request_hash,
+            "cost_usd": str(parent_quote.cost_usd),
+            "currency": "USD",
+            "quote_origin": "bound_parent_quote",
+            "quote_source": "provider_response",
+            "response_sha256": _execution_quote_response_hash(endpoint_responses),
+            "observed_at": observed_end.isoformat(),
+            "provider_observed_start": _aware(parent_quote.provider_observed_start).isoformat(),
+            "provider_observed_end": observed_end.isoformat(),
+            "endpoint_response_sha256": endpoint_responses,
+            "record_count": int(parent_quote.record_count),
+            "billable_size_bytes": int(parent_quote.billable_size_bytes),
+            "attempt_sequences": tuple(int(item) for item in parent_quote.attempt_sequences),
+            "parent_request_id": parent.request_id,
+            "parent_request_hash": parent.request_hash,
+            "parent_specification_hash": parent.specification_hash,
+            "source_parent_cost_evidence_file_sha256": source_parent_cost_evidence_file_sha256,
+            "source_parent_cost_evidence_hash": source_parent_cost_evidence_hash,
+        }
+    )
+
+
+def promote_parent_quotes_to_execution(
+    *,
+    manifest: DevelopmentExecutionManifest,
+    accepted_parent_evidence: Any,
+    source_parent_cost_evidence_file_sha256: str,
+    source_parent_cost_evidence_hash: str,
+    excluded_execution_ids: set[str],
+) -> dict[str, DevelopmentExecutionQuote]:
+    """Promote every eligible one-to-one execution request; fragments stay unquoted."""
+    if source_parent_cost_evidence_hash != accepted_parent_evidence.evidence_hash:
+        raise DevelopmentExecutionError(
+            "accepted parent cost evidence hash does not match the provided binding"
+        )
+    parents_by_id = {item.request_id: item for item in manifest.parent_requests}
+    quotes_by_parent = {quote.request_id: quote for quote in accepted_parent_evidence.quotes}
+    promoted: dict[str, DevelopmentExecutionQuote] = {}
+    for item in manifest.execution_requests:
+        if item.execution_request_id in excluded_execution_ids:
+            continue
+        if item.fragment_count != 1:
+            continue
+        parent = parents_by_id.get(item.parent_request_id)
+        parent_quote = quotes_by_parent.get(item.parent_request_id)
+        if parent is None or parent_quote is None:
+            raise DevelopmentExecutionError(
+                f"payable execution request lacks an accepted parent quote: "
+                f"{item.execution_request_id}"
+            )
+        promoted[item.execution_request_id] = promote_parent_quote_to_execution(
+            item,
+            parent,
+            parent_quote,
+            source_parent_cost_evidence_file_sha256=source_parent_cost_evidence_file_sha256,
+            source_parent_cost_evidence_hash=source_parent_cost_evidence_hash,
+        )
+    return promoted
+
+
+def derive_execution_quote_classification(
+    *,
+    manifest: DevelopmentExecutionManifest,
+    excluded_reused_ids: set[str],
+    excluded_unavailable_ids: set[str],
+    accepted_parent_evidence: Any,
+    source_parent_cost_evidence_file_sha256: str,
+    source_parent_cost_evidence_hash: str,
+) -> dict[str, tuple[str, ...]]:
+    """Classify all 555 execution requests into exactly one disposition."""
+    if source_parent_cost_evidence_hash != accepted_parent_evidence.evidence_hash:
+        raise DevelopmentExecutionError(
+            "accepted parent cost evidence hash does not match the provided binding"
+        )
+    parents_by_id = {item.request_id: item for item in manifest.parent_requests}
+    quotes_by_parent = {quote.request_id: quote for quote in accepted_parent_evidence.quotes}
+    buckets: dict[str, list[str]] = {
+        "accepted_quote_reusable": [],
+        "fresh_quote_required": [],
+        "not_payable_reused": [],
+        "not_payable_unavailable": [],
+    }
+    for item in manifest.execution_requests:
+        if item.execution_request_id in excluded_reused_ids:
+            buckets["not_payable_reused"].append(item.execution_request_id)
+            continue
+        if item.execution_request_id in excluded_unavailable_ids:
+            buckets["not_payable_unavailable"].append(item.execution_request_id)
+            continue
+        parent = parents_by_id[item.parent_request_id]
+        parent_quote = quotes_by_parent.get(item.parent_request_id)
+        blocker = None
+        if parent_quote is None:
+            blocker = "no accepted parent quote"
+        else:
+            blocker = _parent_quote_promotion_error(item, parent, parent_quote)
+        if blocker is None:
+            buckets["accepted_quote_reusable"].append(item.execution_request_id)
+        else:
+            buckets["fresh_quote_required"].append(item.execution_request_id)
+    classified = [request_id for ids in buckets.values() for request_id in ids]
+    all_ids = [item.execution_request_id for item in manifest.execution_requests]
+    if (
+        len(classified) != len(all_ids)
+        or set(classified) != set(all_ids)
+        or len(set(classified)) != len(all_ids)
+    ):
+        raise DevelopmentExecutionError("execution quote classification is not an exact partition")
+    return {bucket: tuple(ids) for bucket, ids in buckets.items()}
+
+
+class FreshExecutionQuoteScope(BaseModel):
+    """Deterministic exact fresh-quote subset of the paid execution scope."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal["development-fresh-quote-scope-v1"] = "development-fresh-quote-scope-v1"
+    plan_hash: str
+    execution_manifest_hash: str
+    execution_request_ids: tuple[str, ...]
+    parent_bindings: dict[str, dict[str, str]]
+    scope_hash: str = ""
+
+    @model_validator(mode="after")
+    def _validate_scope(self) -> FreshExecutionQuoteScope:
+        if not self.execution_request_ids or len(self.execution_request_ids) != len(
+            set(self.execution_request_ids)
+        ):
+            raise ValueError("fresh quote scope requires unique non-empty execution ids")
+        if set(self.parent_bindings) != set(self.execution_request_ids):
+            raise ValueError("fresh quote scope parent bindings must cover the exact ids")
+        for binding in self.parent_bindings.values():
+            for key in (
+                "execution_request_hash",
+                "parent_request_id",
+                "parent_request_hash",
+                "start",
+                "end_exclusive",
+            ):
+                if not binding.get(key):
+                    raise ValueError(f"fresh quote scope binding missing {key}")
+            _require_sha256(binding["execution_request_hash"], "binding execution request hash")
+            _require_sha256(binding["parent_request_hash"], "binding parent request hash")
+        _require_sha256(self.plan_hash, "fresh quote scope plan hash")
+        _require_sha256(self.execution_manifest_hash, "fresh quote scope manifest hash")
+        if self.scope_hash:
+            expected = hashlib.sha256(
+                canonical_dumps(
+                    self.model_dump(mode="json", by_alias=True, exclude={"scope_hash"})
+                ).encode("utf-8")
+            ).hexdigest()
+            if self.scope_hash != expected:
+                raise ValueError("fresh quote scope hash mismatch")
+        return self
+
+
+def build_fresh_execution_quote_scope(
+    *,
+    manifest: DevelopmentExecutionManifest,
+    classification: Mapping[str, tuple[str, ...]],
+) -> FreshExecutionQuoteScope:
+    """Derive the exact fresh-quote execution scope from the classification."""
+    fresh_ids = tuple(classification.get("fresh_quote_required", ()))
+    by_id = {item.execution_request_id: item for item in manifest.execution_requests}
+    bindings: dict[str, dict[str, str]] = {}
+    for execution_request_id in fresh_ids:
+        item = by_id[execution_request_id]
+        if item.fragment_count <= 1:
+            raise DevelopmentExecutionError(
+                f"fresh quote scope contains a non-fragment request: {execution_request_id}"
+            )
+        bindings[execution_request_id] = {
+            "execution_request_hash": item.execution_request_hash,
+            "parent_request_id": item.parent_request_id,
+            "parent_request_hash": item.parent_request_hash,
+            "start": item.start.isoformat(),
+            "end_exclusive": item.end_exclusive.isoformat(),
+        }
+    payload = {
+        "schema_version": "development-fresh-quote-scope-v1",
+        "plan_hash": manifest.plan_hash,
+        "execution_manifest_hash": manifest.manifest_hash,
+        "execution_request_ids": fresh_ids,
+        "parent_bindings": bindings,
+        "scope_hash": "",
+    }
+    scope = FreshExecutionQuoteScope.model_validate(payload)
+    scope_hash = hashlib.sha256(
+        canonical_dumps(
+            scope.model_dump(mode="json", by_alias=True, exclude={"scope_hash"})
+        ).encode("utf-8")
+    ).hexdigest()
+    return scope.model_copy(update={"scope_hash": scope_hash})
+
+
+def write_fresh_execution_quote_scope(path: Path, scope: FreshExecutionQuoteScope) -> None:
+    """Atomically write one validated fresh execution quote scope."""
+    write_json(path, scope.model_dump(mode="json", by_alias=True))
+
+
+def load_fresh_execution_quote_scope(path: Path) -> FreshExecutionQuoteScope:
+    """Load and fully validate a fresh execution quote scope."""
+    try:
+        payload = load_json(path)
+        scope = FreshExecutionQuoteScope.model_validate(payload)
+    except (OSError, ValueError, ValidationError) as exc:
+        raise DevelopmentExecutionError(f"invalid fresh execution quote scope: {exc}") from exc
+    _require_sha256(scope.scope_hash, "fresh execution quote scope hash")
+    return scope
+
+
+class ExecutionCostRollups(BaseModel):
+    """Strict-Decimal rollups over one complete execution cost evidence set."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    grand_total_usd: str
+    training_total_usd: str
+    validation_total_usd: str
+    largest_request_usd: str
+
+    @model_validator(mode="after")
+    def _validate_rollups(self) -> ExecutionCostRollups:
+        for label, value in (
+            ("grand total", self.grand_total_usd),
+            ("training total", self.training_total_usd),
+            ("validation total", self.validation_total_usd),
+            ("largest request", self.largest_request_usd),
+        ):
+            _strict_decimal_string(value, label)
+        return self
+
+
+class DevelopmentExecutionCostEvidence(BaseModel):
+    """Complete mixed-origin 546-request development execution cost evidence."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal["development-execution-cost-evidence-v1"] = (
+        "development-execution-cost-evidence-v1"
+    )
+    status: Literal["complete"] = "complete"
+    plan_hash: str
+    execution_manifest_hash: str
+    paid_scope_hash: str
+    source_parent_cost_evidence_file_sha256: str
+    source_parent_cost_evidence_hash: str
+    request_count: int
+    quotes: tuple[DevelopmentExecutionQuote, ...]
+    rollups: ExecutionCostRollups
+    evidence_hash: str = ""
+
+    @model_validator(mode="after")
+    def _validate_evidence(self) -> DevelopmentExecutionCostEvidence:
+        _require_sha256(self.plan_hash, "execution evidence plan hash")
+        _require_sha256(self.execution_manifest_hash, "execution evidence manifest hash")
+        _require_sha256(self.paid_scope_hash, "execution evidence paid scope hash")
+        _require_sha256(
+            self.source_parent_cost_evidence_file_sha256,
+            "execution evidence source parent file SHA-256",
+        )
+        _require_sha256(
+            self.source_parent_cost_evidence_hash,
+            "execution evidence source parent evidence hash",
+        )
+        if self.request_count != len(self.quotes):
+            raise ValueError("execution cost evidence request count mismatch")
+        ids = [quote.execution_request_id for quote in self.quotes]
+        if len(ids) != len(set(ids)):
+            raise ValueError("execution cost evidence contains duplicate quote identities")
+        if self.evidence_hash:
+            expected = hashlib.sha256(
+                canonical_dumps(
+                    self.model_dump(mode="json", by_alias=True, exclude={"evidence_hash"})
+                ).encode("utf-8")
+            ).hexdigest()
+            if self.evidence_hash != expected:
+                raise ValueError("execution cost evidence hash mismatch")
+        return self
+
+
+def _compute_execution_rollups(
+    quotes: Sequence[DevelopmentExecutionQuote],
+    split_of: Mapping[str, str],
+) -> ExecutionCostRollups:
+    grand = Decimal("0")
+    split_totals: dict[str, Decimal] = {"training": Decimal("0"), "validation": Decimal("0")}
+    largest = Decimal("0")
+    for quote in quotes:
+        cost = Decimal(quote.cost_usd)
+        if cost > largest:
+            largest = cost
+        grand += cost
+        split_totals[split_of[quote.execution_request_id]] += cost
+    return ExecutionCostRollups(
+        grand_total_usd=str(grand),
+        training_total_usd=str(split_totals["training"]),
+        validation_total_usd=str(split_totals["validation"]),
+        largest_request_usd=str(largest),
+    )
+
+
+def build_complete_execution_cost_evidence(
+    *,
+    plan_hash: str,
+    manifest: DevelopmentExecutionManifest,
+    paid_scope_ids: Sequence[str],
+    paid_scope_hash: str,
+    quotes: Sequence[DevelopmentExecutionQuote],
+    source_parent_cost_evidence_file_sha256: str,
+    source_parent_cost_evidence_hash: str,
+) -> DevelopmentExecutionCostEvidence:
+    """Seal complete execution cost evidence only with exact paid scope coverage."""
+    by_id = {item.execution_request_id: item for item in manifest.execution_requests}
+    split_of = {
+        item.execution_request_id: item.expected_split for item in manifest.execution_requests
+    }
+    payload = {
+        "schema_version": "development-execution-cost-evidence-v1",
+        "status": "complete",
+        "plan_hash": plan_hash,
+        "execution_manifest_hash": manifest.manifest_hash,
+        "paid_scope_hash": paid_scope_hash,
+        "source_parent_cost_evidence_file_sha256": source_parent_cost_evidence_file_sha256,
+        "source_parent_cost_evidence_hash": source_parent_cost_evidence_hash,
+        "request_count": len(paid_scope_ids),
+        "quotes": [quote.model_dump(mode="json", by_alias=True) for quote in quotes],
+        "rollups": _compute_execution_rollups(quotes, split_of).model_dump(mode="json"),
+        "evidence_hash": "",
+    }
+    del by_id
+    evidence = DevelopmentExecutionCostEvidence.model_validate(payload)
+    evidence_hash = hashlib.sha256(
+        canonical_dumps(
+            evidence.model_dump(mode="json", by_alias=True, exclude={"evidence_hash"})
+        ).encode("utf-8")
+    ).hexdigest()
+    return evidence.model_copy(update={"evidence_hash": evidence_hash})
+
+
+def validate_complete_execution_cost_evidence(
+    evidence: DevelopmentExecutionCostEvidence,
+    *,
+    manifest: DevelopmentExecutionManifest,
+    paid_scope_ids: Sequence[str],
+    paid_scope_hash: str,
+    source_parent_cost_evidence_file_sha256: str,
+    accepted_parent_evidence: Any,
+    maximum_single_request_usd: Decimal = Decimal("1.00"),
+) -> DevelopmentExecutionCostEvidence:
+    """Validate exact paid-scope coverage, identities, origins, and rollups."""
+    if evidence.paid_scope_hash != paid_scope_hash:
+        raise DevelopmentExecutionError("execution cost evidence paid scope hash mismatch")
+    if evidence.source_parent_cost_evidence_file_sha256 != source_parent_cost_evidence_file_sha256:
+        raise DevelopmentExecutionError(
+            "execution cost evidence source parent file SHA-256 mismatch"
+        )
+    if evidence.source_parent_cost_evidence_hash != accepted_parent_evidence.evidence_hash:
+        raise DevelopmentExecutionError(
+            "execution cost evidence source parent evidence hash mismatch"
+        )
+    expected_ids = list(paid_scope_ids)
+    actual_ids = [quote.execution_request_id for quote in evidence.quotes]
+    if actual_ids != expected_ids or len(set(actual_ids)) != len(expected_ids):
+        raise DevelopmentExecutionError("execution cost evidence exact scope coverage mismatch")
+    by_id = {item.execution_request_id: item for item in manifest.execution_requests}
+    parents_by_id = {item.request_id: item for item in manifest.parent_requests}
+    quotes_by_parent = {quote.request_id: quote for quote in accepted_parent_evidence.quotes}
+    for quote in evidence.quotes:
+        item = by_id[quote.execution_request_id]
+        if not _constant_time_equal(quote.execution_request_hash, item.execution_request_hash):
+            raise DevelopmentExecutionError(
+                f"execution quote identity mismatch: {item.execution_request_id}"
+            )
+        cost = _strict_decimal_string(quote.cost_usd, "execution quote cost")
+        if cost > maximum_single_request_usd:
+            raise DevelopmentExecutionError(
+                f"execution quote exceeds the per-request cap: {item.execution_request_id}"
+            )
+        if quote.quote_origin == "bound_parent_quote":
+            parent = parents_by_id[item.parent_request_id]
+            parent_quote = quotes_by_parent.get(item.parent_request_id)
+            if parent_quote is None:
+                raise DevelopmentExecutionError(
+                    f"bound execution quote has no accepted parent quote: "
+                    f"{item.execution_request_id}"
+                )
+            blocker = _parent_quote_promotion_error(item, parent, parent_quote)
+            if blocker is not None:
+                raise DevelopmentExecutionError(
+                    f"bound execution quote fails promotion rule: {blocker}"
+                )
+            if str(quote.cost_usd) != str(parent_quote.cost_usd):
+                raise DevelopmentExecutionError("bound execution quote cost was altered")
+            if _aware(quote.provider_observed_start) != _aware(
+                parent_quote.provider_observed_start
+            ):
+                raise DevelopmentExecutionError("bound execution quote observation start altered")
+            if _aware(quote.observed_at) != _aware(parent_quote.provider_observed_end):
+                raise DevelopmentExecutionError(
+                    "bound execution quote observation timestamp was laundered"
+                )
+            if int(quote.record_count or -1) != int(parent_quote.record_count):
+                raise DevelopmentExecutionError("bound execution quote record count altered")
+            if int(quote.billable_size_bytes or -1) != int(parent_quote.billable_size_bytes):
+                raise DevelopmentExecutionError("bound execution quote billable size altered")
+        elif item.fragment_count <= 1:
+            pass  # provider-observed quotes for one-to-one requests are exact by identity
+    split_of = {
+        item.execution_request_id: item.expected_split for item in manifest.execution_requests
+    }
+    expected_rollups = _compute_execution_rollups(evidence.quotes, split_of)
+    if evidence.rollups != expected_rollups:
+        raise DevelopmentExecutionError("execution cost evidence rollup mismatch")
+    return evidence

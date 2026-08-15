@@ -38,6 +38,15 @@ from neuralmarket.data.acquisition.development import (
     verify_development_plan_from_files,
     verify_development_request,
 )
+from neuralmarket.data.acquisition.development_execution import (
+    DevelopmentExecutionManifest,
+    DevelopmentExecutionQuote,
+    DevelopmentExecutionRequest,
+    FreshExecutionQuoteScope,
+    _execution_quote_response_hash,
+    load_development_execution_manifest,
+    load_fresh_execution_quote_scope,
+)
 from neuralmarket.data.acquisition.manifests import write_json
 from neuralmarket.data.acquisition.metadata_runner import (
     Endpoint,
@@ -185,7 +194,11 @@ class DevelopmentQuoteBindings(BaseModel):
     pilot_plan_file_sha256: str
     journal_fingerprint: JournalFingerprint
     databento_client_version: str
-    request_identities: tuple[DevelopmentRequest, ...]
+    request_identities: tuple[DevelopmentRequest | DevelopmentExecutionRequest, ...]
+    execution_manifest_file_sha256: str | None = None
+    execution_manifest_hash: str | None = None
+    execution_fresh_scope_file_sha256: str | None = None
+    execution_fresh_scope_hash: str | None = None
 
     @model_validator(mode="after")
     def _validate_bindings(self) -> DevelopmentQuoteBindings:
@@ -206,8 +219,22 @@ class DevelopmentQuoteBindings(BaseModel):
         ids = [request.request_id for request in self.request_identities]
         if len(ids) != len(set(ids)):
             raise ValueError("development quote bindings contain duplicate request identity")
+        has_execution = any(
+            isinstance(request, DevelopmentExecutionRequest) for request in self.request_identities
+        )
+        if has_execution:
+            for execution_label, execution_value in (
+                ("execution manifest file SHA-256", self.execution_manifest_file_sha256),
+                ("execution manifest hash", self.execution_manifest_hash),
+                ("execution fresh scope file SHA-256", self.execution_fresh_scope_file_sha256),
+                ("execution fresh scope hash", self.execution_fresh_scope_hash),
+            ):
+                if execution_value is None:
+                    raise ValueError(f"execution quote bindings require {execution_label}")
+                _require_sha256(str(execution_value), execution_label)
         for request in self.request_identities:
-            verify_development_request(request)
+            if isinstance(request, DevelopmentRequest):
+                verify_development_request(request)
         return self
 
     @classmethod
@@ -222,12 +249,17 @@ class DevelopmentQuoteBindings(BaseModel):
         pilot_plan_file_sha256: str,
         journal_fingerprint: JournalFingerprint,
         databento_client_version: str,
-        requests: Sequence[DevelopmentRequest],
+        requests: Sequence[DevelopmentRequest | DevelopmentExecutionRequest],
+        execution_manifest_file_sha256: str | None = None,
+        execution_manifest_hash: str | None = None,
+        execution_fresh_scope_file_sha256: str | None = None,
+        execution_fresh_scope_hash: str | None = None,
     ) -> DevelopmentQuoteBindings:
-        """Build native bindings after verifying every development request."""
+        """Build native bindings after verifying every development/execution request."""
         try:
             for request in requests:
-                verify_development_request(request)
+                if isinstance(request, DevelopmentRequest):
+                    verify_development_request(request)
             return cls(
                 repository_head=repository_head,
                 development_plan_file_sha256=development_plan_file_sha256,
@@ -238,6 +270,10 @@ class DevelopmentQuoteBindings(BaseModel):
                 journal_fingerprint=journal_fingerprint,
                 databento_client_version=databento_client_version,
                 request_identities=tuple(requests),
+                execution_manifest_file_sha256=execution_manifest_file_sha256,
+                execution_manifest_hash=execution_manifest_hash,
+                execution_fresh_scope_file_sha256=execution_fresh_scope_file_sha256,
+                execution_fresh_scope_hash=execution_fresh_scope_hash,
             )
         except (PlanValidationError, ValidationError, ValueError) as exc:
             raise DevelopmentQuoteError(f"invalid development request identity: {exc}") from exc
@@ -346,6 +382,134 @@ def prepare_development_quote(
         requests=scope.requests,
     )
     return PreparedDevelopmentQuote(plan=plan, scope=scope, bindings=bindings)
+
+
+class PreparedExecutionQuote(BaseModel):
+    """Offline-verified execution manifest, exact fresh quote scope, and bindings."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    manifest: DevelopmentExecutionManifest
+    fresh_scope: FreshExecutionQuoteScope
+    bindings: DevelopmentQuoteBindings
+
+
+def prepare_development_execution_quote(
+    *,
+    repository_root: Path,
+    development_plan_path: Path,
+    execution_manifest_path: Path,
+    fresh_scope_path: Path,
+    pilot_plan_path: Path,
+    pilot_journal_path: Path,
+    repository_head: str,
+    expected_repository_head: str,
+    expected_plan_file_sha256: str,
+    expected_plan_hash: str,
+    expected_manifest_file_sha256: str,
+    expected_manifest_hash: str,
+    expected_fresh_scope_file_sha256: str,
+    expected_fresh_scope_hash: str,
+    databento_client_version: str,
+    expected_pilot_plan_file_sha256: str | None = None,
+    expected_journal_main_sha256: str | None = None,
+) -> PreparedExecutionQuote:
+    """Verify protected state and the exact fresh execution quote scope offline."""
+    del repository_root  # resolved copy only; gate uses explicit paths
+    for label, value in (
+        ("expected plan file SHA-256", expected_plan_file_sha256),
+        ("expected plan hash", expected_plan_hash),
+        ("expected execution manifest file SHA-256", expected_manifest_file_sha256),
+        ("expected execution manifest hash", expected_manifest_hash),
+        ("expected fresh scope file SHA-256", expected_fresh_scope_file_sha256),
+        ("expected fresh scope hash", expected_fresh_scope_hash),
+    ):
+        _require_sha256(value, label)
+    if repository_head != expected_repository_head:
+        raise DevelopmentQuoteError("repository source revision mismatch")
+    plan_file_sha = sha256_file(development_plan_path)
+    manifest_file_sha = sha256_file(execution_manifest_path)
+    fresh_scope_file_sha = sha256_file(fresh_scope_path)
+    for label, actual, expected in (
+        ("development plan file SHA-256", plan_file_sha, expected_plan_file_sha256),
+        ("execution manifest file SHA-256", manifest_file_sha, expected_manifest_file_sha256),
+        ("fresh scope file SHA-256", fresh_scope_file_sha, expected_fresh_scope_file_sha256),
+    ):
+        if actual != expected:
+            raise DevelopmentQuoteError(f"{label} mismatch")
+    before = JournalFingerprint.from_path(pilot_journal_path)
+    try:
+        plan = load_development_plan(development_plan_path)
+        if plan.plan_hash != expected_plan_hash:
+            raise DevelopmentQuoteError("development plan hash mismatch")
+        manifest = load_development_execution_manifest(execution_manifest_path)
+        if manifest.manifest_hash != expected_manifest_hash:
+            raise DevelopmentQuoteError("execution manifest hash mismatch")
+        fresh_scope = load_fresh_execution_quote_scope(fresh_scope_path)
+        if fresh_scope.scope_hash != expected_fresh_scope_hash:
+            raise DevelopmentQuoteError("fresh execution quote scope hash mismatch")
+        if (
+            fresh_scope.plan_hash != plan.plan_hash
+            or fresh_scope.execution_manifest_hash != manifest.manifest_hash
+        ):
+            raise DevelopmentQuoteError("fresh execution quote scope binding mismatch")
+        by_id = {item.execution_request_id: item for item in manifest.execution_requests}
+        requests: list[DevelopmentExecutionRequest] = []
+        for execution_request_id in fresh_scope.execution_request_ids:
+            item = by_id[execution_request_id]
+            if item.fragment_count <= 1 or not item.fresh_quote_required:
+                raise DevelopmentQuoteError(
+                    "fresh execution quote scope contains a non-fragment or non-fresh request"
+                )
+            requests.append(item)
+        if [request.execution_request_id for request in requests] != list(
+            fresh_scope.execution_request_ids
+        ):
+            raise DevelopmentQuoteError("fresh execution quote scope ordering mismatch")
+        for binding_id, binding in fresh_scope.parent_bindings.items():
+            item = by_id[binding_id]
+            if (
+                item.execution_request_hash != binding["execution_request_hash"]
+                or item.parent_request_id != binding["parent_request_id"]
+                or item.parent_request_hash != binding["parent_request_hash"]
+                or item.start.isoformat() != binding["start"]
+                or item.end_exclusive.isoformat() != binding["end_exclusive"]
+            ):
+                raise DevelopmentQuoteError("fresh execution quote scope binding mismatch")
+    except (OSError, PlanValidationError, ValidationError, ValueError) as exc:
+        if isinstance(exc, DevelopmentQuoteError):
+            raise
+        raise DevelopmentQuoteError(f"execution quote gate failed: {exc}") from exc
+    after = JournalFingerprint.from_path(pilot_journal_path)
+    if before != after:
+        raise DevelopmentQuoteError("pilot journal changed during execution quote gate")
+    pilot_plan_sha = sha256_file(pilot_plan_path)
+    if (
+        expected_pilot_plan_file_sha256 is not None
+        and pilot_plan_sha != expected_pilot_plan_file_sha256
+    ):
+        raise DevelopmentQuoteError("pilot plan file SHA-256 mismatch")
+    if (
+        expected_journal_main_sha256 is not None
+        and before.main_sha256 != expected_journal_main_sha256
+    ):
+        raise DevelopmentQuoteError("pilot journal SHA-256 mismatch")
+    bindings = DevelopmentQuoteBindings.from_requests(
+        repository_head=repository_head,
+        development_plan_file_sha256=plan_file_sha,
+        development_plan_hash=plan.plan_hash,
+        development_scope_file_sha256=manifest_file_sha,
+        development_scope_hash=manifest.manifest_hash,
+        pilot_plan_file_sha256=pilot_plan_sha,
+        journal_fingerprint=before,
+        databento_client_version=databento_client_version,
+        requests=requests,
+        execution_manifest_file_sha256=manifest_file_sha,
+        execution_manifest_hash=manifest.manifest_hash,
+        execution_fresh_scope_file_sha256=fresh_scope_file_sha,
+        execution_fresh_scope_hash=fresh_scope.scope_hash,
+    )
+    return PreparedExecutionQuote(manifest=manifest, fresh_scope=fresh_scope, bindings=bindings)
 
 
 class DevelopmentQuoteRunPolicy(BaseModel):
@@ -586,7 +750,7 @@ class DevelopmentQuoteCheckpoint(BaseModel):
             raise ValueError("checkpoint hash is required")
         if self.checkpoint_hash:
             expected_hash = _artifact_hash(
-                self.model_dump(mode="json", by_alias=True),
+                _strip_unbound_execution_keys(self.model_dump(mode="json", by_alias=True)),
                 hash_field="checkpoint_hash",
             )
             if self.checkpoint_hash != expected_hash:
@@ -638,13 +802,31 @@ def _seal_model(model: type[ModelT], payload: Mapping[str, Any], *, hash_field: 
     normalized_input = dict(payload)
     normalized_input[hash_field] = ""
     draft = model.model_validate(normalized_input, context={"allow_unsealed": True})
-    normalized = draft.model_dump(mode="json", by_alias=True)
+    normalized = _strip_unbound_execution_keys(draft.model_dump(mode="json", by_alias=True))
     normalized[hash_field] = _artifact_hash(normalized, hash_field=hash_field)
     return model.model_validate(normalized)
 
 
+_EXECUTION_BINDING_KEYS = (
+    "execution_manifest_file_sha256",
+    "execution_manifest_hash",
+    "execution_fresh_scope_file_sha256",
+    "execution_fresh_scope_hash",
+)
+
+
+def _strip_unbound_execution_keys(dump: dict[str, Any]) -> dict[str, Any]:
+    """Drop unbound (None) execution binding keys so legacy hashes stay stable."""
+    bindings = dump.get("bindings")
+    if isinstance(bindings, dict):
+        for key in _EXECUTION_BINDING_KEYS:
+            if bindings.get(key) is None:
+                bindings.pop(key, None)
+    return dump
+
+
 def _request_partitions(
-    requests: Sequence[DevelopmentRequest],
+    requests: Sequence[DevelopmentRequest | DevelopmentExecutionRequest],
     endpoint_results: Mapping[str, Mapping[Endpoint, EndpointObservation]],
 ) -> tuple[tuple[str, ...], dict[str, tuple[Endpoint, ...]]]:
     completed: list[str] = []
@@ -792,7 +974,10 @@ def load_development_quote_checkpoint(
 
 
 SchemaRunner = Callable[[str, int, float], IsolatedSchemaResult]
-EndpointRunner = Callable[[DevelopmentRequest, Endpoint, int, float], IsolatedMetadataResult]
+EndpointRunner = Callable[
+    [DevelopmentRequest | DevelopmentExecutionRequest, Endpoint, int, float],
+    IsolatedMetadataResult,
+]
 Clock = Callable[[], datetime]
 Monotonic = Callable[[], float]
 
@@ -1329,7 +1514,8 @@ class DevelopmentCostEvidence(BaseModel):
         if ids != [request.request_id for request in expected_requests]:
             raise ValueError("development cost evidence exact scope coverage mismatch")
         if any(
-            not _quote_matches_request(quote, request)
+            not isinstance(request, DevelopmentRequest)
+            or not _quote_matches_request(quote, request)
             for quote, request in zip(self.quotes, expected_requests, strict=True)
         ):
             raise ValueError("development cost evidence request identity mismatch")
@@ -1342,7 +1528,8 @@ class DevelopmentCostEvidence(BaseModel):
         if self.observation_period_end < self.observation_period_start:
             raise ValueError("development cost evidence observation period is reversed")
         expected = _artifact_hash(
-            self.model_dump(mode="json", by_alias=True), hash_field="evidence_hash"
+            _strip_unbound_execution_keys(self.model_dump(mode="json", by_alias=True)),
+            hash_field="evidence_hash",
         )
         allow_unsealed = bool(info.context and info.context.get("allow_unsealed"))
         if not self.evidence_hash and not allow_unsealed:
@@ -1407,7 +1594,8 @@ class DevelopmentQuoteProgressEvidence(BaseModel):
         _require_sha256(self.checkpoint_hash, "checkpoint hash")
         _require_sha256(self.checkpoint_file_sha256, "checkpoint file SHA-256")
         expected_hash = _artifact_hash(
-            self.model_dump(mode="json", by_alias=True), hash_field="evidence_hash"
+            _strip_unbound_execution_keys(self.model_dump(mode="json", by_alias=True)),
+            hash_field="evidence_hash",
         )
         allow_unsealed = bool(info.context and info.context.get("allow_unsealed"))
         if not self.evidence_hash and not allow_unsealed:
@@ -1491,6 +1679,64 @@ def _request_quote(
         "quote_sha256": "",
     }
     return _seal_model(DevelopmentRequestQuote, payload, hash_field="quote_sha256")
+
+
+def _execution_request_quote(
+    request: DevelopmentExecutionRequest,
+    endpoints: Mapping[Endpoint, EndpointObservation],
+    attempts: Sequence[DevelopmentQuoteAttempt],
+) -> DevelopmentExecutionQuote:
+    """Assemble one native provider-observed execution quote from observations."""
+    record = endpoints["record-count"]
+    billable = endpoints["billable-size"]
+    cost = endpoints["cost"]
+    observations = [record.observed_at, billable.observed_at, cost.observed_at]
+    endpoint_responses = {
+        str(endpoint): endpoints[endpoint].provider_response_sha256
+        for endpoint in DEVELOPMENT_ENDPOINTS
+    }
+    payload: dict[str, Any] = {
+        "execution_request_id": request.execution_request_id,
+        "execution_request_hash": request.execution_request_hash,
+        "cost_usd": str(cost.value),
+        "currency": "USD",
+        "quote_origin": "provider_observed",
+        "quote_source": "provider_response",
+        "response_sha256": _execution_quote_response_hash(endpoint_responses),
+        "observed_at": max(observations).isoformat(),
+        "provider_observed_start": min(observations).isoformat(),
+        "provider_observed_end": max(observations).isoformat(),
+        "endpoint_response_sha256": endpoint_responses,
+        "record_count": int(record.value),
+        "billable_size_bytes": int(billable.value),
+        "attempt_sequences": tuple(
+            attempt.sequence
+            for attempt in attempts
+            if attempt.request_id == request.execution_request_id
+        ),
+    }
+    return DevelopmentExecutionQuote.model_validate(payload)
+
+
+def build_complete_execution_quote_records(
+    *,
+    state: DevelopmentQuoteCheckpoint,
+    requests: Sequence[DevelopmentExecutionRequest],
+) -> tuple[DevelopmentExecutionQuote, ...]:
+    """Assemble provider-observed execution quote records after full coverage."""
+    state = _seal_checkpoint(state)
+    if state.status != "complete":
+        raise DevelopmentQuoteError(
+            "complete execution quote records require complete endpoint coverage"
+        )
+    return tuple(
+        _execution_request_quote(
+            request,
+            state.endpoint_results[request.execution_request_id],
+            state.attempt_history,
+        )
+        for request in requests
+    )
 
 
 def build_complete_development_cost_evidence(

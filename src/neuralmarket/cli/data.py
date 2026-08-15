@@ -58,19 +58,27 @@ from neuralmarket.data.acquisition.contracts import (
     AcquisitionPolicyManifest,
     acquisition_report_to_json,
 )
+from neuralmarket.data.acquisition.development import (
+    DevelopmentRequest,
+)
 from neuralmarket.data.acquisition.development_cost_quote import (
     CheckpointGenerationMismatchError,
     DevelopmentQuoteCheckpoint,
     DevelopmentQuoteError,
     DevelopmentQuoteRunPolicy,
     build_complete_development_cost_evidence,
+    build_complete_execution_quote_records,
     build_partial_development_quote_evidence,
     initialize_development_quote_checkpoint,
     load_development_quote_checkpoint,
+    prepare_development_execution_quote,
     prepare_development_quote,
     run_development_quote,
     sha256_file,
     write_development_quote_checkpoint,
+)
+from neuralmarket.data.acquisition.development_execution import (
+    DevelopmentExecutionRequest,
 )
 from neuralmarket.data.acquisition.estimation import MetadataEstimate
 from neuralmarket.data.acquisition.executor import (
@@ -3164,10 +3172,17 @@ def _write_development_quote_artifact(
     checkpoint_sha = sha256_file(checkpoint_path)
     artifact: BaseModel
     if state.status == "complete":
+        requests = state.bindings.request_identities
+        if any(not isinstance(request, DevelopmentRequest) for request in requests):
+            raise DevelopmentQuoteError(
+                "development evidence assembly requires DevelopmentRequest identities"
+            )
         artifact = build_complete_development_cost_evidence(
             state=state,
             checkpoint_file_sha256=checkpoint_sha,
-            requests=state.bindings.request_identities,
+            requests=tuple(
+                request for request in requests if isinstance(request, DevelopmentRequest)
+            ),
         )
     else:
         artifact = build_partial_development_quote_evidence(
@@ -3391,6 +3406,277 @@ def development_quote_cost(
                 "checkpoint": str(checkpoint_path),
                 "output": str(output_path),
                 "schema_version": artifact.model_dump()["schema_version"],
+            },
+            sort_keys=True,
+        )
+    )
+
+
+def _write_execution_quote_artifact(
+    *,
+    state: DevelopmentQuoteCheckpoint,
+    checkpoint_path: Path,
+    output_path: Path,
+) -> dict[str, Any]:
+    """Write execution quote records (complete) or partial progress JSON."""
+    checkpoint_sha = sha256_file(checkpoint_path)
+    if state.status == "complete":
+        requests = state.bindings.request_identities
+        if any(not isinstance(request, DevelopmentExecutionRequest) for request in requests):
+            raise DevelopmentQuoteError(
+                "execution quote records require DevelopmentExecutionRequest identities"
+            )
+        records = build_complete_execution_quote_records(
+            state=state,
+            requests=tuple(
+                request for request in requests if isinstance(request, DevelopmentExecutionRequest)
+            ),
+        )
+        artifact = {
+            "schema_version": "execution-fragment-quote-records-v1",
+            "status": "complete",
+            "checkpoint_hash": state.checkpoint_hash,
+            "checkpoint_file_sha256": checkpoint_sha,
+            "request_count": len(records),
+            "quote_records": [record.model_dump(mode="json", by_alias=True) for record in records],
+        }
+    else:
+        partial = build_partial_development_quote_evidence(
+            state=state,
+            checkpoint_file_sha256=checkpoint_sha,
+        )
+        artifact = partial.model_dump(mode="json", by_alias=True)
+    write_acquisition_json(output_path, artifact)
+    return artifact
+
+
+@development_app.command("execution-quote-cost")
+def development_execution_quote_cost(
+    manifest: Path = typer.Option(
+        Path("data/manifests/development_execution_manifest_v1.json"),
+        "--manifest",
+        help="Tracked deterministic execution manifest JSON.",
+    ),
+    fresh_scope: Path = typer.Option(
+        ..., "--fresh-scope", help="Deterministic exact fresh execution quote scope JSON."
+    ),
+    checkpoint: Path = typer.Option(..., "--checkpoint", help="Atomic resumable checkpoint."),
+    output: Path = typer.Option(
+        ..., "--output", help="Execution quote records or partial progress JSON."
+    ),
+    plan: Path = typer.Option(
+        Path("data/manifests/development_acquisition_plan_v1.json"),
+        "--plan",
+        help="Canonical DevelopmentPlan JSON.",
+    ),
+    pilot_plan: Path = typer.Option(
+        Path("data/manifests/pilot_request_plan_v1.json"),
+        "--pilot-plan",
+        help="Protected finalized pilot request plan.",
+    ),
+    journal: Path = typer.Option(
+        Path("data/state/pilot_acquisition_journal.sqlite"),
+        "--journal",
+        help="Protected read-only pilot journal.",
+    ),
+    resume: bool = typer.Option(False, "--resume", help="Resume a validated checkpoint."),
+    initialize_only: bool = typer.Option(
+        False,
+        "--initialize-only",
+        help="Verify bindings and emit zero-call progress without loading credentials.",
+    ),
+    hard_timeout_seconds: float = typer.Option(
+        120.0,
+        "--hard-timeout-seconds",
+        min=0.001,
+        max=300.0,
+        help="Hard process timeout for every schema or endpoint operation.",
+    ),
+    maximum_attempts: int = typer.Option(
+        2,
+        "--maximum-attempts",
+        min=1,
+        max=3,
+        help="Maximum attempts per pending operation in this run.",
+    ),
+    total_deadline_seconds: float = typer.Option(
+        3600.0,
+        "--total-deadline-seconds",
+        min=0.001,
+        help="Finite total deadline for this execution quote run.",
+    ),
+    expected_repository_head: str = typer.Option(..., "--expected-repository-head"),
+    expected_plan_sha256: str = typer.Option(..., "--expected-plan-sha256"),
+    expected_plan_hash: str = typer.Option(..., "--expected-plan-hash"),
+    expected_manifest_sha256: str = typer.Option(..., "--expected-manifest-sha256"),
+    expected_manifest_hash: str = typer.Option(..., "--expected-manifest-hash"),
+    expected_fresh_scope_sha256: str = typer.Option(..., "--expected-fresh-scope-sha256"),
+    expected_fresh_scope_hash: str = typer.Option(..., "--expected-fresh-scope-hash"),
+    expected_pilot_plan_sha256: str = typer.Option(..., "--expected-pilot-plan-sha256"),
+    expected_journal_sha256: str = typer.Option(..., "--expected-journal-sha256"),
+) -> None:
+    """Quote exact development execution fragment costs natively; never acquire data."""
+    root = find_repository_root()
+    manifest_path = _resolve_under_root(root, manifest)
+    fresh_scope_path = _resolve_under_root(root, fresh_scope)
+    plan_path = _resolve_under_root(root, plan)
+    pilot_plan_path = _resolve_under_root(root, pilot_plan)
+    journal_path = _resolve_under_root(root, journal)
+    checkpoint_path = _resolve_under_root(root, checkpoint)
+    output_path = _resolve_under_root(root, output)
+    try:
+        if checkpoint_path.resolve() == output_path.resolve():
+            raise DevelopmentQuoteError("checkpoint and output paths must differ")
+        execution_dir = (root / "reports" / "data" / "execution").resolve()
+        for label, target in (("checkpoint", checkpoint_path), ("output", output_path)):
+            resolved = target.resolve()
+            if not resolved.is_relative_to(execution_dir):
+                raise DevelopmentQuoteError(
+                    f"{label} must live under reports/data/execution: {target}"
+                )
+            for protected_label, protected in (
+                ("development plan", plan_path),
+                ("execution manifest", manifest_path),
+                ("fresh scope", fresh_scope_path),
+                ("pilot plan", pilot_plan_path),
+                ("pilot journal", journal_path),
+            ):
+                if resolved == protected.resolve():
+                    raise DevelopmentQuoteError(
+                        f"{label} path would overwrite protected {protected_label}"
+                    )
+        policy = DevelopmentQuoteRunPolicy(
+            hard_operation_timeout_seconds=hard_timeout_seconds,
+            maximum_attempts=maximum_attempts,
+        )
+        prepared = prepare_development_execution_quote(
+            repository_root=root,
+            development_plan_path=plan_path,
+            execution_manifest_path=manifest_path,
+            fresh_scope_path=fresh_scope_path,
+            pilot_plan_path=pilot_plan_path,
+            pilot_journal_path=journal_path,
+            repository_head=_git_head(root),
+            expected_repository_head=expected_repository_head,
+            expected_plan_file_sha256=expected_plan_sha256,
+            expected_plan_hash=expected_plan_hash,
+            expected_manifest_file_sha256=expected_manifest_sha256,
+            expected_manifest_hash=expected_manifest_hash,
+            expected_fresh_scope_file_sha256=expected_fresh_scope_sha256,
+            expected_fresh_scope_hash=expected_fresh_scope_hash,
+            expected_pilot_plan_file_sha256=expected_pilot_plan_sha256,
+            expected_journal_main_sha256=expected_journal_sha256,
+            databento_client_version=checkpoint_client_version(),
+        )
+        if resume:
+            state = load_development_quote_checkpoint(
+                checkpoint_path,
+                expected_bindings=prepared.bindings,
+                expected_policy=policy,
+            )
+        else:
+            if checkpoint_path.exists():
+                raise DevelopmentQuoteError("checkpoint already exists; use --resume")
+            state = initialize_development_quote_checkpoint(
+                bindings=prepared.bindings,
+                policy=policy,
+                now=datetime.now(UTC),
+            )
+            state = write_development_quote_checkpoint(checkpoint_path, state)
+        if initialize_only:
+            artifact = _write_execution_quote_artifact(
+                state=state,
+                checkpoint_path=checkpoint_path,
+                output_path=output_path,
+            )
+            typer.echo(
+                json.dumps(
+                    {
+                        "status": state.status,
+                        "request_count": len(state.bindings.request_identities),
+                        "metadata_operations": (
+                            state.provider_operation_counters.total_metadata_operations
+                        ),
+                        "checkpoint": str(checkpoint_path),
+                        "output": str(output_path),
+                        "schema_version": artifact["schema_version"],
+                    },
+                    sort_keys=True,
+                )
+            )
+            return
+    except CheckpointGenerationMismatchError as exc:
+        typer.echo(f"Execution quote checkpoint moved concurrently: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    except (DevelopmentQuoteError, ValueError) as exc:
+        typer.echo(f"Execution quote gate failed: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    if _git_dirty(root) is not False:
+        typer.echo("Repository working tree must be clean for live quoting.", err=True)
+        raise typer.Exit(code=2)
+
+    _load_dotenv(root)
+    if not __import__("os").environ.get("DATABENTO_API_KEY"):
+        typer.echo("DATABENTO_API_KEY is required after the offline gate.", err=True)
+        raise typer.Exit(code=2)
+
+    request_positions = {
+        request.request_id: index
+        for index, request in enumerate(state.bindings.request_identities, start=1)
+    }
+    run_id = uuid.uuid4().hex
+
+    def schema_runner(dataset: str, attempt: int, timeout_seconds: float) -> Any:
+        del attempt
+        return _run_isolated_schema_list(dataset=dataset, timeout_seconds=timeout_seconds)
+
+    def endpoint_runner(
+        request: Any,
+        endpoint: Endpoint,
+        attempt: int,
+        timeout_seconds: float,
+    ) -> Any:
+        return _run_isolated_metadata(
+            request=request,
+            run_id=run_id,
+            request_index=request_positions[request.request_id],
+            request_count=len(request_positions),
+            attempt=attempt,
+            timeout_seconds=timeout_seconds,
+            only_endpoint=endpoint,
+            request_kind="development_execution",
+        )
+
+    try:
+        state = run_development_quote(
+            state=state,
+            checkpoint_path=checkpoint_path,
+            schema_runner=schema_runner,
+            endpoint_runner=endpoint_runner,
+            total_deadline_seconds=total_deadline_seconds,
+            monotonic=time.monotonic,
+            now=lambda: datetime.now(UTC),
+            expected_checkpoint_hash=state.checkpoint_hash,
+        )
+        artifact = _write_execution_quote_artifact(
+            state=state,
+            checkpoint_path=checkpoint_path,
+            output_path=output_path,
+        )
+    except DevelopmentQuoteError as exc:
+        typer.echo(f"Execution quote failed: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(
+        json.dumps(
+            {
+                "status": state.status,
+                "completed_requests": len(state.completed_request_ids),
+                "pending_requests": len(state.pending_endpoints),
+                "stop_reason": state.stop_reason,
+                "checkpoint": str(checkpoint_path),
+                "output": str(output_path),
+                "schema_version": artifact["schema_version"],
             },
             sort_keys=True,
         )

@@ -35,6 +35,7 @@ from neuralmarket.data.acquisition.development import (
     DevelopmentRequest,
     verify_development_request,
 )
+from neuralmarket.data.acquisition.development_execution import DevelopmentExecutionRequest
 from neuralmarket.data.acquisition.estimation import MetadataEstimate
 from neuralmarket.data.acquisition.providers import DatabentoMetadataProvider
 from neuralmarket.data.acquisition.requests import AcquisitionRequest
@@ -58,8 +59,8 @@ _MAXIMUM_CHILD_RESULT_BYTES = 1_048_576
 
 ESTIMATOR_VERSION = "pilot-metadata-process-v1"
 Endpoint = Literal["record-count", "billable-size", "cost"]
-RequestKind = Literal["pilot", "development"]
-MetadataRequest = AcquisitionRequest | DevelopmentRequest
+RequestKind = Literal["pilot", "development", "development_execution"]
+MetadataRequest = AcquisitionRequest | DevelopmentRequest | DevelopmentExecutionRequest
 
 
 class MetadataOperationEvent(BaseModel):
@@ -122,12 +123,24 @@ def _worker_accepts_parameter(worker: Callable[..., object], name: str) -> bool:
 def validate_metadata_request_payload(
     request_payload: dict[str, Any], *, request_kind: RequestKind
 ) -> MetadataRequest:
-    """Validate one explicit pilot or development request without lossy conversion."""
+    """Validate one explicit pilot, development, or execution request without lossy conversion."""
+    request: MetadataRequest
     if request_kind == "development":
         request = DevelopmentRequest.model_validate(request_payload)
         verify_development_request(request)
         return request
-    return AcquisitionRequest.model_validate(request_payload)
+    if request_kind == "development_execution":
+        request = DevelopmentExecutionRequest.model_validate(request_payload)
+        return request
+    request = AcquisitionRequest.model_validate(request_payload)
+    return request
+
+
+def _isoformat_or_str(value: object) -> str:
+    """Serialize a datetime/date via isoformat and pass strings through."""
+    if isinstance(value, str):
+        return value
+    return str(value.isoformat() if hasattr(value, "isoformat") else value)
 
 
 def _metadata_child(
@@ -150,8 +163,8 @@ def _metadata_child(
         "symbols": list(request.symbols),
         "schema": request.schema_name,
         "stype_in": request.stype_in,
-        "start": request.start.isoformat(),
-        "end": request.end_exclusive.isoformat(),
+        "start": _isoformat_or_str(request.start),
+        "end": _isoformat_or_str(request.end_exclusive),
     }
     values: dict[str, object] = {}
     operations: tuple[tuple[Endpoint, str], ...] = (
@@ -171,7 +184,7 @@ def _metadata_child(
                 request_id=request.request_id,
                 dataset=request.dataset,
                 schema_name=request.schema_name,
-                session_date=request.session_date.isoformat() if request.session_date else None,
+                session_date=(str(request.session_date) if request.session_date else None),
                 endpoint=endpoint,
                 attempt=attempt,
                 started_at=started.isoformat(),
