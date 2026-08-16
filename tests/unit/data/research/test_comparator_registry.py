@@ -17,7 +17,9 @@ from neuralmarket.eval.scorecard import MetricSpecification
 
 pytestmark = pytest.mark.unit
 
-_ACCEPTED_METRIC_SPEC_HASH = "5e43a3a3242271802ee7057405836ffb6d12d0ce732d3256dbd362ce5a400eb3"
+_ACCEPTED_METRIC_SPEC_HASH = (
+    "5e43a3a3242271802ee7057405836ffb6d12d0ce732d3256dbd362ce5a400eb3"  # pragma: allowlist secret
+)
 
 
 class TestSuiteSpec:

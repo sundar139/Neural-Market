@@ -23,7 +23,7 @@ _MANIFEST = _ROOT / "data/manifests/development_execution_manifest_v1.json"
 _SCOPE_SRC = _ROOT / "reports/data/execution/f4c1dd1_offline_trust_anchor_scope_a2_gpt56.local.json"
 _JOURNAL = _ROOT / "data/state/development_acquisition_journal.sqlite"
 _CONFIG = _ROOT / "configs/data/spy_daily_databento.yaml"
-_HEAD = "70544a482dcf5762a968e3f0c7df35bb7c9a5db8"
+_HEAD = "70544a482dcf5762a968e3f0c7df35bb7c9a5db8"  # pragma: allowlist secret
 
 
 def _inventory():
