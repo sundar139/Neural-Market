@@ -98,6 +98,17 @@ after all runs).
 - Optimizer AdamW lr `1e-3`, batch 64, max 400 epochs, patience 40.
   Config frozen in `configs/research/neural_sde_signature_v1.yaml`
   (file SHA-256 recorded in the experiment artifact).
+- Config-file byte note: the frozen runs read the pre-newline bytes
+  (v1 SHA-256 `a153bd5d43b29961f7ca270500fd766bc35e1fdda145f4f37ee0b1cb60fa7eb1`,
+  smoke `00af0ac919862cb04de119061a51acaf1a685e7e84b70017c4e8a135a33f4279`),
+  recorded verbatim in the artifact. The committed copies gained a trailing
+  newline from the mandatory `pre-commit` end-of-file-fixer (v1
+  `34bc951758dacdae30a060ef7c472a27b4e705d0cec810c7584c2e30fd9037a2`, smoke
+  `2c8961b1b6547319e81fd12d292d175bfd0a661d69d651a3461eaedea7cad576`).
+  This byte change does not alter `config_hash` (hash of the parsed
+  configuration), so a fresh replay reproduces the identical experiment
+  (identical checkpoint SHA and experiment identity); only the recorded
+  config-file byte SHA reflects the newline.
 
 ## Training windows and internal split (training period only)
 
