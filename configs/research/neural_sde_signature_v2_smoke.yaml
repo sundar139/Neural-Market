@@ -1,0 +1,50 @@
+# v2 SHORT-RUN smoke config for the production-shaped integration test.
+# Reduces training duration only; objective/gate/seeds are v2-frozen values.
+version: signature-neural-sde-v2-short-smoke
+
+sde:
+  state_dim: 2
+  brownian_dim: 2
+  n_context: 4
+  hidden_units: 32
+  hidden_layers: 1
+  activation: SiLU
+  diffusion_epsilon: 1.0e-6
+  dt: 0.003968253968253968
+  horizon: 63
+  signature_level: 3
+
+training:
+  optimizer: AdamW
+  learning_rate: 0.001
+  weight_decay: 1.0e-6
+  batch_size: 64
+  max_epochs: 8
+  patience: 8
+  grad_norm_clip: 1.0
+  model_init_seed: 4242
+  data_seed: 4243
+  eval_seed: 5252
+  fit_fraction: 0.8
+
+windows:
+  context_lookback: 22
+  horizon: 63
+  dt: 0.003968253968253968
+
+objective:
+  kernel: rbf
+  signature_level: 3
+  standardize_features: true
+  standardization_floor_eps: 1.0e-8
+  bandwidth_source: train_fit_real_standardized
+  bandwidth_method: median_pairwise_squared_distance
+  bandwidth_max_vectors: 512
+  variance_penalty_coefficient: 1.0
+  variance_eps: 1.0e-12
+  internal_min_dispersion_ratio: 0.5
+  internal_gate_seed: 6666
+  internal_selection_paths_per_window: 16
+
+n_eval_paths: 1024
+eval_seed: 5252

@@ -1,0 +1,54 @@
+# Signature neural-SDE v2 -- FROZEN experiment configuration.
+# Fixes v1 distributional collapse by replacing the linear expected-signature
+# MEAN matching with RBF-MMD over individual truncated-signature feature
+# vectors, plus one training-only log-variance anti-collapse penalty.
+# Architecture/windows/seeds are retained from v1; only the objective changes.
+# Frozen BEFORE any external-validation observation. Do not tune on validation.
+version: signature-neural-sde-v2
+
+sde:
+  state_dim: 2          # x: observable cumulative log return; z: latent state
+  brownian_dim: 2
+  n_context: 4
+  hidden_units: 64
+  hidden_layers: 2
+  activation: SiLU
+  diffusion_epsilon: 1.0e-6   # softplus(raw) + eps; diffusion always positive
+  dt: 0.003968253968253968    # 1/252
+  horizon: 63                 # matching the frozen baseline suite
+  signature_level: 3          # truncated signature levels 1..3 (unchanged)
+
+training:
+  optimizer: AdamW
+  learning_rate: 0.001
+  weight_decay: 1.0e-6
+  batch_size: 64
+  max_epochs: 400
+  patience: 40
+  grad_norm_clip: 1.0
+  model_init_seed: 4242
+  data_seed: 4243
+  eval_seed: 5252             # NEW frozen v2 evaluation seed
+  fit_fraction: 0.8
+
+windows:
+  context_lookback: 22
+  horizon: 63
+  dt: 0.003968253968253968
+
+objective:
+  kernel: rbf
+  signature_level: 3
+  standardize_features: true
+  standardization_floor_eps: 1.0e-8
+  bandwidth_source: train_fit_real_standardized
+  bandwidth_method: median_pairwise_squared_distance
+  bandwidth_max_vectors: 512
+  variance_penalty_coefficient: 1.0
+  variance_eps: 1.0e-12
+  internal_min_dispersion_ratio: 0.5
+  internal_gate_seed: 6666
+  internal_selection_paths_per_window: 16
+
+n_eval_paths: 1024
+eval_seed: 5252
