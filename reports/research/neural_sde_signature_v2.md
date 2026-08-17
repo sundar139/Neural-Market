@@ -59,6 +59,14 @@ v2 experiment artifact.)
 
 - tracked: `configs/research/neural_sde_signature_v2.yaml`
   (file SHA-256 recorded in artifact; config hash recorded in artifact).
+- Config-file byte note: the frozen v2 run read the pre-newline bytes
+  (SHA-256 `0163256cbb36dda2631188263b211d65884183ef212d419723a9c647af2f9647`),
+  recorded verbatim in the artifact. The committed copy gained a trailing
+  newline from the mandatory `pre-commit` end-of-file-fixer (SHA-256
+  `da3519393c25ba9822bca6835a802fd6b5822d3cc97b2c423e08b2ae5d1de4fe`), matching
+  how the v1 config was normalized. This byte change does not alter
+  `config_hash` (hash of the parsed configuration), so a fresh replay
+  reproduces the identical experiment (identical checkpoint SHA and identity).
 - Architecture retained from v1 exactly: state 2, Brownian 2, 4 context
   features, 2x64 SiLU drift/diffusion MLPs, softplus+1e-6 diffusion,
   Euler-Maruyama dt=1/252, 63 steps.
