@@ -243,12 +243,8 @@ class TestQuadraticVariationSensitivity:
         )
 
         s_spec = WindowSpec(horizon=horizon)
-        smooth_path = leadlag_augment_path(
-            smooth_returns, ctx, cumret_scale=scale, spec=s_spec
-        )
-        choppy_path = leadlag_augment_path(
-            choppy_returns, ctx, cumret_scale=scale, spec=s_spec
-        )
+        smooth_path = leadlag_augment_path(smooth_returns, ctx, cumret_scale=scale, spec=s_spec)
+        choppy_path = leadlag_augment_path(choppy_returns, ctx, cumret_scale=scale, spec=s_spec)
 
         from neuralmarket.models.signature import truncated_signature_features
         from neuralmarket.models.signature_mmd import signature_feature_vector
@@ -261,9 +257,7 @@ class TestQuadraticVariationSensitivity:
 
         dist = (smooth_vec - choppy_vec).norm().item()
         # The lead-lag signatures must be substantially different.
-        assert dist > 0.01, (
-            f"Lead-lag signatures of smooth vs choppy paths are too similar: {dist}"
-        )
+        assert dist > 0.01, f"Lead-lag signatures of smooth vs choppy paths are too similar: {dist}"
 
     def test_old_signature_less_sensitive(self) -> None:
         """The cumulative-only path should be LESS sensitive than lead-lag."""
@@ -282,12 +276,8 @@ class TestQuadraticVariationSensitivity:
 
         # Old cumulative-only paths
         o_spec = WindowSpec(horizon=horizon)
-        smooth_old = augment_path(
-            smooth_returns, ctx, cumret_scale=scale, spec=o_spec
-        )
-        choppy_old = augment_path(
-            choppy_returns, ctx, cumret_scale=scale, spec=o_spec
-        )
+        smooth_old = augment_path(smooth_returns, ctx, cumret_scale=scale, spec=o_spec)
+        choppy_old = augment_path(choppy_returns, ctx, cumret_scale=scale, spec=o_spec)
         smooth_old_feats = truncated_signature_features(smooth_old, level=3)
         choppy_old_feats = truncated_signature_features(choppy_old, level=3)
         smooth_old_vec = signature_feature_vector(smooth_old_feats)
@@ -296,12 +286,8 @@ class TestQuadraticVariationSensitivity:
 
         # Lead-lag paths
         ll_spec = WindowSpec(horizon=horizon)
-        smooth_ll = leadlag_augment_path(
-            smooth_returns, ctx, cumret_scale=scale, spec=ll_spec
-        )
-        choppy_ll = leadlag_augment_path(
-            choppy_returns, ctx, cumret_scale=scale, spec=ll_spec
-        )
+        smooth_ll = leadlag_augment_path(smooth_returns, ctx, cumret_scale=scale, spec=ll_spec)
+        choppy_ll = leadlag_augment_path(choppy_returns, ctx, cumret_scale=scale, spec=ll_spec)
         smooth_ll_feats = truncated_signature_features(smooth_ll, level=3)
         choppy_ll_feats = truncated_signature_features(choppy_ll, level=3)
         smooth_ll_vec = signature_feature_vector(smooth_ll_feats)

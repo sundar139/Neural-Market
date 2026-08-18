@@ -47,10 +47,10 @@ def _make_fake_split(n_sel: int = 8) -> FitSelectionSplit:
             start_index=i,
             context_returns=np.array([0.01, 0.02, 0.03, 0.04] * 6, dtype=np.float64)[:22],
             target_returns=np.random.RandomState(42 + i).randn(63) * 0.01,
-            context_start_date=f"2018-05-{1+i:02d}",
-            context_end_date=f"2018-06-{1+i:02d}",
-            target_start_date=f"2018-06-{2+i:02d}",
-            target_end_date=f"2018-08-{30+i:02d}",
+            context_start_date=f"2018-05-{1 + i:02d}",
+            context_end_date=f"2018-06-{1 + i:02d}",
+            target_start_date=f"2018-06-{2 + i:02d}",
+            target_end_date=f"2018-08-{30 + i:02d}",
         )
         windows.append(w)
     fit = windows[:5]
@@ -115,7 +115,7 @@ class TestDriftDiffusionRMS:
         drift_rms, diff_rms = _drift_diffusion_rms(model, ctx, spec, 32, gen)
 
         expected_drift = abs(mu_val) * spec.dt
-        expected_diff = sigma_val * spec.dt ** 0.5
+        expected_diff = sigma_val * spec.dt**0.5
         # Allow 20% tolerance due to finite-sample effects
         assert abs(drift_rms - expected_drift) / expected_drift < 0.20
         assert abs(diff_rms - expected_diff) / expected_diff < 0.20
@@ -192,8 +192,11 @@ class TestInternalGateSynthetic:
         )
         cr = diagnostics["criterion_results"]
         expected = (
-            "variance_ratio", "dispersion_ratio",
-            "uniqueness", "acf1_agreement", "drift_diffusion_ratio",
+            "variance_ratio",
+            "dispersion_ratio",
+            "uniqueness",
+            "acf1_agreement",
+            "drift_diffusion_ratio",
         )
         for key in expected:
             assert key in cr

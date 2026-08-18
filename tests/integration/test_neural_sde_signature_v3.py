@@ -207,8 +207,11 @@ class TestV3Contract:
             assert key in gate
         cr = gate["criterion_results"]
         criteria = (
-            "variance_ratio", "dispersion_ratio",
-            "uniqueness", "acf1_agreement", "drift_diffusion_ratio",
+            "variance_ratio",
+            "dispersion_ratio",
+            "uniqueness",
+            "acf1_agreement",
+            "drift_diffusion_ratio",
         )
         for crit in criteria:
             assert crit in cr

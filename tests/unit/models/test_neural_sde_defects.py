@@ -131,7 +131,7 @@ class TestConstantCoefficientSDE:
         empirical_var = float(flat.var(unbiased=False))
 
         expected_mean = mu_val * dt
-        expected_var = sigma_val ** 2 * dt
+        expected_var = sigma_val**2 * dt
         assert abs(empirical_mean - expected_mean) < 0.002
         assert abs(empirical_var - expected_var) < 0.001
 
