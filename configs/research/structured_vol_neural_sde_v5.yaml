@@ -1,0 +1,58 @@
+# Structured stochastic-volatility neural SDE v5.
+# First experiment testing whether explicit volatility state improves
+# conditional volatility and volatility clustering.
+# Frozen BEFORE any external-validation observation.
+version: structured-volatility-neural-sde-v5
+
+sde:
+  state_dim: 2          # x: cumulative log-return, V: latent volatility
+  brownian_dim: 2
+  n_context: 4
+  hidden_units: 64
+  hidden_layers: 2
+  activation: SiLU
+  diffusion_epsilon: 1.0e-6
+  dt: 0.003968253968253968    # 1/252
+  horizon: 63
+  signature_level: 3
+
+training:
+  optimizer: AdamW
+  learning_rate: 0.001
+  weight_decay: 1.0e-6
+  batch_size: 64
+  max_epochs: 400
+  patience: 40
+  grad_norm_clip: 1.0
+  model_init_seed: 8281       # fresh v5 seeds
+  data_seed: 8282
+  eval_seed: 8283
+  fit_fraction: 0.8
+
+windows:
+  context_lookback: 22
+  horizon: 63
+  dt: 0.003968253968253968
+
+objective:
+  kernel: rbf
+  signature_level: 3
+  standardize_features: true
+  standardization_floor_eps: 1.0e-8
+  bandwidth_source: train_fit_real_standardized
+  bandwidth_method: median_pairwise_squared_distance
+  bandwidth_max_vectors: 512
+  variance_penalty_coefficient: 1.0
+  variance_eps: 1.0e-12
+  gate_variance_ratio_lo: 0.50
+  gate_variance_ratio_hi: 2.00
+  gate_dispersion_ratio_lo: 0.50
+  gate_dispersion_ratio_hi: 2.00
+  gate_uniqueness_min: 0.99
+  gate_return_acf1_max_diff: 0.25
+  gate_drift_diffusion_ratio_max: 0.50
+  internal_gate_seed: 7777
+  internal_selection_paths_per_window: 16
+
+n_eval_paths: 1024
+eval_seed: 8283
