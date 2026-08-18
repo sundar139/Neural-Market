@@ -26,11 +26,15 @@ terminal_distribution:
 
 serial_dependence:
   lags: [1, 2, 3, 5, 10, 20]
-  aggregation: rmse                 # RMSE across lags
-  max_lag_error_threshold: 0.25    # per-lag max absolute error
-  rmse_threshold: 0.15             # aggregate RMSE threshold
-  status: pass_fail                # both max and rmse are pass/fail
-  report_acf1: true                # also report ACF(1) for transparency
+  acf1:
+    status: pass_fail              # pre-v4 criterion, independent provenance
+    threshold: 0.25                # |acf_real(1) - acf_gen(1)| <= 0.25
+  rmse:
+    status: report_only            # no independent derivation; report only
+    diagnostic_reference: 0.15     # informational, not acceptance criterion
+  max_error:
+    status: report_only            # no independent derivation; report only
+    diagnostic_reference: 0.25     # informational, not acceptance criterion
 
 volatility_clustering:
   lags: [1, 2, 3, 5, 10, 20]

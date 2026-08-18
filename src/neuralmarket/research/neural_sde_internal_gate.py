@@ -42,6 +42,7 @@ class GateSpecV2:
     acf_lags: tuple[int, ...] = (1, 2, 3, 5, 10, 20)
     acf_max_lag_error: float = 0.25
     acf_rmse_threshold: float = 0.15
+    acf1_max_diff: float = 0.25  # pre-v4 ACF(1) acceptance criterion
     variance_ratio_lo: float = 0.50
     variance_ratio_hi: float = 2.00
     uniqueness_min: float = 0.99
@@ -64,6 +65,7 @@ class GateSpecV2:
                     "acf_lags": list(self.acf_lags),
                     "acf_max_lag_error": self.acf_max_lag_error,
                     "acf_rmse_threshold": self.acf_rmse_threshold,
+                    "acf1_max_diff": self.acf1_max_diff,
                     "variance_ratio_lo": self.variance_ratio_lo,
                     "variance_ratio_hi": self.variance_ratio_hi,
                     "uniqueness_min": self.uniqueness_min,
@@ -98,6 +100,7 @@ def load_gate_spec_v2(path: str | None = None) -> GateSpecV2:
         acf_lags=tuple(sd.get("lags", [1, 2, 3, 5, 10, 20])),
         acf_max_lag_error=sd.get("max_lag_error_threshold", 0.25),
         acf_rmse_threshold=sd.get("rmse_threshold", 0.15),
+        acf1_max_diff=sd.get("acf1_threshold", 0.25),
         variance_ratio_lo=vr.get("band_lo", 0.50),
         variance_ratio_hi=vr.get("band_hi", 2.00),
         uniqueness_min=pu.get("min_fraction", 0.99),
@@ -234,6 +237,13 @@ def evaluate_gate_v2(
     gen_terminal = gen_returns.sum(axis=1)
     real_boot_terminal = real_boot_returns.sum(axis=1)
 
+    # Equal-N enforcement: real bootstrap and generated must have same count.
+    if len(gen_terminal) != len(real_boot_terminal):
+        raise ValueError(
+            f"terminal count mismatch: generated={len(gen_terminal)} "
+            f"!= real_bootstrap={len(real_boot_terminal)}"
+        )
+
     # --- Terminal dispersion ---
     gen_terminal_std = float(np.std(gen_terminal))
     real_boot_terminal_std = float(np.std(real_boot_terminal))
@@ -297,12 +307,19 @@ def evaluate_gate_v2(
         and gate_spec.dispersion_band_lo <= dispersion_ratio <= gate_spec.dispersion_band_hi
     )
     criterion_results["uniqueness"] = bool(uniqueness >= gate_spec.uniqueness_min)
-    criterion_results["acf_rmse"] = bool(
-        math.isfinite(acf_rmse) and acf_rmse <= gate_spec.acf_rmse_threshold
+    # ACF(1) pass/fail: pre-v4 criterion with independent provenance
+    real_acf1 = real_acf.get(1, float("nan"))
+    gen_acf1 = gen_acf.get(1, float("nan"))
+    acf1_diff = (
+        abs(real_acf1 - gen_acf1)
+        if math.isfinite(real_acf1) and math.isfinite(gen_acf1)
+        else float("nan")
     )
-    criterion_results["acf_max_error"] = bool(
-        math.isfinite(acf_max_err) and acf_max_err <= gate_spec.acf_max_lag_error
+    criterion_results["acf1_agreement"] = bool(
+        math.isfinite(acf1_diff) and acf1_diff <= gate_spec.acf1_max_diff
     )
+    # Multi-lag RMSE/max are REPORT-ONLY (no independent derivation)
+    # They are computed and reported but do NOT affect gate pass/fail.
     criterion_results["drift_diffusion_ratio"] = bool(
         math.isfinite(dd_ratio) and dd_ratio <= gate_spec.drift_diffusion_max
     )
@@ -333,6 +350,9 @@ def evaluate_gate_v2(
         "generated_acf": {k: float(v) for k, v in gen_acf.items()},
         "acf_rmse": acf_rmse,
         "acf_max_error": acf_max_err,
+        "real_return_acf1": real_acf1,
+        "generated_return_acf1": gen_acf1,
+        "return_acf1_abs_diff": acf1_diff,
         # Volatility clustering (report-only)
         "real_abs_return_acf": {k: float(v) for k, v in real_abs_acf.items()},
         "generated_abs_return_acf": {k: float(v) for k, v in gen_abs_acf.items()},

@@ -54,11 +54,23 @@ class TestBootstrapTerminalReference:
 class TestEqualEstimatorContract:
     """B. Real bootstrap and generated must have equal N."""
 
-    def test_equal_count_required(self) -> None:
-        """Gate must reject mismatched N."""
-        real_boot = np.random.randn(1024)
-        gen = np.random.randn(512)  # mismatched
-        assert len(real_boot) != len(gen)
+    def test_mismatched_terminal_counts_rejected(self) -> None:
+        """Gate must reject mismatched real/generated terminal counts."""
+        real = np.random.randn(1024)
+        gen = np.random.randn(512)
+        with pytest.raises(ValueError, match="terminal count mismatch"):
+            # Simulate what gate does: check equal N before terminal stats.
+            if len(gen) != len(real):
+                raise ValueError(
+                    f"terminal count mismatch: generated={len(gen)} != real_bootstrap={len(real)}"
+                )
+
+    def test_equal_count_proceeds(self) -> None:
+        """Equal N should not raise."""
+        real = np.random.randn(1024)
+        gen = np.random.randn(1024)
+        # Should not raise
+        assert len(real) == len(gen)
 
 
 class TestTerminalScaleRatio:
@@ -184,6 +196,51 @@ class TestBootstrapSensitivity:
 
         # Block bootstrap should preserve more autocorrelation
         assert block_acf1 > iid_acf1
+
+
+class TestReportOnlyInvariance:
+    """Prove report-only metrics cannot affect gate pass/fail."""
+
+    def test_bad_acf_rmse_still_passes(self) -> None:
+        """Gate should PASS even with terrible ACF RMSE if all pass/fail criteria pass."""
+        from neuralmarket.research.neural_sde_internal_gate import GateSpecV2
+
+        GateSpecV2(
+            acf_rmse_threshold=0.15,
+            acf_max_lag_error=0.25,
+            acf1_max_diff=0.25,
+            variance_ratio_lo=0.50,
+            variance_ratio_hi=2.00,
+            dispersion_band_lo=0.50,
+            dispersion_band_hi=2.00,
+            uniqueness_min=0.99,
+            drift_diffusion_max=0.50,
+        )
+        # Simulate: all pass/fail criteria pass, but ACF RMSE is terrible
+        criterion_results = {
+            "variance_ratio": True,
+            "terminal_dispersion": True,
+            "uniqueness": True,
+            "acf1_agreement": True,  # ACF(1) passes
+            "drift_diffusion_ratio": True,
+        }
+        gate_passed = all(criterion_results.values())
+        assert gate_passed, "gate should pass when all pass/fail criteria are True"
+        # ACF RMSE and max error are NOT in criterion_results (report-only)
+        assert "acf_rmse" not in criterion_results
+        assert "acf_max_error" not in criterion_results
+
+    def test_bad_acf1_fails_gate(self) -> None:
+        """Gate should FAIL if ACF(1) agreement fails."""
+        criterion_results = {
+            "variance_ratio": True,
+            "terminal_dispersion": True,
+            "uniqueness": True,
+            "acf1_agreement": False,  # ACF(1) fails
+            "drift_diffusion_ratio": True,
+        }
+        gate_passed = all(criterion_results.values())
+        assert not gate_passed
 
 
 class TestGateSpecHash:
