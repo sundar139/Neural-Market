@@ -15,3 +15,22 @@
 - Do not commit API keys, raw licensed data, checkpoints, `.env`, or `.venv`.
 - Stop and report any nonfinite loss, exploding path, data leakage, or
   accounting mismatch.
+
+## AI-assisted repository workflow
+
+- At session start capture Git truth (`git branch --show-current`,
+  `git rev-parse HEAD`, `git status --short --untracked-files=no`), read
+  `docs/engineering/agent-contract.md`, read `.agent-memory/state.json` when
+  present, and read the durable research entry point
+  (`reports/protocol/research_protocol_v1.md` and its amendments). Inspect only
+  files relevant to the active task; do not reread the whole repository.
+- Treat Git, tests, immutable artifacts, and the governing research protocol as
+  stronger evidence than any agent memory.
+- For non-trivial work follow `DISCOVER -> DECIDE -> MUTATE -> VERIFY -> REPORT`
+  and return the standard evidence report defined in
+  `docs/engineering/agent-contract.md`.
+- Do not perform unauthorized paid-data, provider, network, credential, remote,
+  destructive-Git, production, or scientifically material actions. Classify
+  every task's risk per `docs/engineering/agent-contract.md` (R0-R5) and never
+  silently downgrade a task.
+- Keep `.agent-memory/` concise, operational, and secret-free.
