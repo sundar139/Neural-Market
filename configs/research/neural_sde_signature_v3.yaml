@@ -1,0 +1,61 @@
+# Signature neural-SDE v3 -- FROZEN experiment configuration.
+# Replaces v2's cumulative-path-only signature with a lead-lag
+# representation that exposes local variation / quadratic-variation
+# information to the truncated signature.  The architecture, RBF-MMD
+# framework, and variance calibration are preserved from v2.
+# Frozen BEFORE any external-validation observation. Do not tune on validation.
+version: signature-neural-sde-v3
+
+sde:
+  state_dim: 2          # x: observable cumulative log return; z: latent state
+  brownian_dim: 2
+  n_context: 4
+  hidden_units: 64
+  hidden_layers: 2
+  activation: SiLU
+  diffusion_epsilon: 1.0e-6   # softplus(raw) + eps; diffusion always positive
+  dt: 0.003968253968253968    # 1/252
+  horizon: 63                 # matching the frozen baseline suite
+  signature_level: 3          # truncated signature levels 1..3 (unchanged)
+
+training:
+  optimizer: AdamW
+  learning_rate: 0.001
+  weight_decay: 1.0e-6
+  batch_size: 64
+  max_epochs: 400
+  patience: 40
+  grad_norm_clip: 1.0
+  model_init_seed: 6261       # NEW v3 seeds
+  data_seed: 6262
+  eval_seed: 6263
+  fit_fraction: 0.8
+
+windows:
+  context_lookback: 22
+  horizon: 63
+  dt: 0.003968253968253968
+
+objective:
+  kernel: rbf
+  signature_level: 3
+  standardize_features: true
+  standardization_floor_eps: 1.0e-8
+  bandwidth_source: train_fit_real_standardized
+  bandwidth_method: median_pairwise_squared_distance
+  bandwidth_max_vectors: 512
+  variance_penalty_coefficient: 1.0
+  variance_eps: 1.0e-12
+  # v3 strengthened internal gate thresholds
+  gate_variance_ratio_lo: 0.50
+  gate_variance_ratio_hi: 2.00
+  gate_dispersion_ratio_lo: 0.50
+  gate_dispersion_ratio_hi: 2.00
+  gate_uniqueness_min: 0.99
+  gate_return_acf1_max_diff: 0.25
+  gate_drift_diffusion_ratio_max: 0.50
+  internal_gate_seed: 7777
+  internal_selection_paths_per_window: 16
+
+n_eval_paths: 1024
+eval_seed: 6263
