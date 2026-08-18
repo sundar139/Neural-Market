@@ -163,7 +163,10 @@ class ConditionalNeuralSde(nn.Module):
         noise: Tensor,
         dt: float | None = None,
     ) -> Tensor:
-        """Simulate ``horizon`` daily log returns with Euler-Maruyama.
+        """Simulate ``horizon`` daily log return increments with Euler-Maruyama.
+
+        The returned tensor contains one-step x-coordinate *increments*
+        (daily log returns), NOT cumulative state levels.
 
         Args:
             context: Shape ``(batch, n_context)`` training-normalized context.
@@ -173,8 +176,8 @@ class ConditionalNeuralSde(nn.Module):
             dt: Optional time step (defaults to the config ``dt``).
 
         Returns:
-            Daily log returns of shape ``(batch, horizon)`` (the ``x``
-            coordinate increments), always finite.
+            Daily log return increments of shape ``(batch, horizon)``.
+            Each element is x_{k+1} - x_k, always finite.
 
         Raises:
             RuntimeError: If any state, diffusion, or increment is non-finite.
@@ -210,7 +213,7 @@ class ConditionalNeuralSde(nn.Module):
             state = state + step
             if not torch.isfinite(state).all():
                 raise RuntimeError("non-finite state during simulation")
-            increments.append(state[:, 0].unsqueeze(1))
+            increments.append(step[:, 0].unsqueeze(1))
         return torch.cat(increments, dim=1)
 
 

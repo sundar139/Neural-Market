@@ -38,7 +38,7 @@ from neuralmarket.models.signature_mmd import (
     SignatureStandardizer,
     fit_rbf_bandwidth_sq,
     fit_signature_standardizer,
-    log_variance_penalty,
+    log_variance_penalty_per_path,
     rbf_mmd_sq,
     signature_feature_vector,
 )
@@ -169,10 +169,9 @@ def _evaluate_selection_v3(
     objective: V3ObjectiveConfig,
     standardizer: SignatureStandardizer,
     bandwidth_sq: float,
-    target_log_variance: float,
     generator: torch.Generator,
 ) -> tuple[Tensor, Tensor]:
-    """Selection RBF-MMD and total loss with lead-lag representation."""
+    """Selection RBF-MMD + per-path variance with lead-lag representation."""
     noise = torch.randn(
         sel_ctx.shape[0], spec.horizon, model.config.brownian_dim, generator=generator
     )
@@ -185,7 +184,7 @@ def _evaluate_selection_v3(
         generated, sel_ctx, cumret_scale, spec, objective, standardizer
     )
     rbf = rbf_mmd_sq(real_vectors, gen_vectors, bandwidth_sq)
-    penalty = log_variance_penalty(generated, target_log_variance, objective.variance_eps)
+    penalty = log_variance_penalty_per_path(generated, sel_targets, objective.variance_eps)
     total = rbf + objective.variance_penalty_coefficient * penalty
     return rbf, total
 
@@ -205,7 +204,6 @@ def train_internal_v3(
     objective = V3ObjectiveConfig() if objective is None else objective
     standardizer = statistics.standardizer
     bandwidth_sq = statistics.bandwidth_sq
-    target_log_variance = statistics.target_log_variance
     cumret_scale = fit_cumret_scale(training_returns.detach().cpu().numpy(), spec.horizon)
 
     fit_ctx, fit_targets, _ = _window_tensors(split.fit_windows, normalizer, cumret_scale, spec)
@@ -230,12 +228,12 @@ def train_internal_v3(
             objective,
             standardizer,
             bandwidth_sq,
-            target_log_variance,
             noise_gen,
         )
         return float(rbf.item()), float(total.item())
 
-    initial_rbf, _ = selection_scores()
+    initial_rbf, initial_sel_total = selection_scores()
+    best_total = initial_sel_total
     best_rbf = initial_rbf
     best_epoch = 0
     best_params = _param_snapshot(model)
@@ -281,7 +279,9 @@ def train_internal_v3(
                 standardizer,
             )
             rbf = rbf_mmd_sq(real_vectors, gen_vectors, bandwidth_sq)
-            penalty = log_variance_penalty(generated, target_log_variance, objective.variance_eps)
+            penalty = log_variance_penalty_per_path(
+                generated, batch_targets, objective.variance_eps
+            )
             total = rbf + objective.variance_penalty_coefficient * penalty
             if not torch.isfinite(total) or not torch.isfinite(rbf):
                 raise RuntimeError("non-finite v3 signature loss")
@@ -307,7 +307,8 @@ def train_internal_v3(
         selection_total_curve.append(sel_total)
         if not math.isfinite(sel_rbf):
             raise RuntimeError("non-finite v3 selection RBF-MMD")
-        if sel_rbf < best_rbf:
+        if sel_total < best_total:
+            best_total = sel_total
             best_rbf = sel_rbf
             best_epoch = epoch
             best_params = _param_snapshot(model)
@@ -317,10 +318,10 @@ def train_internal_v3(
             if epochs_without_improvement >= config.patience:
                 break
 
-    if best_epoch == 0 or best_rbf >= initial_rbf:
+    if best_epoch == 0 or best_total >= initial_sel_total:
         raise RuntimeError(
-            "V3 NO IMPROVEMENT: best RBF did not improve "
-            f"(initial={initial_rbf:.6e}, best={best_rbf:.6e})"
+            "V3 NO IMPROVEMENT: best total loss did not improve "
+            f"(initial={initial_sel_total:.6e}, best={best_total:.6e})"
         )
 
     state = model.state_dict()
@@ -356,7 +357,6 @@ def refit_final_v3(
     objective = V3ObjectiveConfig() if objective is None else objective
     standardizer = statistics.standardizer
     bandwidth_sq = statistics.bandwidth_sq
-    target_log_variance = statistics.target_log_variance
     cumret_scale = fit_cumret_scale(training_returns.detach().cpu().numpy(), spec.horizon)
 
     ctx, targets, _ = _window_tensors(windows, normalizer, cumret_scale, spec)
@@ -398,7 +398,9 @@ def refit_final_v3(
                 standardizer,
             )
             rbf = rbf_mmd_sq(real_vectors, gen_vectors, bandwidth_sq)
-            penalty = log_variance_penalty(generated, target_log_variance, objective.variance_eps)
+            penalty = log_variance_penalty_per_path(
+                generated, batch_targets, objective.variance_eps
+            )
             total = rbf + objective.variance_penalty_coefficient * penalty
             if not torch.isfinite(total):
                 raise RuntimeError("non-finite v3 loss during final refit")
@@ -505,18 +507,16 @@ def evaluate_internal_gate_v3(
         split.selection_windows, normalizer, cumret_scale, spec
     )
 
-    k = objective.internal_selection_paths_per_window
-    gen_ctx = sel_ctx.repeat_interleave(k, dim=0)
     gate_gen = torch.Generator().manual_seed(objective.internal_gate_seed)
     model.eval()
     with torch.no_grad():
         noise = torch.randn(
-            gen_ctx.shape[0],
+            sel_ctx.shape[0],
             spec.horizon,
             model.config.brownian_dim,
             generator=gate_gen,
         )
-        generated = model(gen_ctx, noise)
+        generated = model(sel_ctx, noise)
 
     gen_returns = generated.cpu().numpy()
     real_returns = sel_targets.cpu().numpy()
@@ -585,7 +585,7 @@ def evaluate_internal_gate_v3(
         "diffusion_increment_rms": diff_rms,
         "drift_diffusion_rms_ratio": dd_ratio,
         "internal_gate_seed": objective.internal_gate_seed,
-        "paths_per_window": k,
+        "paths_per_window": 1,
         "criterion_results": criterion_results,
         "gate_passed": gate_passed,
         "gate_variance_ratio_range": [

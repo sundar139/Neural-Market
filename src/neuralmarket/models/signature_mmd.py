@@ -240,25 +240,77 @@ def rbf_mmd_sq(real: Tensor, generated: Tensor, bandwidth_sq: float) -> Tensor:
     return mmd
 
 
-def log_variance_penalty(
-    generated: Tensor, target_log_variance: float, eps: float = 1e-12
-) -> Tensor:
-    """Training-only log-variance matching penalty (anti-collapse term).
+def per_path_variance(returns: Tensor) -> Tensor:
+    """Within-path population variance of daily returns for each path.
 
-    ``L = (log(var(generated) + eps) - target_log_variance)^2`` where
-    ``var`` is the population variance pooled over all generated daily returns
-    and ``target_log_variance`` is frozen from the real TRAINING-fit targets.
+    Computes the variance of each path's daily return increments
+    independently, without pooling across paths or mixing path means.
+
+    Args:
+        returns: ``(n_paths, horizon)`` daily log return increments.
+
+    Returns:
+        ``(n_paths,)`` tensor of per-path population variances.
+
+    Raises:
+        ValueError: If the input is malformed.
+    """
+    if returns.ndim != 2:
+        raise ValueError("returns must be (n_paths, horizon)")
+    if not returns.isfinite().all():
+        raise ValueError("returns must be finite")
+    return returns.var(dim=1, unbiased=False)
+
+
+def log_variance_penalty_per_path(
+    generated: Tensor,
+    real: Tensor,
+    eps: float = 1e-12,
+) -> Tensor:
+    """Per-path log-variance matching penalty (anti-collapse term).
+
+    For each path independently:
+        L_i = (log(var(gen_i) + eps) - log(var(real_i) + eps))^2
+
+    Then aggregates across the batch with mean.
+
+    This avoids conflating within-path and between-path variation.
 
     Args:
         generated: ``(n_paths, horizon)`` generated daily log returns.
-        target_log_variance: ``log(var_real_training_targets + eps)``.
+        real: ``(n_paths, horizon)`` real target daily log returns.
         eps: Positive floor so the log is always finite.
 
     Returns:
         Non-negative scalar penalty, differentiable in ``generated``.
 
     Raises:
-        ValueError: If the target is non-finite or generated is malformed.
+        ValueError: If inputs are malformed.
+    """
+    if not math.isfinite(eps) or eps <= 0.0:
+        raise ValueError("eps must be positive and finite")
+    if generated.ndim != 2 or real.ndim != 2:
+        raise ValueError("generated and real must be (n_paths, horizon)")
+    if generated.shape != real.shape:
+        raise ValueError("generated and real must have the same shape")
+    if not generated.isfinite().all():
+        raise ValueError("generated returns must be finite")
+    var_gen = per_path_variance(generated)
+    var_real = per_path_variance(real)
+    log_var_gen = torch.log(var_gen + eps)
+    log_var_real = torch.log(var_real + eps)
+    return torch.mean((log_var_gen - log_var_real) ** 2)
+
+
+def log_variance_penalty(
+    generated: Tensor, target_log_variance: float, eps: float = 1e-12
+) -> Tensor:
+    """DEPRECATED: pooled log-variance penalty. Use log_variance_penalty_per_path.
+
+    ``L = (log(var(generated) + eps) - target_log_variance)^2`` where
+    ``var`` is the population variance pooled over all generated daily returns.
+
+    This function is retained for backward compatibility only.
     """
     if not math.isfinite(target_log_variance):
         raise ValueError("target log-variance must be finite")

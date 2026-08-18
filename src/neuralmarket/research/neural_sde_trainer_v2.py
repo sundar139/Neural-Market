@@ -37,7 +37,7 @@ from neuralmarket.models.signature_mmd import (
     SignatureStandardizer,
     fit_rbf_bandwidth_sq,
     fit_signature_standardizer,
-    log_variance_penalty,
+    log_variance_penalty_per_path,
     rbf_mmd_sq,
     signature_feature_vector,
 )
@@ -191,10 +191,9 @@ def _evaluate_selection_v2(
     objective: V2ObjectiveConfig,
     standardizer: SignatureStandardizer,
     bandwidth_sq: float,
-    target_log_variance: float,
     generator: torch.Generator,
 ) -> tuple[Tensor, Tensor]:
-    """Selection RBF-MMD component and total loss (training-period selection only)."""
+    """Selection RBF-MMD + per-path variance (training-period selection only)."""
     noise = torch.randn(
         sel_ctx.shape[0], spec.horizon, model.config.brownian_dim, generator=generator
     )
@@ -207,7 +206,7 @@ def _evaluate_selection_v2(
         generated, sel_ctx, cumret_scale, spec, objective, standardizer
     )
     rbf = rbf_mmd_sq(real_vectors, gen_vectors, bandwidth_sq)
-    penalty = log_variance_penalty(generated, target_log_variance, objective.variance_eps)
+    penalty = log_variance_penalty_per_path(generated, sel_targets, objective.variance_eps)
     total = rbf + objective.variance_penalty_coefficient * penalty
     return rbf, total
 
@@ -252,7 +251,6 @@ def train_internal_v2(
     objective = V2ObjectiveConfig() if objective is None else objective
     standardizer = statistics.standardizer
     bandwidth_sq = statistics.bandwidth_sq
-    target_log_variance = statistics.target_log_variance
     cumret_scale = fit_cumret_scale(training_returns.detach().cpu().numpy(), spec.horizon)
 
     fit_ctx, fit_targets, _ = _window_tensors(split.fit_windows, normalizer, cumret_scale, spec)
@@ -277,12 +275,12 @@ def train_internal_v2(
             objective,
             standardizer,
             bandwidth_sq,
-            target_log_variance,
             noise_gen,
         )
         return float(rbf.item()), float(total.item())
 
-    initial_rbf, _ = selection_scores()
+    initial_rbf, initial_sel_total = selection_scores()
+    best_total = initial_sel_total
     best_rbf = initial_rbf
     best_epoch = 0
     best_params = _param_snapshot(model)
@@ -318,7 +316,9 @@ def train_internal_v2(
                 generated, batch_ctx, cumret_scale, spec, objective, standardizer
             )
             rbf = rbf_mmd_sq(real_vectors, gen_vectors, bandwidth_sq)
-            penalty = log_variance_penalty(generated, target_log_variance, objective.variance_eps)
+            penalty = log_variance_penalty_per_path(
+                generated, batch_targets, objective.variance_eps
+            )
             total = rbf + objective.variance_penalty_coefficient * penalty
             if not torch.isfinite(total) or not torch.isfinite(rbf):
                 raise RuntimeError("non-finite v2 signature loss during training")
@@ -344,7 +344,8 @@ def train_internal_v2(
         selection_total_curve.append(sel_total)
         if not math.isfinite(sel_rbf):
             raise RuntimeError("non-finite v2 internal-selection RBF-MMD")
-        if sel_rbf < best_rbf:
+        if sel_total < best_total:
+            best_total = sel_total
             best_rbf = sel_rbf
             best_epoch = epoch
             best_params = _param_snapshot(model)
@@ -354,10 +355,10 @@ def train_internal_v2(
             if epochs_without_improvement >= config.patience:
                 break
 
-    if best_epoch == 0 or best_rbf >= initial_rbf:
+    if best_epoch == 0 or best_total >= initial_sel_total:
         raise RuntimeError(
-            "V2 OBJECTIVE NO IMPROVEMENT: best internal-selection RBF-MMD did not "
-            f"improve on initial (initial={initial_rbf:.6e}, best={best_rbf:.6e})"
+            "V2 OBJECTIVE NO IMPROVEMENT: best internal-selection total loss did not "
+            f"improve on initial (initial={initial_sel_total:.6e}, best={best_total:.6e})"
         )
 
     state = model.state_dict()
@@ -408,7 +409,6 @@ def refit_final_v2(
     objective = V2ObjectiveConfig() if objective is None else objective
     standardizer = statistics.standardizer
     bandwidth_sq = statistics.bandwidth_sq
-    target_log_variance = statistics.target_log_variance
     cumret_scale = fit_cumret_scale(training_returns.detach().cpu().numpy(), spec.horizon)
 
     ctx, targets, _ = _window_tensors(windows, normalizer, cumret_scale, spec)
@@ -437,7 +437,9 @@ def refit_final_v2(
                 generated, batch_ctx, cumret_scale, spec, objective, standardizer
             )
             rbf = rbf_mmd_sq(real_vectors, gen_vectors, bandwidth_sq)
-            penalty = log_variance_penalty(generated, target_log_variance, objective.variance_eps)
+            penalty = log_variance_penalty_per_path(
+                generated, batch_targets, objective.variance_eps
+            )
             total = rbf + objective.variance_penalty_coefficient * penalty
             if not torch.isfinite(total):
                 raise RuntimeError("non-finite v2 loss during final refit")
@@ -513,15 +515,13 @@ def evaluate_internal_gate_v2(
         split.selection_windows, normalizer, cumret_scale, spec
     )
 
-    k = objective.internal_selection_paths_per_window
-    gen_ctx = sel_ctx.repeat_interleave(k, dim=0)  # (n_sel * k, 4)
     gate_gen = torch.Generator().manual_seed(objective.internal_gate_seed)
     model.eval()
     with torch.no_grad():
         noise = torch.randn(
-            gen_ctx.shape[0], spec.horizon, model.config.brownian_dim, generator=gate_gen
+            sel_ctx.shape[0], spec.horizon, model.config.brownian_dim, generator=gate_gen
         )
-        generated = model(gen_ctx, noise)
+        generated = model(sel_ctx, noise)
         # Deterministic sigma scan over a coarse (t, state, ctx) grid.
         scan_ctx = sel_ctx[: min(sel_ctx.shape[0], 32)]
         scan_t = torch.linspace(0.0, 1.0, 32)
@@ -563,7 +563,7 @@ def evaluate_internal_gate_v2(
         "diffusion_min": float(np.min(sigma_arr)),
         "diffusion_max": float(np.max(sigma_arr)),
         "internal_gate_seed": objective.internal_gate_seed,
-        "paths_per_window": k,
+        "paths_per_window": 1,
     }
     passed = bool(
         math.isfinite(dispersion_ratio)
