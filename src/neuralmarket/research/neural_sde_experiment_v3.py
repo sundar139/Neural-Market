@@ -68,6 +68,7 @@ EXPERIMENT_SCHEMA_V3: Literal["research-neural-sde-experiment-v3"] = (
     "research-neural-sde-experiment-v3"
 )
 
+# Frozen public artifact identities (allowlisted as public SHA fixtures).
 _FROZEN_SUITE_HASH = "445b1257210f34d9a9b29fbdf2ac4e9b64265f9b3f21e7084f97e4bd935f0099"
 _FROZEN_INVENTORY_HASH = "371c148315f2b7887f6e173587662f8ad31132bc6935e45a99cb9d0d4e76d119"
 _FROZEN_BENCHMARK_HASH = "2b0dd31e59a3e8becc638e432ca9274d7ab8b2b8829038407cbbfc1700d1593d"
