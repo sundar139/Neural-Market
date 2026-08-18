@@ -558,6 +558,24 @@ def run_neural_sde_experiment_v3(
     checkpoint_dir = output_root / config.version / config_hash[:16]
     checkpoint_path = checkpoint_dir / "checkpoint.pt"
 
+    # Always preserve checkpoint and training curve (evidence retention).
+    checkpoint_meta = _seal_checkpoint_v3(model, checkpoint_path, experiment_id)
+    curve_path = checkpoint_dir / "training_curve.json"
+    _write_json(
+        curve_path,
+        {
+            "experiment_id": experiment_id,
+            "rbf_curve": outcome.rbf_curve,
+            "total_curve": outcome.total_curve,
+            "selection_rbf_curve": outcome.selection_rbf_curve,
+            "selection_total_curve": outcome.selection_total_curve,
+            "initial_internal_rbf": outcome.initial_internal_rbf,
+            "best_internal_rbf": outcome.best_internal_rbf,
+            "best_epoch": outcome.best_epoch,
+        },
+    )
+    curve_sha = hashlib.sha256(curve_path.read_bytes()).hexdigest()
+
     if not gate_passed:
         evaluation: dict[str, Any] = {}
         data_audit = _data_value_of_information_audit_v3(config, split, gate_diagnostics)
@@ -585,6 +603,8 @@ def run_neural_sde_experiment_v3(
                 "percent_improvement": outcome.percent_improvement,
                 "best_epoch": outcome.best_epoch,
                 "final_epoch": outcome.final_epoch,
+                "training_curve_artifact": str(curve_path),
+                "training_curve_sha256": curve_sha,
             },
             internal_gate=dict(gate_diagnostics),
             model={
@@ -599,7 +619,7 @@ def run_neural_sde_experiment_v3(
                 "dtype": str(dtype),
                 "determinism": {"use_deterministic_algorithms": True, "mixed_precision": False},
             },
-            checkpoint={"path": str(checkpoint_path), "sha256": "", "bytes": 0},
+            checkpoint=checkpoint_meta,
             v1_preservation={
                 "v1_config_file_sha256": v1_config_sha,
                 "v1_checkpoint_sha256": v1_checkpoint_sha,
@@ -616,7 +636,7 @@ def run_neural_sde_experiment_v3(
             data_value_of_information=data_audit,
             provenance={
                 "evaluation_utc_iso": start.isoformat(),
-                "status": "V3 INTERNAL GATE FAILED",
+                "status": f"{config.version.upper()} INTERNAL GATE FAILED",
                 "note": "internal gate failed; external validation NOT loaded",
             },
             artifact_hash="",
@@ -651,6 +671,7 @@ def run_neural_sde_experiment_v3(
         spec,
         config.objective,
     )
+    # Overwrite checkpoint with refitted model (already saved pre-gate for evidence).
     checkpoint_meta = _seal_checkpoint_v3(final_model, checkpoint_path, experiment_id)
 
     # External validation loaded only after gate pass and refit
@@ -755,7 +776,7 @@ def run_neural_sde_experiment_v3(
         data_value_of_information={},
         provenance={
             "evaluation_utc_iso": start.isoformat(),
-            "status": "SIGNATURE NEURAL SDE V3 READY",
+            "status": f"{config.version.upper().replace('-', ' ')} READY",
             "note": "timestamp is provenance only; excluded from canonical identity",
         },
         artifact_hash="",
