@@ -76,36 +76,92 @@ class GateSpecV2:
         ).hexdigest()
 
 
+_FROZEN_GATE_V2_PATH = "configs/research/neural_sde_internal_gate_v2.yaml"
+_EXPECTED_VERSION = "neural-sde-internal-gate-v2"
+
+_REQUIRED_NESTED_KEYS = {
+    "bootstrap": [
+        "method",
+        "block_length",
+        "terminal_path_count",
+        "generated_path_count",
+        "horizon",
+        "seed",
+    ],
+    "terminal_dispersion": ["band_lo", "band_hi", "status"],
+    "serial_dependence": ["lags"],
+    "variance_ratio": ["band_lo", "band_hi", "status"],
+    "path_uniqueness": ["min_fraction", "status"],
+    "drift_diffusion_ratio": ["max_ratio", "status"],
+}
+
+
 def load_gate_spec_v2(path: str | None = None) -> GateSpecV2:
-    """Load gate spec from YAML, or return defaults."""
+    """Load gate spec from frozen YAML.
+
+    Fail-closed for missing path, wrong version, or missing keys.
+    """
     if path is None:
-        return GateSpecV2()
+        raise ValueError(
+            "load_gate_spec_v2 requires an explicit YAML path; "
+            "pass the frozen gate-v2 config path, not None"
+        )
     with open(path) as f:
         data = yaml.safe_load(f)
-    bs = data.get("bootstrap", {})
-    td = data.get("terminal_dispersion", {})
-    sd = data.get("serial_dependence", {})
-    vr = data.get("variance_ratio", {})
-    pu = data.get("path_uniqueness", {})
-    dd = data.get("drift_diffusion_ratio", {})
+    if not isinstance(data, dict):
+        raise ValueError(f"gate-v2 YAML is not a dict: {path}")
+
+    # Version check
+    version = data.get("version")
+    if version != _EXPECTED_VERSION:
+        raise ValueError(
+            f"gate-v2 YAML version mismatch: expected {_EXPECTED_VERSION!r}, got {version!r}"
+        )
+
+    # Required nested sections
+    for section, keys in _REQUIRED_NESTED_KEYS.items():
+        section_data = data.get(section)
+        if not isinstance(section_data, dict):
+            raise ValueError(f"gate-v2 YAML missing required section: {section}")
+        for key in keys:
+            if key not in section_data:
+                raise ValueError(f"gate-v2 YAML missing required key: {section}.{key}")
+
+    bs = data["bootstrap"]
+    td = data["terminal_dispersion"]
+    sd = data["serial_dependence"]
+    vr = data["variance_ratio"]
+    pu = data["path_uniqueness"]
+    dd = data["drift_diffusion_ratio"]
+
+    # gate_seed: use bootstrap.seed as the gate-seed for model path generation
+    # unless a separate gate_seed is explicitly provided
+    gate_seed = bs.get("gate_seed", bs["seed"])
+
     return GateSpecV2(
-        bootstrap_method=bs.get("method", "block"),
-        block_length=bs.get("block_length", 22),
-        terminal_path_count=bs.get("terminal_path_count", 1024),
-        generated_path_count=bs.get("generated_path_count", 1024),
-        horizon=bs.get("horizon", 63),
-        bootstrap_seed=bs.get("seed", 8801),
-        dispersion_band_lo=td.get("band_lo", 0.50),
-        dispersion_band_hi=td.get("band_hi", 2.00),
+        bootstrap_method=bs["method"],
+        block_length=bs["block_length"],
+        terminal_path_count=bs["terminal_path_count"],
+        generated_path_count=bs["generated_path_count"],
+        horizon=bs["horizon"],
+        bootstrap_seed=bs["seed"],
+        dispersion_band_lo=td["band_lo"],
+        dispersion_band_hi=td["band_hi"],
         acf_lags=tuple(sd.get("lags", [1, 2, 3, 5, 10, 20])),
-        acf_max_lag_error=sd.get("max_lag_error_threshold", 0.25),
-        acf_rmse_threshold=sd.get("rmse_threshold", 0.15),
-        acf1_max_diff=sd.get("acf1_threshold", 0.25),
-        variance_ratio_lo=vr.get("band_lo", 0.50),
-        variance_ratio_hi=vr.get("band_hi", 2.00),
-        uniqueness_min=pu.get("min_fraction", 0.99),
-        drift_diffusion_max=dd.get("max_ratio", 0.50),
-        gate_seed=data.get("terminal_dispersion", {}).get("gate_seed", 7777) if False else 7777,
+        acf_max_lag_error=sd.get("acf1", {}).get("threshold", 0.25)
+        if isinstance(sd.get("acf1"), dict)
+        else 0.25,
+        acf_rmse_threshold=sd.get("rmse", {}).get("diagnostic_reference", 0.15)
+        if isinstance(sd.get("rmse"), dict)
+        else 0.15,
+        acf1_max_diff=sd.get("acf1", {}).get("threshold", 0.25)
+        if isinstance(sd.get("acf1"), dict)
+        else 0.25,
+        variance_ratio_lo=vr["band_lo"],
+        variance_ratio_hi=vr["band_hi"],
+        uniqueness_min=pu["min_fraction"],
+        drift_diffusion_max=dd["max_ratio"],
+        gate_seed=gate_seed,
     )
 
 
@@ -208,6 +264,14 @@ def evaluate_gate_v2(
     n_gen = gate_spec.generated_path_count
     n_real_boot = gate_spec.terminal_path_count
 
+    # Canonical chronological internal-selection daily return series.
+    # The selection windows overlap; we must NOT ravel them.  Instead,
+    # extract the contiguous tail of the original training return array
+    # starting at the first selection target index.
+    selection_daily_returns = (
+        training_returns.detach().cpu().numpy()[split.selection_target_start_index :]
+    )
+
     # Generate model paths
     gate_gen = torch.Generator().manual_seed(gate_spec.gate_seed)
     model.eval()
@@ -223,10 +287,9 @@ def evaluate_gate_v2(
 
     gen_returns = generated.cpu().numpy()
 
-    # Bootstrap real reference distribution
-    real_flat = selection_returns_real.ravel()
+    # Bootstrap real reference distribution from contiguous selection returns
     real_boot_returns = sample_block_bootstrap(
-        real_flat,
+        selection_daily_returns,
         n_real_boot,
         spec.horizon,
         block_length=gate_spec.block_length,
@@ -259,12 +322,12 @@ def evaluate_gate_v2(
 
     # --- Daily variance ratio ---
     gen_var = float(np.var(gen_returns))
-    real_var = float(np.var(selection_returns_real))
+    real_var = float(np.var(selection_daily_returns))
     variance_ratio = gen_var / real_var if real_var > 0.0 else float("nan")
 
     # --- Multi-lag ACF ---
     gen_flat = gen_returns.ravel()
-    real_sel_flat = selection_returns_real.ravel()
+    real_sel_flat = selection_daily_returns.ravel()
     gen_acf = _multi_lag_acf(gen_flat, gate_spec.acf_lags)
     real_acf = _multi_lag_acf(real_sel_flat, gate_spec.acf_lags)
     acf_rmse = _acf_rmse(real_acf, gen_acf)

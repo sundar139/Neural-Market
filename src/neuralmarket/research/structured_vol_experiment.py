@@ -41,6 +41,7 @@ from neuralmarket.models.structured_vol_sde import (
     simulate_structured,
 )
 from neuralmarket.research.neural_sde_internal_gate import (
+    _EXPECTED_VERSION,
     evaluate_gate_v2,
     load_gate_spec_v2,
 )
@@ -174,7 +175,13 @@ def run_v5_experiment(
     )
 
     # Gate v2 evaluation (frozen gate specification)
-    gate_spec = load_gate_spec_v2()
+    gate_spec_path = str(
+        Path(__file__).resolve().parents[2]
+        / "configs"
+        / "research"
+        / "neural_sde_internal_gate_v2.yaml"
+    )
+    gate_spec = load_gate_spec_v2(gate_spec_path)
     gate_diagnostics, gate_passed = evaluate_gate_v2(
         model,  # type: ignore[arg-type]
         split,
@@ -290,12 +297,11 @@ def run_v5_experiment(
         "config_file_sha256": config_file_sha256,
         "status": status,
         "gate_passed": gate_passed,
-        "gate_v2_spec_path": "configs/research/neural_sde_internal_gate_v2.yaml",
-        "gate_v2_file_sha256": hashlib.sha256(
-            Path("configs/research/neural_sde_internal_gate_v2.yaml").read_bytes()
-        ).hexdigest(),
+        "gate_v2_spec_path": gate_spec_path,
+        "gate_v2_file_sha256": hashlib.sha256(Path(gate_spec_path).read_bytes()).hexdigest(),
         "gate_v2_canonical_hash": gate_spec.spec_hash(),
-        "gate_v2_version": gate_spec.bootstrap_method,
+        "gate_v2_version": _EXPECTED_VERSION,
+        "gate_v2_evaluator": "neuralmarket.research.neural_sde_internal_gate.evaluate_gate_v2",
         "gate_diagnostics": gate_diagnostics,
         "training": {
             "fit_population": split.n_fit,
@@ -309,8 +315,8 @@ def run_v5_experiment(
             "architecture": "structured_volatility_neural_sde",
             "parameter_count": n_params,
             "a_positive": float(model.a_positive.item()),
-            "v_clamp_min": -10.0,
-            "v_clamp_max": 10.0,
+            "v_clamp_min": config.sde.v_clamp_min,
+            "v_clamp_max": config.sde.v_clamp_max,
         },
         "checkpoint": {"path": str(checkpoint_path), "sha256": checkpoint_sha},
         "curve": {"path": str(curve_path), "sha256": curve_sha},

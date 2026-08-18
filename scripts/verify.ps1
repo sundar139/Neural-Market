@@ -18,7 +18,8 @@ function Assert-LastExitCode {
     )
 
     if ($LASTEXITCODE -ne 0) {
-        throw "Verification failed: $CommandName exited with code $LASTEXITCODE."
+        Write-Host "FAIL: $CommandName exited with code $LASTEXITCODE." -ForegroundColor Red
+        exit 1
     }
 }
 

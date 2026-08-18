@@ -44,6 +44,8 @@ class StructuredVolConfig:
     dt: float = 1.0 / 252.0
     horizon: int = 63
     signature_level: int = 3
+    v_clamp_min: float = -10.0
+    v_clamp_max: float = 10.0
 
     def config_hash(self) -> str:
         """Deterministic identity of the config."""
@@ -60,6 +62,8 @@ class StructuredVolConfig:
                     "dt": self.dt,
                     "horizon": self.horizon,
                     "signature_level": self.signature_level,
+                    "v_clamp_min": self.v_clamp_min,
+                    "v_clamp_max": self.v_clamp_max,
                 }
             ).encode("utf-8")
         ).hexdigest()
@@ -235,8 +239,8 @@ class StructuredVolatilityNeuralSde(nn.Module):
                 raise RuntimeError("non-finite state increment")
 
             state = state + torch.cat([dx, dV], dim=1)
-            # Clamp V to prevent numerical divergence
-            state = torch.clamp(state, min=-10.0, max=10.0)
+            # Clamp only latent V, not X
+            state[:, 1:2] = torch.clamp(state[:, 1:2], min=cfg.v_clamp_min, max=cfg.v_clamp_max)
             if not torch.isfinite(state).all():
                 raise RuntimeError("non-finite state during simulation")
 

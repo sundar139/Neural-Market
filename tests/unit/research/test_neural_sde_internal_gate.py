@@ -259,8 +259,26 @@ class TestGateSpecHash:
     def test_load_from_yaml(self) -> None:
         import tempfile
 
+        valid_yaml = {
+            "version": "neural-sde-internal-gate-v2",
+            "bootstrap": {
+                "method": "block",
+                "block_length": 22,
+                "terminal_path_count": 1024,
+                "generated_path_count": 1024,
+                "horizon": 63,
+                "seed": 8801,
+            },
+            "terminal_dispersion": {"band_lo": 0.5, "band_hi": 2.0, "status": "pass_fail"},
+            "serial_dependence": {"lags": [1, 2, 3, 5, 10, 20]},
+            "variance_ratio": {"band_lo": 0.5, "band_hi": 2.0, "status": "pass_fail"},
+            "path_uniqueness": {"min_fraction": 0.99, "status": "pass_fail"},
+            "drift_diffusion_ratio": {"max_ratio": 0.5, "status": "pass_fail"},
+        }
         with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
-            f.write("bootstrap:\n  method: block\n  block_length: 22\n")
+            import yaml as _yaml
+
+            _yaml.dump(valid_yaml, f)
             f.flush()
             spec = load_gate_spec_v2(f.name)
         assert spec.bootstrap_method == "block"
