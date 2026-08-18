@@ -48,6 +48,7 @@ class GateSpecV2:
     uniqueness_min: float = 0.99
     drift_diffusion_max: float = 0.50
     gate_seed: int = 7777
+    drift_diffusion_seed: int = 7778
 
     def spec_hash(self) -> str:
         """Deterministic canonical hash of the gate specification."""
@@ -71,6 +72,7 @@ class GateSpecV2:
                     "uniqueness_min": self.uniqueness_min,
                     "drift_diffusion_max": self.drift_diffusion_max,
                     "gate_seed": self.gate_seed,
+                    "drift_diffusion_seed": self.drift_diffusion_seed,
                 }
             ).encode()
         ).hexdigest()
@@ -87,9 +89,11 @@ _REQUIRED_NESTED_KEYS = {
         "generated_path_count",
         "horizon",
         "seed",
+        "gate_seed",
+        "drift_diffusion_seed",
     ],
     "terminal_dispersion": ["band_lo", "band_hi", "status"],
-    "serial_dependence": ["lags"],
+    "serial_dependence": ["lags", "acf1", "rmse", "max_error"],
     "variance_ratio": ["band_lo", "band_hi", "status"],
     "path_uniqueness": ["min_fraction", "status"],
     "drift_diffusion_ratio": ["max_ratio", "status"],
@@ -134,9 +138,27 @@ def load_gate_spec_v2(path: str | None = None) -> GateSpecV2:
     pu = data["path_uniqueness"]
     dd = data["drift_diffusion_ratio"]
 
-    # gate_seed: use bootstrap.seed as the gate-seed for model path generation
-    # unless a separate gate_seed is explicitly provided
-    gate_seed = bs.get("gate_seed", bs["seed"])
+    # ACF(1) is a pass/fail criterion: its threshold and status are required.
+    acf1 = sd["acf1"]
+    if not isinstance(acf1, dict) or "threshold" not in acf1 or "status" not in acf1:
+        raise ValueError(
+            "gate-v2 YAML missing required key: serial_dependence.acf1.threshold/status"
+        )
+    if acf1["status"] != "pass_fail":
+        raise ValueError(f"gate-v2 YAML ACF(1) status must be pass_fail, got {acf1['status']!r}")
+
+    # Report-only nested references are bound to their exact fields (never to
+    # the ACF(1) threshold).
+    rmse = sd["rmse"]
+    max_error = sd["max_error"]
+    if not isinstance(rmse, dict) or "diagnostic_reference" not in rmse:
+        raise ValueError(
+            "gate-v2 YAML missing required key: serial_dependence.rmse.diagnostic_reference"
+        )
+    if not isinstance(max_error, dict) or "diagnostic_reference" not in max_error:
+        raise ValueError(
+            "gate-v2 YAML missing required key: serial_dependence.max_error.diagnostic_reference"
+        )
 
     return GateSpecV2(
         bootstrap_method=bs["method"],
@@ -147,22 +169,37 @@ def load_gate_spec_v2(path: str | None = None) -> GateSpecV2:
         bootstrap_seed=bs["seed"],
         dispersion_band_lo=td["band_lo"],
         dispersion_band_hi=td["band_hi"],
-        acf_lags=tuple(sd.get("lags", [1, 2, 3, 5, 10, 20])),
-        acf_max_lag_error=sd.get("acf1", {}).get("threshold", 0.25)
-        if isinstance(sd.get("acf1"), dict)
-        else 0.25,
-        acf_rmse_threshold=sd.get("rmse", {}).get("diagnostic_reference", 0.15)
-        if isinstance(sd.get("rmse"), dict)
-        else 0.15,
-        acf1_max_diff=sd.get("acf1", {}).get("threshold", 0.25)
-        if isinstance(sd.get("acf1"), dict)
-        else 0.25,
+        acf_lags=tuple(sd["lags"]),
+        acf_max_lag_error=float(max_error["diagnostic_reference"]),
+        acf_rmse_threshold=float(rmse["diagnostic_reference"]),
+        acf1_max_diff=float(acf1["threshold"]),
         variance_ratio_lo=vr["band_lo"],
         variance_ratio_hi=vr["band_hi"],
         uniqueness_min=pu["min_fraction"],
         drift_diffusion_max=dd["max_ratio"],
-        gate_seed=gate_seed,
+        gate_seed=bs["gate_seed"],
+        drift_diffusion_seed=bs["drift_diffusion_seed"],
     )
+
+
+def selection_returns_series(
+    training_returns: torch.Tensor, split: FitSelectionSplit
+) -> np.ndarray:
+    """Contiguous chronological selection tail used as the bootstrap population.
+
+    This is the production path used by ``evaluate_gate_v2``: the original
+    training return array starting at the first selection target index.  It is
+    never the raveled overlapping selection windows, which would duplicate
+    observations and distort the bootstrap reference distribution.
+
+    Args:
+        training_returns: Training-period daily log returns.
+        split: Frozen fit/selection split.
+
+    Returns:
+        The contiguous chronological selection return series.
+    """
+    return training_returns.detach().cpu().numpy()[split.selection_target_start_index :]
 
 
 def _acf(x: np.ndarray, lag: int) -> float:
@@ -268,9 +305,7 @@ def evaluate_gate_v2(
     # The selection windows overlap; we must NOT ravel them.  Instead,
     # extract the contiguous tail of the original training return array
     # starting at the first selection target index.
-    selection_daily_returns = (
-        training_returns.detach().cpu().numpy()[split.selection_target_start_index :]
-    )
+    selection_daily_returns = selection_returns_series(training_returns, split)
 
     # Generate model paths
     gate_gen = torch.Generator().manual_seed(gate_spec.gate_seed)
@@ -347,7 +382,7 @@ def evaluate_gate_v2(
     uniqueness = len(fingerprints) / min(gen_returns.shape[0], 2048)
 
     # --- Drift/diffusion ratio ---
-    drift_gen = torch.Generator().manual_seed(gate_spec.gate_seed + 1)
+    drift_gen = torch.Generator().manual_seed(gate_spec.drift_diffusion_seed)
     drift_rms, diff_rms = _drift_diffusion_rms(model, sel_ctx, spec, 64, drift_gen)
     dd_ratio = drift_rms / diff_rms if diff_rms > 0.0 else float("inf")
 

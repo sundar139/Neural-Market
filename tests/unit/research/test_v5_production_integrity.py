@@ -51,6 +51,11 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 _GATE_YAML = _REPO_ROOT / _FROZEN_GATE_V2_PATH
 _V5_YAML = _REPO_ROOT / "configs/research/structured_vol_neural_sde_v5.yaml"
 
+# Documented corrected prospective v5 run identity (prefix 5bdbaabd2fb257a7).
+_FROZEN_V5_RUN_HASH = (
+    "5bdbaabd2fb257a7a82b8c600403e638d860520aa4952055a1b153894caf4157"  # pragma: allowlist secret
+)
+
 
 # ── A. Gate-v2 YAML loading ──────────────────────────────────────────
 
@@ -669,9 +674,7 @@ class TestExperimentConfigIdentity:
         run identity is unchanged.
         """
         cfg = svx.load_v5_config(_V5_YAML)
-        assert cfg.config_hash() == (
-            "5bdbaabd2fb257a7a82b8c600403e638d860520aa4952055a1b153894caf4157"  # pragma: allowlist secret
-        )
+        assert cfg.config_hash() == _FROZEN_V5_RUN_HASH
 
     def test_config_hash_untouched_by_metadata_representation(self, tmp_path: Path) -> None:
         """Same scientific values, different YAML representation -> same hash."""

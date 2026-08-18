@@ -120,10 +120,14 @@ class StructuredVolatilityNeuralSde(nn.Module):
         # V0 initializer: context -> V0
         self.v0_layer = nn.Linear(cfg.n_context, 1)
 
+        # Optional test-only diagnostic trace of internal per-step states.
+        # None until enabled; never affects the production forward path.
+        self.state_trace: dict[str, list[Tensor]] | None = None
+
     @property
     def a_positive(self) -> Tensor:
         """Positive slope parameter via softplus."""
-        return torch.nn.functional.softplus(self.a_raw) + 1e-6
+        return torch.nn.functional.softplus(self.a_raw) + self.config.diffusion_epsilon
 
     def _state_input(self, t: Tensor, state: Tensor, context: Tensor) -> Tensor:
         if t.ndim == 1:
@@ -238,11 +242,25 @@ class StructuredVolatilityNeuralSde(nn.Module):
             if not torch.isfinite(dx).all() or not torch.isfinite(dV).all():
                 raise RuntimeError("non-finite state increment")
 
-            state = state + torch.cat([dx, dV], dim=1)
-            # Clamp only latent V, not X
-            state[:, 1:2] = torch.clamp(state[:, 1:2], min=cfg.v_clamp_min, max=cfg.v_clamp_max)
+            proposal = state + torch.cat([dx, dV], dim=1)
+            # Clamp only latent V, not X.  Out-of-place: the previous in-place
+            # slice assignment broke autograd (total.backward() raised
+            # "modified by an inplace operation").
+            state = torch.cat(
+                [
+                    proposal[:, 0:1],
+                    torch.clamp(proposal[:, 1:2], min=cfg.v_clamp_min, max=cfg.v_clamp_max),
+                ],
+                dim=1,
+            )
             if not torch.isfinite(state).all():
                 raise RuntimeError("non-finite state during simulation")
+
+            trace = self.state_trace
+            if trace is not None:
+                trace["x"].append(proposal[:, 0:1])
+                trace["v_proposal"].append(proposal[:, 1:2])
+                trace["v"].append(state[:, 1:2])
 
             increments.append(dx)
 

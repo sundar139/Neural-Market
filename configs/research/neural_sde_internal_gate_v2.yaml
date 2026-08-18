@@ -11,7 +11,13 @@ bootstrap:
   terminal_path_count: 1024        # real bootstrap paths
   generated_path_count: 1024       # generated paths (must match real)
   horizon: 63                      # trading days
-  seed: 8801                       # frozen gate seed, distinct from model seeds
+  seed: 8801                       # frozen bootstrap seed, distinct from model seeds
+  # Explicit formalization of the previously implicit accepted semantics:
+  # the gate-v2 loader at c5105331 always used gate_seed=7777 for generated
+  # model paths and gate_seed+1=7778 for the drift/diffusion diagnostic.
+  # These values are unchanged; only their explicit representation is new.
+  gate_seed: 7777                  # frozen generated-path seed (accepted semantics)
+  drift_diffusion_seed: 7778       # frozen drift/diffusion diagnostic seed (accepted semantics)
 
 terminal_dispersion:
   metric: std_ratio                # std_generated / std_real_bootstrap

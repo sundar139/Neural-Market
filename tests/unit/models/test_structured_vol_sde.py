@@ -25,30 +25,59 @@ class TestOutputSemantics:
         out = model(ctx, noise)
         assert out.shape == (3, 5)
 
-    def test_cumsum_reconstructs_x(self) -> None:
+    @pytest.mark.parametrize("clamp", [False, True])
+    def test_cumsum_reconstructs_internal_x(self, clamp: bool) -> None:
+        """Public increments cumsum to the ACTUAL internal X levels of the same pass.
+
+        Negative control: the historical ``test_cumsum_reconstructs_x`` only
+        compared ``cumsum(out)`` against ``out`` itself (true by definition of
+        cumsum), so it passed even if the model had returned cumulative levels
+        or never kept a real recurrent X.  This version compares against the
+        internal X states recorded during the very same forward pass, over >1
+        timesteps on a nontrivial random path, with the V clamp both inactive
+        and active.
+        """
         torch.manual_seed(42)
-        model = StructuredVolatilityNeuralSde(StructuredVolConfig(horizon=10))
+        cfg = StructuredVolConfig(
+            horizon=10,
+            v_clamp_min=-0.1 if clamp else -10.0,
+            v_clamp_max=0.1 if clamp else 10.0,
+        )
+        model = StructuredVolatilityNeuralSde(cfg)
+        model.state_trace = {"x": [], "v_proposal": [], "v": []}
         ctx = torch.randn(4, 4)
         noise = torch.randn(4, 10, 2)
-        out = model(ctx, noise)
+        with torch.no_grad():
+            out = model(ctx, noise)
+        internal_x = torch.cat(model.state_trace["x"], dim=1)  # (4, 10)
         levels = out.cumsum(dim=1)
+        assert levels.shape == (4, 10)
         assert torch.isfinite(levels).all()
-        assert torch.allclose(levels[:, 0], out[:, 0])
-
-    def test_output_not_levels(self) -> None:
-        """On a deterministic nontrivial path, increment != level after step 0."""
-        torch.manual_seed(42)
-        model = StructuredVolatilityNeuralSde(StructuredVolConfig(horizon=5))
-        ctx = torch.randn(3, 4)
-        noise = torch.randn(3, 5, 2)
-        out = model(ctx, noise)
-        levels = out.cumsum(dim=1)
-        # For a nontrivial path, at least one element at step 1+ must differ
-        # (increment is dx, level is cumulative x; they differ unless dx=0 everywhere)
-        diffs = (out[:, 1:] - levels[:, 1:]).abs()
-        assert diffs.max().item() > 1e-6, (
-            "Increments should differ from cumulative levels for nontrivial paths"
+        assert torch.allclose(levels, internal_x, atol=1e-5), (
+            "public increments must cumsum to the model's internal X levels"
         )
+        # Nontrivial path: increments differ from cumulative levels after step 0.
+        diffs = (out[:, 1:] - levels[:, 1:]).abs()
+        assert diffs.max().item() > 1e-6, "path must be nontrivial"
+
+    def test_internal_x_can_exceed_tight_v_bounds(self) -> None:
+        """X is never clipped by the V clamp; internal X may exceed |V bound|."""
+        torch.manual_seed(0)
+        cfg = StructuredVolConfig(horizon=30, v_clamp_min=-0.1, v_clamp_max=0.1)
+        model = StructuredVolatilityNeuralSde(cfg)
+        model.state_trace = {"x": [], "v_proposal": [], "v": []}
+        ctx = torch.randn(1, 4)
+        noise = torch.randn(1, 30, 2)
+        noise[:, :, 0] = 5.0  # strong X diffusion so X moves regardless of V
+        with torch.no_grad():
+            out = model(ctx, noise)
+        internal_x = torch.cat(model.state_trace["x"], dim=1)
+        v = torch.cat(model.state_trace["v"], dim=1)
+        # X wanders far beyond O(0.1) while post-clamp V stays within bounds.
+        assert internal_x.abs().max().item() > cfg.v_clamp_max + 1e-3
+        assert v.min().item() >= cfg.v_clamp_min - 1e-6
+        assert v.max().item() <= cfg.v_clamp_max + 1e-6
+        assert torch.allclose(out.cumsum(dim=1), internal_x, atol=1e-5)
 
 
 class TestPositiveDiffusion:
@@ -271,3 +300,81 @@ class TestGateV2Wiring:
         assert spec1.spec_hash() != spec2.spec_hash()
         # However, the gate criteria dict keys remain the same
         assert set(spec1.__dict__.keys()) == set(spec2.__dict__.keys())
+
+
+class TestAutogradBackward:
+    """D. Differentiable recurrence: total.backward() with finite nonzero gradients.
+
+    Negative control: the previous forward applied an in-place slice assignment
+    ``state[:, 1:2] = torch.clamp(...)`` inside the multi-step recurrence.
+    Under autograd that raised "one of the variables needed for gradient
+    computation has been modified by an inplace operation" at ``total.backward()``,
+    so no production training step could run.  This test drives the same
+    differentiable forward used by ``train_internal_v3`` (not the no_grad
+    ``simulate_structured`` wrapper) and asserts backward completes with finite,
+    non-zero gradients on the recurrent-V-dependent parameters.
+    """
+
+    def test_backward_through_recurrent_v(self) -> None:
+        torch.manual_seed(7)
+        model = StructuredVolatilityNeuralSde(StructuredVolConfig(horizon=8))
+        ctx = torch.randn(2, 4)
+        noise = torch.randn(2, 8, 2)
+        out = model(ctx, noise)
+        total = out.square().mean()
+        total.backward()  # must not raise an inplace-autograd error
+
+        grads = {n: p.grad for n, p in model.named_parameters() if p.grad is not None}
+        assert len(grads) > 0
+        # The sigma_x slope/intercept and the V-dynamics heads all depend on the
+        # recurrent V state and must carry gradients.
+        for name in ("a_raw", "b_param"):
+            assert name in grads, f"missing gradient on {name}"
+            assert torch.isfinite(grads[name]).all(), f"non-finite gradient: {name}"
+        v_heads = {"theta_net.0.weight", "kappa_net.0.weight", "eta_net.0.weight"}
+        assert v_heads & set(grads), "V-dynamics heads must receive gradients"
+
+        nonzero = [
+            n for n, g in grads.items() if n in ("a_raw", "b_param") and torch.count_nonzero(g) > 0
+        ]
+        assert nonzero, "at least one relevant gradient must have non-zero magnitude"
+
+
+class TestConfigIdentity:
+    """L. Material constants drive config identity; representation does not."""
+
+    def test_material_change_alters_hash(self) -> None:
+        base = StructuredVolConfig()
+        for kwargs in (
+            {"diffusion_epsilon": 1e-4},
+            {"v_clamp_max": 11.0},
+            {"v_clamp_min": -11.0},
+            {"horizon": 64},
+        ):
+            assert StructuredVolConfig(**kwargs).config_hash() != base.config_hash()
+
+    def test_identical_representation_same_hash(self) -> None:
+        h1 = StructuredVolConfig().config_hash()
+        h2 = StructuredVolConfig(
+            state_dim=2,
+            brownian_dim=2,
+            n_context=4,
+            hidden_units=64,
+            hidden_layers=2,
+            activation="SiLU",
+            diffusion_epsilon=1e-6,
+            dt=1 / 252,
+            horizon=63,
+            signature_level=3,
+            v_clamp_min=-10.0,
+            v_clamp_max=10.0,
+        ).config_hash()
+        assert h1 == h2
+
+    def test_a_positive_floor_is_config_driven(self) -> None:
+        """The sigma_x slope floor is config.diffusion_epsilon, not a hardcoded literal."""
+        cfg = StructuredVolConfig(diffusion_epsilon=1e-4)
+        model = StructuredVolatilityNeuralSde(cfg)
+        base = torch.nn.functional.softplus(model.a_raw).detach()
+        a = model.a_positive.detach()
+        assert torch.allclose(a - base, torch.tensor(cfg.diffusion_epsilon), atol=1e-5)

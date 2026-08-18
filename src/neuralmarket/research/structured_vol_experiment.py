@@ -28,7 +28,10 @@ from neuralmarket.data.research.sde_windows import (
     fit_feature_normalizer,
     split_fit_selection,
 )
-from neuralmarket.data.research.underlying import build_underlying_series
+from neuralmarket.data.research.underlying import (
+    EmpiricalUnderlyingSeries,
+    build_underlying_series,
+)
 from neuralmarket.eval.scorecard import MetricSpecification
 from neuralmarket.models.neural_sde import (
     configure_determinism,
@@ -105,6 +108,51 @@ def load_v5_config(path: Path) -> V5ExperimentConfig:
     )
 
 
+def build_validation_identity(
+    *,
+    validation_series: EmpiricalUnderlyingSeries,
+    eval_ctx_window: SdeWindow,
+    checkpoint_sha256: str,
+    benchmark_path: Path,
+    config_hash: str,
+    gate_spec_hash: str,
+) -> dict[str, Any]:
+    """Schema for future external-validation provenance, computed from real objects.
+
+    The validation series SHA, split name, date range, observation count, the
+    context/window identity, the final checkpoint SHA, the baseline-suite SHA,
+    the model config hash, and the gate spec hash are all derived from the
+    actual objects/files present at the future run.  No value is hardcoded.
+    """
+    returns = validation_series.returns_array
+    return {
+        "validation_series_sha256": hashlib.sha256(
+            canonical_dumps({"returns": [float(v) for v in returns]}).encode("utf-8")
+        ).hexdigest(),
+        "validation_split": "validation",
+        "validation_start_date": str(validation_series.session_dates[0]),
+        "validation_end_date": str(validation_series.session_dates[-1]),
+        "validation_observation_count": len(returns),
+        "context_window_id": eval_ctx_window.window_id,
+        "context_start_date": eval_ctx_window.context_start_date,
+        "context_end_date": eval_ctx_window.context_end_date,
+        "context_window_identity": hashlib.sha256(
+            canonical_dumps(
+                {
+                    "window_id": eval_ctx_window.window_id,
+                    "start_index": eval_ctx_window.start_index,
+                    "context_returns": [float(v) for v in eval_ctx_window.context_returns],
+                    "target_returns": [float(v) for v in eval_ctx_window.target_returns],
+                }
+            ).encode("utf-8")
+        ).hexdigest(),
+        "final_checkpoint_sha256": checkpoint_sha256,
+        "baseline_suite_sha256": hashlib.sha256(benchmark_path.read_bytes()).hexdigest(),
+        "model_config_hash": config_hash,
+        "gate_spec_hash": gate_spec_hash,
+    }
+
+
 def run_v5_experiment(
     *,
     config_path: Path,
@@ -176,7 +224,7 @@ def run_v5_experiment(
 
     # Gate v2 evaluation (frozen gate specification)
     gate_spec_path = str(
-        Path(__file__).resolve().parents[2]
+        Path(__file__).resolve().parents[3]
         / "configs"
         / "research"
         / "neural_sde_internal_gate_v2.yaml"
@@ -246,8 +294,10 @@ def run_v5_experiment(
         )
         checkpoint_sha = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
 
-        # External validation
-        _ = build_underlying_series(
+        # External validation: load the validation split only to record its
+        # identity in provenance; the scorecard evaluation runs on the frozen
+        # training-boundary context, not on validation data.
+        validation_series = build_underlying_series(
             inventory=inventory,
             split="validation",
             raw_root=raw_root,
@@ -278,6 +328,14 @@ def run_v5_experiment(
         neural_payload = _scorecard_payload(
             compute_scorecard(increments.ravel(), spec_metric.scorecard)
         )
+        validation_identity = build_validation_identity(
+            validation_series=validation_series,
+            eval_ctx_window=eval_ctx_window,
+            checkpoint_sha256=checkpoint_sha,
+            benchmark_path=benchmark_path,
+            config_hash=config_hash,
+            gate_spec_hash=gate_spec.spec_hash(),
+        )
         evaluation = {
             "contract": {
                 "n_paths": n_paths,
@@ -286,6 +344,7 @@ def run_v5_experiment(
                 "initial_price": initial_price,
             },
             "neural_metrics": neural_payload,
+            "validation_identity": validation_identity,
         }
         status = "STRUCTURED-VOLATILITY-NEURAL-SDE-V5 READY"
 

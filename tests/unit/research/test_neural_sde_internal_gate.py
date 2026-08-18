@@ -13,11 +13,14 @@ H. Gate specification hash (deterministic, changes on config change)
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
 from neuralmarket.baselines.bootstrap import sample_block_bootstrap
 from neuralmarket.research.neural_sde_internal_gate import (
+    _FROZEN_GATE_V2_PATH,
     GateSpecV2,
     _acf,
     _acf_max_error,
@@ -28,6 +31,8 @@ from neuralmarket.research.neural_sde_internal_gate import (
 )
 
 pytestmark = [pytest.mark.unit]
+
+_GATE_YAML = Path(__file__).resolve().parents[3] / _FROZEN_GATE_V2_PATH
 
 
 class TestBootstrapTerminalReference:
@@ -268,9 +273,16 @@ class TestGateSpecHash:
                 "generated_path_count": 1024,
                 "horizon": 63,
                 "seed": 8801,
+                "gate_seed": 7777,
+                "drift_diffusion_seed": 7778,
             },
             "terminal_dispersion": {"band_lo": 0.5, "band_hi": 2.0, "status": "pass_fail"},
-            "serial_dependence": {"lags": [1, 2, 3, 5, 10, 20]},
+            "serial_dependence": {
+                "lags": [1, 2, 3, 5, 10, 20],
+                "acf1": {"status": "pass_fail", "threshold": 0.25},
+                "rmse": {"status": "report_only", "diagnostic_reference": 0.15},
+                "max_error": {"status": "report_only", "diagnostic_reference": 0.25},
+            },
             "variance_ratio": {"band_lo": 0.5, "band_hi": 2.0, "status": "pass_fail"},
             "path_uniqueness": {"min_fraction": 0.99, "status": "pass_fail"},
             "drift_diffusion_ratio": {"max_ratio": 0.5, "status": "pass_fail"},
@@ -283,3 +295,117 @@ class TestGateSpecHash:
             spec = load_gate_spec_v2(f.name)
         assert spec.bootstrap_method == "block"
         assert spec.block_length == 22
+        assert spec.gate_seed == 7777
+        assert spec.drift_diffusion_seed == 7778
+
+
+def _gate_yaml_dict() -> dict:
+    """A valid gate-v2 YAML dict matching the production schema (for mutations)."""
+    return {
+        "version": "neural-sde-internal-gate-v2",
+        "bootstrap": {
+            "method": "block",
+            "block_length": 22,
+            "terminal_path_count": 1024,
+            "generated_path_count": 1024,
+            "horizon": 63,
+            "seed": 8801,
+            "gate_seed": 7777,
+            "drift_diffusion_seed": 7778,
+        },
+        "terminal_dispersion": {"band_lo": 0.50, "band_hi": 2.00, "status": "pass_fail"},
+        "serial_dependence": {
+            "lags": [1, 2, 3, 5, 10, 20],
+            "acf1": {"status": "pass_fail", "threshold": 0.25},
+            "rmse": {"status": "report_only", "diagnostic_reference": 0.15},
+            "max_error": {"status": "report_only", "diagnostic_reference": 0.25},
+        },
+        "variance_ratio": {"band_lo": 0.50, "band_hi": 2.00, "status": "pass_fail"},
+        "path_uniqueness": {"min_fraction": 0.99, "status": "pass_fail"},
+        "drift_diffusion_ratio": {"max_ratio": 0.50, "status": "pass_fail"},
+    }
+
+
+def _write_yaml(data: dict) -> str:
+    import tempfile
+
+    import yaml as _yaml
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        _yaml.dump(data, f)
+        f.flush()
+        return f.name
+
+
+class TestGateV2FailClosed:
+    """H. Missing pass/fail thresholds or explicit seed fields hard-fail."""
+
+    def test_missing_acf1_threshold_raises(self) -> None:
+        data = _gate_yaml_dict()
+        del data["serial_dependence"]["acf1"]
+        with pytest.raises(ValueError, match="missing required"):
+            load_gate_spec_v2(_write_yaml(data))
+
+    def test_acf1_not_pass_fail_raises(self) -> None:
+        data = _gate_yaml_dict()
+        data["serial_dependence"]["acf1"]["status"] = "report_only"
+        with pytest.raises(ValueError, match="must be pass_fail"):
+            load_gate_spec_v2(_write_yaml(data))
+
+    def test_missing_gate_seed_raises(self) -> None:
+        data = _gate_yaml_dict()
+        del data["bootstrap"]["gate_seed"]
+        with pytest.raises(ValueError, match="bootstrap.gate_seed"):
+            load_gate_spec_v2(_write_yaml(data))
+
+    def test_missing_drift_diffusion_seed_raises(self) -> None:
+        data = _gate_yaml_dict()
+        del data["bootstrap"]["drift_diffusion_seed"]
+        with pytest.raises(ValueError, match="bootstrap.drift_diffusion_seed"):
+            load_gate_spec_v2(_write_yaml(data))
+
+    def test_missing_max_error_reference_raises(self) -> None:
+        data = _gate_yaml_dict()
+        del data["serial_dependence"]["max_error"]
+        with pytest.raises(ValueError, match="max_error"):
+            load_gate_spec_v2(_write_yaml(data))
+
+
+class TestGateAcfMapping:
+    """H. acf_max_lag_error binds the report-only reference, not the ACF(1) threshold."""
+
+    def test_max_error_follows_report_only_field(self) -> None:
+        data = _gate_yaml_dict()
+        data["serial_dependence"]["max_error"]["diagnostic_reference"] = 0.37
+        spec = load_gate_spec_v2(_write_yaml(data))
+        assert spec.acf_max_lag_error == 0.37
+        # The ACF(1) pass/fail threshold is a separate field.
+        assert spec.acf1_max_diff == 0.25
+
+    def test_acf1_threshold_binds_acf1(self) -> None:
+        data = _gate_yaml_dict()
+        data["serial_dependence"]["acf1"]["threshold"] = 0.19
+        spec = load_gate_spec_v2(_write_yaml(data))
+        assert spec.acf1_max_diff == 0.19
+        assert spec.acf_max_lag_error == 0.25
+
+
+class TestGateSeedIdentity:
+    """I. Gate stochastic seeds are explicit and frozen; hash responds to them."""
+
+    def test_accepted_seed_values_load(self) -> None:
+        spec = load_gate_spec_v2(str(_GATE_YAML))
+        assert spec.gate_seed == 7777
+        assert spec.drift_diffusion_seed == 7778
+
+    def test_spec_hash_changes_when_gate_seed_changes(self) -> None:
+        base = load_gate_spec_v2(str(_GATE_YAML)).spec_hash()
+        data = _gate_yaml_dict()
+        data["bootstrap"]["gate_seed"] = 7779
+        assert load_gate_spec_v2(_write_yaml(data)).spec_hash() != base
+
+    def test_spec_hash_changes_when_drift_seed_changes(self) -> None:
+        base = load_gate_spec_v2(str(_GATE_YAML)).spec_hash()
+        data = _gate_yaml_dict()
+        data["bootstrap"]["drift_diffusion_seed"] = 7779
+        assert load_gate_spec_v2(_write_yaml(data)).spec_hash() != base
