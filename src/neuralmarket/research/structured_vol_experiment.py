@@ -40,11 +40,14 @@ from neuralmarket.models.structured_vol_sde import (
     StructuredVolConfig,
     simulate_structured,
 )
+from neuralmarket.research.neural_sde_internal_gate import (
+    evaluate_gate_v2,
+    load_gate_spec_v2,
+)
 from neuralmarket.research.neural_sde_trainer import TrainingConfig
 from neuralmarket.research.neural_sde_trainer_v3 import (
     V3ObjectiveConfig,
     build_v3_statistics,
-    evaluate_internal_gate_v3,
     refit_final_v3,
     train_internal_v3,
 )
@@ -160,7 +163,7 @@ def run_v5_experiment(
 
     # Train using v3 trainer (same API)
     outcome = train_internal_v3(
-        model,
+        model,  # type: ignore[arg-type]
         config.training,
         split,
         normalizer,
@@ -170,9 +173,15 @@ def run_v5_experiment(
         config.objective,
     )
 
-    # Gate evaluation
-    gate_diagnostics, gate_passed = evaluate_internal_gate_v3(
-        model, split, normalizer, training_returns_tensor, spec, config.objective
+    # Gate v2 evaluation (frozen gate specification)
+    gate_spec = load_gate_spec_v2()
+    gate_diagnostics, gate_passed = evaluate_gate_v2(
+        model,  # type: ignore[arg-type]
+        split,
+        normalizer,
+        training_returns_tensor,
+        spec,
+        gate_spec,
     )
 
     checkpoint_dir = output_root / config.version / config_hash[:16]
@@ -210,7 +219,7 @@ def run_v5_experiment(
         set_deterministic_seeds(config.training.model_init_seed)
         final_model = StructuredVolatilityNeuralSde(config.sde).to(device=device, dtype=dtype)
         refit_final_v3(
-            final_model,
+            final_model,  # type: ignore[arg-type]
             config.training,
             windows,
             normalizer,
@@ -281,6 +290,12 @@ def run_v5_experiment(
         "config_file_sha256": config_file_sha256,
         "status": status,
         "gate_passed": gate_passed,
+        "gate_v2_spec_path": "configs/research/neural_sde_internal_gate_v2.yaml",
+        "gate_v2_file_sha256": hashlib.sha256(
+            Path("configs/research/neural_sde_internal_gate_v2.yaml").read_bytes()
+        ).hexdigest(),
+        "gate_v2_canonical_hash": gate_spec.spec_hash(),
+        "gate_v2_version": gate_spec.bootstrap_method,
         "gate_diagnostics": gate_diagnostics,
         "training": {
             "fit_population": split.n_fit,
@@ -294,6 +309,8 @@ def run_v5_experiment(
             "architecture": "structured_volatility_neural_sde",
             "parameter_count": n_params,
             "a_positive": float(model.a_positive.item()),
+            "v_clamp_min": -10.0,
+            "v_clamp_max": 10.0,
         },
         "checkpoint": {"path": str(checkpoint_path), "sha256": checkpoint_sha},
         "curve": {"path": str(curve_path), "sha256": curve_sha},
