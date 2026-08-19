@@ -150,11 +150,19 @@ def _fake_report_builder(calls: list[str]) -> object:
     return _builder
 
 
-# 1. module dry-load is side-effect free
-def test_module_dry_load_side_effect_free() -> None:
+# 1. module import purity (no validation load, no new output creation)
+def test_module_import_is_pure() -> None:
     assert all(v == 0 for v in h.counters().values())
-    for future in (h.RESULT_PATH, h.TRANSCRIPT_PATH, h.EXIT_CODE_PATH, h.MANIFEST_PATH):
-        assert not future.exists(), f"future evidence file must not exist: {future}"
+
+
+# 1b. pre-execution collision guard (output-absence) — tested against a clean
+# synthetic directory; the real post-execution transcript/exit evidence may
+# already exist and must never be deleted to satisfy this test.
+def test_output_collision_guard_fails_on_existing_file(tmp_path) -> None:
+    occupied = tmp_path / "confirmatory.json"
+    occupied.write_bytes(b"existing")
+    with pytest.raises(RuntimeError, match="refusing to overwrite"):
+        h.write_result_once({"status": "different"}, occupied)
 
 
 # 2. contract identities are pinned correctly and bound to the real frozen files
@@ -417,6 +425,167 @@ def test_result_write_once_succeeds(tmp_path) -> None:
 
 # 20. second result write fails without changing first bytes
 def test_result_write_once_second_fails(tmp_path) -> None:
+    path = tmp_path / "confirmatory.json"
+    h.write_result_once({"status": h.COMPLETION_LABEL, "v": 1}, path)
+    first_bytes = path.read_bytes()
+    with pytest.raises(RuntimeError, match="refusing to overwrite"):
+        h.write_result_once({"status": "DIFFERENT"}, path)
+    assert path.read_bytes() == first_bytes
+
+
+# 21-31. identity repair proofs — normalization is representation-only
+
+
+def test_int_key_vs_string_key_equivalent() -> None:
+    live = {"mean": 41.0, "return_acf": {1: 0.9, 5: 0.8, 22: 0.4, 66: 0.2}}
+    frozen = {"mean": 41.0, "return_acf": {"1": 0.9, "5": 0.8, "22": 0.4, "66": 0.2}}
+    assert h.verify_frozen_target(live, frozen)["match"] is True
+
+
+def test_nested_int_string_key_mismatch_passes_after_normalization() -> None:
+    live = {
+        "mean": 0.0,
+        "quantiles": {"0.01": 1.0, "0.99": 2.0},
+        "return_acf": {1: 0.1, 22: 0.2},
+        "abs_return_acf": {1: 0.3},
+        "sq_return_acf": {5: 0.4, 66: 0.5},
+        "leverage_correlations": {22: 0.6},
+    }
+    frozen = {
+        "mean": 0.0,
+        "quantiles": {"0.01": 1.0, "0.99": 2.0},
+        "return_acf": {"1": 0.1, "22": 0.2},
+        "abs_return_acf": {"1": 0.3},
+        "sq_return_acf": {"5": 0.4, "66": 0.5},
+        "leverage_correlations": {"22": 0.6},
+    }
+    assert h.verify_frozen_target(live, frozen)["match"] is True
+
+
+def test_numeric_mismatch_still_rejected() -> None:
+    live = {"mean": 0.1, "return_acf": {1: 0.9, 5: 0.8, 22: 0.4, 66: 0.2}}
+    frozen = {"mean": 0.2, "return_acf": {"1": 0.9, "5": 0.8, "22": 0.4, "66": 0.2}}
+    with pytest.raises(RuntimeError, match="does not match"):
+        h.verify_frozen_target(live, frozen)
+
+
+def test_normalization_does_not_alter_numeric_values() -> None:
+    live = {"return_acf": {1: 1e-9, 22: -2.5}}
+    normalized = h._normalize_mapping_keys(live)
+    assert normalized["return_acf"]["1"] == 1e-9
+    assert normalized["return_acf"]["22"] == -2.5
+
+
+def test_normalization_does_not_mutate_inputs() -> None:
+    live = {"return_acf": {1: 0.9}}
+    frozen = {"return_acf": {"1": 0.9}}
+    live_keys = list(live["return_acf"].keys())
+    frozen_keys = list(frozen["return_acf"].keys())
+    h.verify_frozen_target(live, frozen)
+    assert list(live["return_acf"].keys()) == live_keys  # still int
+    assert list(frozen["return_acf"].keys()) == frozen_keys  # still str
+    assert isinstance(live_keys[0], int)
+
+
+def test_normalized_canonical_sha_is_deterministic() -> None:
+    live = {"return_acf": {22: 0.4, 1: 0.9}}
+    frozen = {"return_acf": {"22": 0.4, "1": 0.9}}
+    a = h.verify_frozen_target(live, frozen)
+    b = h.verify_frozen_target(live, frozen)
+    assert a["recomputed_identity"] == b["recomputed_identity"]
+    assert a["frozen_identity"] == b["frozen_identity"]
+
+
+def test_mismatch_diagnostics_expose_hashes_and_path_not_values() -> None:
+    live = {"mean": 0.0}
+    frozen = {"mean": 1.0}
+    with pytest.raises(RuntimeError) as exc_info:
+        h.verify_frozen_target(live, frozen)
+    message = str(exc_info.value)
+    assert "recomputed=" in message
+    assert "frozen=" in message
+    assert "path=" in message
+    assert "0.0" not in message and "1.0" not in message  # values never emitted
+
+
+def test_json_round_trip_equivalent() -> None:
+    live = h.recompute_validation_target(VAL_SERIES, MetricSpecification())
+    frozen = json.loads(json.dumps(live))  # int keys -> str keys
+    assert h.verify_frozen_target(live, frozen)["match"] is True
+
+
+def test_nextafter_difference_still_rejected() -> None:
+    spec = MetricSpecification()
+    live = h.recompute_validation_target(VAL_SERIES, spec)
+    payload = json.loads(json.dumps(live))
+    mean_value = float(payload["mean"])
+    payload["mean"] = float(np.nextafter(mean_value, mean_value + 1.0))
+    with pytest.raises(RuntimeError):
+        h.verify_frozen_target(live, payload)
+
+
+def test_second_access_guard_unchanged_after_normalization(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(h, "build_underlying_series", _fake_report_builder(calls))
+    h.build_validation_series_once(inventory=object(), raw_root=Path("."), processed_root=Path("."))
+    with pytest.raises(RuntimeError, match="one-shot"):
+        h.build_validation_series_once(
+            inventory=object(), raw_root=Path("."), processed_root=Path(".")
+        )
+    assert calls == ["validation"]
+
+
+def test_target_mismatch_prevents_simulation(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(h, "build_underlying_series", _fake_report_builder(calls))
+    suite = _synthetic_suite()
+    suite_path = tmp_path / "synthetic_suite.json"
+    wrong_target = h.recompute_validation_target(VAL_SERIES, MetricSpecification())
+    suite.metrics["validation_empirical"] = json.loads(json.dumps(wrong_target))
+    suite.metrics["validation_empirical"]["mean"] = 999.0  # mutate value
+    suite_payload = {
+        "validation_series_sha256": VAL_SERIES.series_sha256,
+        "metrics": suite.metrics,
+        "discrepancies": {
+            "training": suite.discrepancies["training"],
+            "validation": suite.discrepancies["validation"],
+        },
+        "rankings": suite.rankings,
+        "suite_hash": suite.suite_hash,
+    }
+    suite_path.write_text(json.dumps(suite_payload), encoding="utf-8")
+    suite_ns = SimpleNamespace(
+        metrics=suite.metrics,
+        discrepancies=suite.discrepancies,
+        rankings=suite.rankings,
+        suite_hash=suite.suite_hash,
+        metric_spec_hash=suite.metric_spec_hash,
+        benchmark_hash=suite.benchmark_hash,
+        validation_series_sha256=VAL_SERIES.series_sha256,
+    )
+
+    def fake_verify_identities(
+        *, config_path, benchmark_path, suite_path, suite_hash, suite_file_sha256
+    ):
+        from neuralmarket.research.structured_vol_experiment import load_v5_config
+
+        return (load_v5_config(config_path), {"benchmark_hash": "x"}, suite_ns)
+
+    monkeypatch.setattr(h, "verify_contract_identities", fake_verify_identities)
+    monkeypatch.setattr(h.ResearchInventory, "model_validate", lambda payload: payload)
+    for p in ("inventory.json", "benchmark.json"):
+        (tmp_path / p).write_text("{}", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="does not match"):
+        h.run(
+            config_path=_V5_YAML,
+            inventory_path=tmp_path / "inventory.json",
+            benchmark_path=tmp_path / "benchmark.json",
+            suite_path=suite_path,
+            raw_root=tmp_path,
+            processed_root=tmp_path,
+            task_id="NM-R4-V5-EXTERNAL-VALIDATION-EXEC-SYNTHETIC-MISMATCH",
+            result_path=tmp_path / "confirmatory.json",
+        )
     path = tmp_path / "confirmatory.json"
     h.write_result_once({"status": h.COMPLETION_LABEL, "v": 1}, path)
     first_bytes = path.read_bytes()

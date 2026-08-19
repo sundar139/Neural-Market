@@ -121,6 +121,23 @@ GENERATION_PATHS = 1024
 GENERATION_HORIZON = 63
 GENERATION_SEED = 8283
 CANDIDATE_KEY = "structured_vol_v5"
+MAX_GOVERNED_VALIDATION_CONSTRUCTIONS_FOR_THIS_ARM = 2
+
+# Blinded first governed construction (proven harness identity-check defect;
+# value-independent — no validation metrics exposed).
+PRIOR_FAILED_ATTEMPT: dict[str, Any] = {
+    "task_id": "NM-R4-V5-EXTERNAL-VALIDATION-EXECUTE-015",
+    "validation_constructed": True,
+    "model_simulation": False,
+    "failure_classification": "PROVEN_HARNESS_IDENTITY_CHECK_DEFECT",
+    "failure_transcript_sha256": (
+        "5063b0f0eceaefb53657c869adc46bfaf8293737b9a8b717d9d75a27da58393d"  # pragma: allowlist secret
+    ),
+    "exit_code_sha256": (
+        "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b"  # pragma: allowlist secret
+    ),
+    "blinded": True,
+}
 
 # ── future immutable evidence paths (NOT created by this harness) ─────────────
 RESULT_PATH = REPO / "reports/research/structured_vol_v5_external_validation_confirmatory.json"
@@ -295,6 +312,15 @@ def build_boundary_context(training_series: Any, spec: Any) -> dict[str, Any]:
 
 
 # ── frozen-target recomputation and byte-identity verification ───────────────
+def _normalize_mapping_keys(value: Any) -> Any:
+    """Recursively normalize mapping keys to strings; values are never altered."""
+    if isinstance(value, dict):
+        return {str(key): _normalize_mapping_keys(child) for key, child in value.items()}
+    if isinstance(value, list | tuple):
+        return [_normalize_mapping_keys(child) for child in value]
+    return value
+
+
 def recompute_validation_target(
     validation_series: Any, spec_metric: MetricSpecification
 ) -> dict[str, Any]:
@@ -311,18 +337,60 @@ def _canonical_identity(payload: dict[str, Any]) -> str:
 def verify_frozen_target(
     recomputed: dict[str, Any], frozen: dict[str, Any]
 ) -> dict[str, str | bool]:
-    """Byte-identity check against the frozen validation_empirical target."""
-    recomputed_text = canonical_dumps(recomputed)
-    frozen_text = canonical_dumps(frozen)
-    match = recomputed_text == frozen_text
+    """Byte-identity check against the frozen validation_empirical target.
+
+    Both payloads are first normalized to a common string-key representation so
+    value-independent integer-vs-string mapping-key ordering does not affect
+    identity. No numerical tolerance — exact equality required. On mismatch,
+    non-sensitive structural diagnostics (hashes, JSON path) are computed before
+    failing closed.
+    """
+
+    def _first_mismatch_path(a: Any, b: Any, prefix: str = "") -> str | None:
+        if type(a) is not type(b):
+            return prefix or "/"
+        if isinstance(a, dict):
+            a_keys = set(a)
+            b_keys = set(b)
+            if a_keys != b_keys:
+                return prefix or "/"
+            for key in a_keys:
+                suspect = _first_mismatch_path(
+                    a[key], b[key], f"{prefix}/{key}" if prefix else f"/{key}"
+                )
+                if suspect is not None:
+                    return suspect
+            return None
+        if isinstance(a, list | tuple):
+            if len(a) != len(b):
+                return prefix or "/"
+            for i in range(len(a)):
+                suspect = _first_mismatch_path(a[i], b[i], f"{prefix}[{i}]")
+                if suspect is not None:
+                    return suspect
+            return None
+        return None if a == b else prefix or "/"
+
+    normalized_recomputed = _normalize_mapping_keys(recomputed)
+    normalized_frozen = _normalize_mapping_keys(frozen)
+    recomputed_bytes = canonical_dumps(normalized_recomputed).encode("utf-8")
+    frozen_bytes = canonical_dumps(normalized_frozen).encode("utf-8")
+    match = recomputed_bytes == frozen_bytes
     if not match:
+        recomputed_identity = hashlib.sha256(recomputed_bytes).hexdigest()
+        frozen_identity = hashlib.sha256(frozen_bytes).hexdigest()
+        mismatch_path = _first_mismatch_path(normalized_recomputed, normalized_frozen)
         raise RuntimeError(
             "validation target does not match the frozen validation_empirical "
-            "(byte/canonical identity mismatch); refusing to compare"
+            "(byte/canonical identity mismatch); refusing to compare ["
+            f"recomputed={recomputed_identity} frozen={frozen_identity}"
+            f" path={mismatch_path}]"
         )
+    recomputed_identity = hashlib.sha256(recomputed_bytes).hexdigest()
+    frozen_identity = hashlib.sha256(frozen_bytes).hexdigest()
     return {
-        "recomputed_identity": _canonical_identity(recomputed),
-        "frozen_identity": _canonical_identity(frozen),
+        "recomputed_identity": recomputed_identity,
+        "frozen_identity": frozen_identity,
         "match": True,
     }
 
@@ -597,11 +665,14 @@ def run(
             "family_errors": neural_family,
             "comparison": comparison,
         },
+        "effective_max_governed_validations": MAX_GOVERNED_VALIDATION_CONSTRUCTIONS_FOR_THIS_ARM,
+        "terminal_no_tolerance_policy": True,
         "counters": counters(),
         "runtime_source": {
             "git_commit": source_identity["git_commit"],
             "git_dirty": source_identity["git_dirty"],
         },
+        "prior_failed_attempt": dict(PRIOR_FAILED_ATTEMPT),
         "status": COMPLETION_LABEL,
     }
     write_result_once(result, result_path)
