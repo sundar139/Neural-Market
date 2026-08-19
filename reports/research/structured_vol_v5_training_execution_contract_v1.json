@@ -1,0 +1,123 @@
+{
+  "schema_version": "structured-vol-v5-training-execution-contract-v1",
+  "task_id": "NM-R4-V5-TRAINING-AUTHORIZATION-028",
+  "created_before_training": true,
+  "starting_head": "89fcc9cdc5aa9367b709249d00233646f8193087",
+  "starting_parent": "421508f2502e363c0a6573c445ab9bd3e056a5b6",
+  "safety_branch": "safety/pre-v5-training-runner-89fcc9c",
+  "runner": {
+    "path": "reports/research/evidence/structured_vol_v5_replicate_training_runner.py",
+    "git_commit": "3091dd5d7bd89ed9cdfee36fed97d197418c70e8",
+    "git_blob": "abdfbbcce829f5069746a1b5b3a59ebb0e2bcf79",
+    "local_worktree_sha256": "6559ee7ad5bed0eec949547f8131f97d8201282ee1be359a55a9d578a37dcb85",
+    "committed_equality": true,
+    "scientific_logic_duplicated": false,
+    "invocation_policy": "at most ONE training flow invocation per process; no retry; fail-closed on failure"
+  },
+  "runner_test": {
+    "path": "tests/unit/research/test_v5_replicate_training_runner.py",
+    "coverage": "config hash exact (5), family hash (5), path derivation, overwrite refusal, exclusive-create, missing authorization, member-01/reserve/allowlist refusal, dry-run no dirs, execute without auth, no validation import, single invocation guard"
+  },
+  "frozen_contracts": {
+    "amendment_021": "4ad94bceed70bb70a282bc472b97bc5fd0aad8bffb856d18bad3743c4bd822c2",
+    "replicate_contract": "c28eb6d8d8de89381de9ff28b697c8190d1910af87612a57bbe9df768aa0c98f",
+    "amendment_022": "4416f7a9a847bade1b8d864ae582f9d22971df389035b26d0a7e2858772c4f31",
+    "seed_schedule": "8c471c3311b05e647b543e46e310a8f1b1055ec00d4690f726dcd6d775f06fd0",
+    "seed_schedule_blob": "558d08bfee98dbd0c170d65e6a9b1737700c9e98",
+    "family_methodology_identity": "730475987368bf8f408e44e8e387682f178a0cdd7a358939016ba9b6df57a719"
+  },
+  "member_allowlist": ["v5-seed-02", "v5-seed-03", "v5-seed-04", "v5-seed-05"],
+  "denied": {
+    "member_01": "v5-seed-01 EXISTING_FROZEN — refused",
+    "reserves": ["reserve-01", "reserve-02", "reserve-03", "reserve-j01", "reserve-j02", "reserve-j03"],
+    "generic_report": "reports/research/structured_vol_v5_report.json — refused, never used"
+  },
+  "member_identities": {
+    "v5-seed-02": {"replicate_seed": 9281, "model_init_seed": 9281, "data_seed": 9282, "eval_seed": 8283, "full_config_hash": "62c7406cb3a2c64237d39559370d70a27f8111f7dd1dc7ee581da9bd475cf00b", "run_prefix": "62c7406cb3a2c642"},
+    "v5-seed-03": {"replicate_seed": 10281, "model_init_seed": 10281, "data_seed": 10282, "eval_seed": 8283, "full_config_hash": "e333325c804d95d2f34ad14138e312cde0a00df2ebf1056741abbdc52a8b0955", "run_prefix": "e333325c804d95d2"},
+    "v5-seed-04": {"replicate_seed": 11281, "model_init_seed": 11281, "data_seed": 11282, "eval_seed": 8283, "full_config_hash": "77e7de9efabb7ce35107e7c9f80f9fb9e28fff6f1a31978c35f601cbf154312b", "run_prefix": "77e7de9efabb7ce3"},
+    "v5-seed-05": {"replicate_seed": 12281, "model_init_seed": 12281, "data_seed": 12282, "eval_seed": 8283, "full_config_hash": "1e8aa171993a1aba52534ae031d05ba5e8dbdb15772678bf3ec72fc68dcde897", "run_prefix": "1e8aa171993a1aba"}
+  },
+  "prospective_reserve_identities": {
+    "reserve-01": {"replicate_seed": 13281, "data_seed": 13282, "full_config_hash": "38c5113b27568e14eabb04621595e7114b8140577459abfe7061ffafd118b605", "run_prefix": "38c5113b27568e14"},
+    "reserve-02": {"replicate_seed": 14281, "data_seed": 14282, "full_config_hash": "423277df1ac4cd9a4088141e4cc483561b29d4aa6ff2973e57d379cdbe3d2969", "run_prefix": "423277df1ac4cd9a"},
+    "reserve-03": {"replicate_seed": 15281, "data_seed": 15282, "full_config_hash": "e89b0ac0956d197e8b335b28873e6d6802ff8176a21e18f35a5d3d7e88dbb2df", "run_prefix": "e89b0ac0956d197e"},
+    "execution_authorized": false
+  },
+  "namespaces": {
+    "report_root": "reports/research/structured_vol_v5_replicates",
+    "model_root": "data/processed/research/model/structured-volatility-neural-sde-v5",
+    "per_member_report_files": ["training_report.json", "training_stdout.log", "training_exit_code.txt", "training_execution_manifest.json", "execution_started.json"],
+    "pre_existing_scheduled_namespaces_exist": false,
+    "overwrite_permitted": false
+  },
+  "execution_semantics": {
+    "default": "DRY RUN ONLY — no dirs, no data construction beyond config objects, no training",
+    "execute_requirement": "requires --authorization pointing to a tracked/clean committed JSON with matching member_id, full_config_hash, run_prefix, family_methodology_identity, and training_authorized=true",
+    "execution_started": "exclusive open('x') immediately before training; if exists, REFUSE; once created, member is ATTEMPTED; no retry; recovery requires separate governed task",
+    "max_invocations_per_process": 1,
+    "retry": "none — no internal retry loop, no alternate-seed fallback, no reserve fallback",
+    "failure_behavior": "produce failure evidence and stop; Amendments 021/022 failed-seed policy controlling"
+  },
+  "authorization_handshake": {
+    "required_fields": ["schema_version", "authorization_task_id", "member_id", "replicate_seed", "model_init_seed", "data_seed", "eval_seed", "full_config_hash", "run_prefix", "family_methodology_identity", "schedule_sha_blob", "execution_contract_sha_blob", "runner_git_blob", "execution_recipe_head", "training_authorized", "validation_authorized", "final_test_authorized", "reserve", "max_training_invocations"],
+    "must_be_tracked_and_clean": true,
+    "none_exists_at_3091dd5": true
+  },
+  "common_evaluation_and_gate": {
+    "eval_seed": 8283,
+    "eval_policy": "COMMON_FIXED_POST_TRAINING",
+    "gate_seed": 7777,
+    "drift_diffusion_seed": 7778,
+    "bootstrap_seed": 8801,
+    "note": "evaluation/gate randomness is not training independence; later analysis must not treat common draw as independent replicate dimension"
+  },
+  "evidence_output": {
+    "training_report_json_minimum": ["member_id, replicate_seed, model_init_seed, data_seed, eval_seed", "starting/execution Git HEAD, scientific source 357971a67c68492fc0c4f5bf31f94f9685639f65, runner path/blob/SHA, Python/PyTorch/device/determinism", "full effective V5ExperimentConfig, full config_hash, run_prefix, family_methodology_identity", "training-series SHA, fit/selection identities", "initial/best selection loss, best_epoch, final_epoch", "selected checkpoint + training curve + final-refit checkpoint paths/SHAs", "Gate-v2 six exact metrics + per-criterion result under fixed gate seeds", "training start/end UTC, process exit, training invocation count, failure status/reason", "validation_constructions = 0, external_evaluations = 0, final_test_accesses = 0, provider/network = 0"],
+    "transcript_exit_manifest": ["training_stdout.log", "training_exit_code.txt", "training_execution_manifest.json cross-references report/transcript/exit/checkpoint/curve/runner/authorization/schedule/config/family identities"]
+  },
+  "tracked_text_identity": {
+    "authority": "Git blob ID (git hash-object / git rev-parse HEAD:<path>) is authoritative for tracked text",
+    "local_worktree_sha256_role": "informational local_worktree_sha256; not load-bearing (CRLF/LF ambiguity)",
+    "runner_self_verification": "HEAD:<runner_path> equals contract runner blob and file has no working-tree diff"
+  },
+  "historical_quarantine": {
+    "reports/research/structured_vol_v5_report.json": {"sha256": "c5ed284fe44af3cd2a04d8553d97b5830042c7cfbf1404a453ea084b23512548", "classification": "HISTORICAL_NON_MEMBER_EVIDENCE", "eligible_for_member_evidence": false, "note": "69623a82f91ff0db lineage, invalidated by Amendment 016"},
+    "reports/research/neural_sde_signature_v3_report.json": {"sha256": "585ecd886a3619c0ee95242bd8cf668fe529e48e67d42b41676133519645a312", "classification": "HISTORICAL_NON_MEMBER_EVIDENCE", "eligible_for_member_evidence": false},
+    "reports/research/neural_sde_signature_v4_report.json": {"sha256": "cb4610d08e9545562d78d8c72b1a7d01381bc33ae1ac35e0a564397e70ece29c", "classification": "HISTORICAL_NON_MEMBER_EVIDENCE", "eligible_for_member_evidence": false}
+  },
+  "manifest_schema_supersession": {
+    "amendment_021_wording": "replicate contract may be reused as family manifest schema",
+    "amendment_022_rule": "separately versioned structured-vol-v5-completed-family-v1",
+    "controlling_rule": "Amendment 022 supersedes Amendment 021 — completed-family manifest has distinct schema structured-vol-v5-completed-family-v1; schedule and replicate contracts are NOT completed-family manifests",
+    "completed_family_schema": "structured-vol-v5-completed-family-v1 (not created in this task)"
+  },
+  "external_validation_firewall": {
+    "state": "CLOSED",
+    "construction_count": 2,
+    "effective_max": 2,
+    "third_permitted": false,
+    "no_validation_reconstruction": true
+  },
+  "authorization_state": {
+    "numerical_schedule": "FROZEN",
+    "training_runner": "FROZEN",
+    "execution_contract": "FROZEN",
+    "member_02_to_05_training": false,
+    "reserve_training": false,
+    "validation": false,
+    "final_test": false,
+    "hedging": false,
+    "next_action": "Independent Claude read-only audit of the frozen runner and execution contract before actual training authorization"
+  },
+  "protected_integrity_basis": {
+    "schedule": "8c471c3311b05e647b543e46e310a8f1b1055ec00d4690f726dcd6d775f06fd0",
+    "amendment_022": "4416f7a9a847bade1b8d864ae582f9d22971df389035b26d0a7e2858772c4f31",
+    "amendment_021": "4ad94bceed70bb70a282bc472b97bc5fd0aad8bffb856d18bad3743c4bd822c2",
+    "replicate_contract": "c28eb6d8d8de89381de9ff28b697c8190d1910af87612a57bbe9df768aa0c98f",
+    "selected_checkpoint": "452f70058eb03a83af248fdb3c85f413264becd302b1e71d11167f10ac7b887f",
+    "training_curve": "e29f2afcdff75e151ca6a85f3c77e7a209a3c1827b6d1abcb191ce36c6d30a2d",
+    "final_checkpoint": "c7b9be5d666ae24fe208cdc9241eab1cbca0cbe95e5576d562fca0bd73ea2be4",
+    "production_gate_v2": "4604231cfc5d26f61808b65ce9269a120ccb44c2c96a590853341e31c9f14bc6"
+  }
+}
