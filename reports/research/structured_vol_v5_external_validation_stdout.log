@@ -1,0 +1,13 @@
+Traceback (most recent call last):
+  File "C:\Users\rohit\Documents\Personal Projects\Neural Market\reports\research\evidence\structured_vol_v5_external_validation_harness.py", line 658, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "C:\Users\rohit\Documents\Personal Projects\Neural Market\reports\research\evidence\structured_vol_v5_external_validation_harness.py", line 624, in main
+    result = run(
+             ^^^^
+  File "C:\Users\rohit\Documents\Personal Projects\Neural Market\reports\research\evidence\structured_vol_v5_external_validation_harness.py", line 520, in run
+    target_verification = verify_frozen_target(validation_target, frozen_target)
+                          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\rohit\Documents\Personal Projects\Neural Market\reports\research\evidence\structured_vol_v5_external_validation_harness.py", line 319, in verify_frozen_target
+    raise RuntimeError(
+RuntimeError: validation target does not match the frozen validation_empirical (byte/canonical identity mismatch); refusing to compare
