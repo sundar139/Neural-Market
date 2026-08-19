@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import tempfile
+import uuid
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -586,6 +587,7 @@ class TestFutureValidationProvenance:
             benchmark_path=benchmark,
             config_hash="b" * 64,
             gate_spec_hash="c" * 64,
+            source_identity={"git_commit": "d" * 40, "git_dirty": False},
         )
         assert ident["validation_split"] == "validation"
         assert ident["validation_start_date"] == "2022-05-26"
@@ -601,6 +603,8 @@ class TestFutureValidationProvenance:
         assert ident["model_config_hash"] == "b" * 64
         assert ident["gate_spec_hash"] == "c" * 64
         assert ident["context_window_id"] == "w_boundary"
+        assert ident["git_commit"] == "d" * 40
+        assert ident["git_dirty"] is False
 
 
 # ── G. Legacy threshold isolation ─────────────────────────────────────
@@ -761,3 +765,142 @@ class TestGateEvaluationSmoke:
         assert diagnostics["gate_seed"] == 7777
         assert diagnostics["bootstrap_seed"] == 8801
         assert diagnostics["gate_spec_hash"] == gate_spec.spec_hash()
+
+
+# ── Source identity provenance (Claude blocker closure) ───────────────
+
+
+def _run_mocked_v5(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    source_identity: dict | None = None,
+    gate_passed: bool = False,
+) -> dict:
+    """Run run_v5_experiment with heavy pieces mocked; returns the report dict.
+
+    gate_passed=False builds the report through the gate-FAIL path (provenance
+    is written regardless); gate_passed=True additionally exercises the full
+    train -> gate -> refit -> validation identity block with synthetic data.
+    """
+    rng = np.random.RandomState(4)
+    n = 200
+    returns = rng.randn(n) * 0.01
+    dates = tuple(f"2020-{(i // 28) + 1:02d}-{(i % 28) + 1:02d}" for i in range(n + 1))
+
+    def fake_underlying(inventory, split, raw_root, processed_root):
+        if split == "validation" and not gate_passed:
+            raise AssertionError("validation loader must not be touched on gate-FAIL")
+        return _fake_underlying(returns, dates)
+
+    def fake_eval(*args, **kwargs):
+        return {
+            "gate_spec_hash": "h",
+            "criterion_results": {"ok": gate_passed},
+            "gate_passed": gate_passed,
+        }, gate_passed
+
+    def fake_simulate(model, ctx, seed, generator=None):
+        return torch.zeros(ctx.shape[0], 5)
+
+    def fake_scorecard(*args, **kwargs):
+        return {"metrics": {}}
+
+    def fake_payload(value):
+        return {"payload": value}
+
+    fake_inventory = type("Fake", (), {"model_validate": staticmethod(lambda _: None)})
+    monkeypatch.setattr(svx, "ResearchInventory", fake_inventory)
+    monkeypatch.setattr(svx, "build_underlying_series", fake_underlying)
+    monkeypatch.setattr(svx, "build_v3_statistics", lambda *a, **k: SimpleNamespace())
+    monkeypatch.setattr(svx, "train_internal_v3", lambda *a, **k: _fake_outcome())
+    monkeypatch.setattr(svx, "evaluate_gate_v2", fake_eval)
+    monkeypatch.setattr(svx, "refit_final_v3", lambda *a, **k: None)
+    monkeypatch.setattr(svx, "simulate_structured", fake_simulate)
+    monkeypatch.setattr(svx, "configure_determinism", lambda _: None)
+    monkeypatch.setattr(svx, "set_deterministic_seeds", lambda _: None)
+    monkeypatch.setattr("neuralmarket.eval.scorecard.compute_scorecard", fake_scorecard)
+    monkeypatch.setattr("neuralmarket.data.research.benchmark._scorecard_payload", fake_payload)
+    if source_identity is not None:
+        monkeypatch.setattr(svx, "repository_source_identity", lambda: source_identity)
+
+    run_dir = tmp_path / f"run_{uuid.uuid4().hex[:10]}"
+    run_dir.mkdir(parents=True)
+    config_path = _write_v5_config_yaml(run_dir)
+    for name in ("inventory.json", "benchmark.json", "suite.json", "v1.json", "v2.json"):
+        (run_dir / name).write_text("{}", encoding="utf-8")
+    return svx.run_v5_experiment(
+        config_path=config_path,
+        inventory_path=run_dir / "inventory.json",
+        benchmark_path=run_dir / "benchmark.json",
+        suite_path=run_dir / "suite.json",
+        v1_artifact_path=run_dir / "v1.json",
+        v2_artifact_path=run_dir / "v2.json",
+        raw_root=run_dir,
+        processed_root=run_dir,
+        output_root=run_dir,
+        report_path=run_dir / "report.json",
+    )
+
+
+class TestSourceIdentityProvenance:
+    """Claude blocker closure: exact source identity persisted in v5 evidence."""
+
+    def test_source_commit_persisted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        synth = {"git_commit": "a" * 40, "git_dirty": False}
+        result = _run_mocked_v5(monkeypatch, tmp_path, source_identity=synth)
+        assert result["provenance"]["git_commit"] == "a" * 40
+        assert result["provenance"]["git_dirty"] is False
+
+    def test_dirty_false_persisted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        result = _run_mocked_v5(
+            monkeypatch, tmp_path, source_identity={"git_commit": "b" * 40, "git_dirty": False}
+        )
+        assert result["provenance"]["git_dirty"] is False
+
+    def test_dirty_true_persisted(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        result = _run_mocked_v5(
+            monkeypatch, tmp_path, source_identity={"git_commit": "c" * 40, "git_dirty": True}
+        )
+        assert result["provenance"]["git_dirty"] is True
+
+    def test_validation_identity_matches_top_level_source_identity(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        synth = {"git_commit": "d" * 40, "git_dirty": True}
+        result = _run_mocked_v5(monkeypatch, tmp_path, source_identity=synth, gate_passed=True)
+        vid = result["evaluation"]["validation_identity"]
+        assert vid["git_commit"] == "d" * 40
+        assert vid["git_dirty"] is True
+        assert vid["git_commit"] == result["provenance"]["git_commit"]
+        assert vid["git_dirty"] == result["provenance"]["git_dirty"]
+
+    def test_source_identity_independent_of_config_hash(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        r1 = _run_mocked_v5(
+            monkeypatch, tmp_path, source_identity={"git_commit": "1" * 40, "git_dirty": False}
+        )
+        monkeypatch.setattr(
+            svx, "repository_source_identity", lambda: {"git_commit": "2" * 40, "git_dirty": True}
+        )
+        r2 = _run_mocked_v5(
+            monkeypatch, tmp_path, source_identity={"git_commit": "2" * 40, "git_dirty": True}
+        )
+        # Scientific config identity is independent of source provenance identity.
+        assert r1["config_hash"] == r2["config_hash"]
+        assert len(r1["config_hash"]) == 64
+        assert r1["provenance"]["git_commit"] == "1" * 40
+        assert r2["provenance"]["git_commit"] == "2" * 40
+
+    def test_no_hardcoded_head(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        import subprocess
+
+        real_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], check=True, capture_output=True, text=True
+        ).stdout.strip()
+        synth = {"git_commit": "e" * 40, "git_dirty": False}
+        result = _run_mocked_v5(monkeypatch, tmp_path, source_identity=synth)
+        # The persisted value is the mocked runtime identity, not a hardcoded HEAD.
+        assert result["provenance"]["git_commit"] == "e" * 40
+        assert result["provenance"]["git_commit"] != real_head

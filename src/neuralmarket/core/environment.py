@@ -118,6 +118,32 @@ def _git_dirty(root: Path) -> bool | None:
     return bool(status)
 
 
+def repository_source_identity(root: Path | None = None) -> dict[str, Any]:
+    """Capture the exact repository source identity for scientific provenance.
+
+    Returns:
+        A dict with:
+        - ``git_commit``: full 40-character HEAD SHA of the exact source tree
+          that defines the run (``git rev-parse HEAD``), or ``None`` if Git is
+          unavailable.
+        - ``git_dirty``: whether TRACKED repository content differs from HEAD at
+          the point the scientific run/report is created. Untracked files
+          (generated reports, ``.agent-memory``, scratch) do not make a
+          committed source tree appear dirty; only tracked-content drift affects
+          reproducibility of source-bound constants. ``None`` if Git is
+          unavailable.
+
+    Distinct from the untracked-inclusive ``_git_dirty`` used by acquisition
+    guards, which deliberately treats any working-tree change conservatively.
+    """
+    root = root if root is not None else find_repository_root()
+    status = _git(root, "status", "--porcelain", "--untracked-files=no")
+    return {
+        "git_commit": _git_commit(root),
+        "git_dirty": None if status is None else bool(status),
+    }
+
+
 def _dependency_versions() -> dict[str, str]:
     """Return installed versions of direct dependencies, marking any that are absent."""
     versions: dict[str, str] = {}

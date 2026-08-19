@@ -7,6 +7,7 @@ from neuralmarket.core.environment import (
     EnvironmentValidationError,
     collect_snapshot,
     find_repository_root,
+    repository_source_identity,
     scan_production_artifacts,
     validate_python,
 )
@@ -91,3 +92,45 @@ def test_snapshot_excludes_env_values(monkeypatch, config) -> None:  # type: ign
     serialized = str(snapshot)
     assert "SECRET_SENTINEL_VALUE" not in serialized
     assert snapshot["environment_variables"]["NEURALMARKET_LOG_LEVEL"] == {"configured": True}
+
+
+@pytest.mark.unit
+def test_repository_source_identity_shape() -> None:
+    identity = repository_source_identity()
+    assert set(identity) == {"git_commit", "git_dirty"}
+    if identity["git_commit"] is not None:
+        assert len(identity["git_commit"]) == 40
+    assert identity["git_dirty"] in (None, False, True)
+
+
+@pytest.mark.unit
+def test_repository_source_identity_tracked_only_dirty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """git_dirty reflects TRACKED drift only; untracked files are not dirty."""
+    import subprocess
+
+    def git(*args: str) -> None:
+        subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True)
+
+    git("init", "-q")
+    git("config", "user.email", "t@t")
+    git("config", "user.name", "t")
+    (tmp_path / "tracked.txt").write_text("v1\n", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-qm", "seed")
+
+    clean = repository_source_identity(tmp_path)
+    assert clean["git_dirty"] is False
+
+    # An untracked file must NOT make a tracked-clean source tree appear dirty.
+    (tmp_path / "scratch.txt").write_text("untracked\n", encoding="utf-8")
+    untracked_only = repository_source_identity(tmp_path)
+    assert untracked_only["git_dirty"] is False
+    assert untracked_only["git_commit"] == clean["git_commit"]
+
+    # A tracked modification IS dirty.
+    (tmp_path / "tracked.txt").write_text("v2\n", encoding="utf-8")
+    tracked_dirty = repository_source_identity(tmp_path)
+    assert tracked_dirty["git_dirty"] is True
+    assert tracked_dirty["git_commit"] == clean["git_commit"]

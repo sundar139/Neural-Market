@@ -17,6 +17,7 @@ import numpy as np
 import torch
 import yaml
 
+from neuralmarket.core.environment import repository_source_identity
 from neuralmarket.data.manifests import canonical_dumps
 from neuralmarket.data.research.inventory import ResearchInventory
 from neuralmarket.data.research.sde_windows import (
@@ -116,6 +117,7 @@ def build_validation_identity(
     benchmark_path: Path,
     config_hash: str,
     gate_spec_hash: str,
+    source_identity: dict[str, Any],
 ) -> dict[str, Any]:
     """Schema for future external-validation provenance, computed from real objects.
 
@@ -150,6 +152,8 @@ def build_validation_identity(
         "baseline_suite_sha256": hashlib.sha256(benchmark_path.read_bytes()).hexdigest(),
         "model_config_hash": config_hash,
         "gate_spec_hash": gate_spec_hash,
+        "git_commit": source_identity["git_commit"],
+        "git_dirty": source_identity["git_dirty"],
     }
 
 
@@ -168,6 +172,7 @@ def run_v5_experiment(
 ) -> dict[str, Any]:
     """Run the v5 structured volatility experiment."""
     start = datetime.now(UTC)
+    source_identity = repository_source_identity()
     config = load_v5_config(config_path)
     config_file_sha256 = hashlib.sha256(config_path.read_bytes()).hexdigest()
     config_hash = config.config_hash()
@@ -335,6 +340,7 @@ def run_v5_experiment(
             benchmark_path=benchmark_path,
             config_hash=config_hash,
             gate_spec_hash=gate_spec.spec_hash(),
+            source_identity=source_identity,
         )
         evaluation = {
             "contract": {
@@ -384,6 +390,8 @@ def run_v5_experiment(
             "evaluation_utc_iso": start.isoformat(),
             "status": status,
             "note": "Structured volatility hypothesis test",
+            "git_commit": source_identity["git_commit"],
+            "git_dirty": source_identity["git_dirty"],
         },
     }
 
