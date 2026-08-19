@@ -1,0 +1,15 @@
+replay start UTC: 2026-08-19T05:32:47.171986+00:00
+source identity: {"git_commit": "38b80564ae1935c5f0ddab75b4de63eccfab8a88", "git_dirty": false}
+training series SHA: 4863b2cc63a09ffb03bbe455c7859c46b521b6f7bef8212e0e3876ac8488669c
+windows: fit=672 selection=107 selection_target_start=756
+training done: best_epoch=8 final_epoch=48
+selection: initial_total=8.62828350e+00 epoch1_total=8.44742489e+00 best_total=5.25165558e-01 improved=True
+gate evaluated (1x): gate_passed=True
+replay selected checkpoint sha=452f70058eb03a83af248fdb3c85f413264becd302b1e71d11167f10ac7b887f
+refit frozen: final checkpoint sha=c7b9be5d666ae24fe208cdc9241eab1cbca0cbe95e5576d562fca0bd73ea2be4
+replay end UTC: 2026-08-19T05:36:36.121690+00:00
+RESULT STATUS: EXACT_MATCH
+gate passed: True/6
+counters: {"training_calls": 1, "gate_calls": 1, "refit_calls": 1, "training_series_calls": 1, "validation_series_attempts": 0, "other_split_attempts": 0, "external_validation_calls": 0, "final_test_calls": 0}
+result: C:\Users\rohit\Documents\Personal Projects\Neural Market\reports\research\structured_vol_v5_reproducibility.json sha=1c2fb7a8853275bb8bc623a32229423b5ccf4fc785f6bcbf438eba6200c29414
+REPLAY_EXIT_CODE=0
