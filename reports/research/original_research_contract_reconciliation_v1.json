@@ -1,0 +1,418 @@
+{
+  "schema_version": "1.0",
+  "task_id": "NM-R4-ORIGINAL-CONTRACT-RECONCILIATION-022",
+  "risk": "R4",
+  "repository": {
+    "branch": "main",
+    "starting_head": "9764bc2c6c42603b90c5537480885b977f7693b9",
+    "starting_parent": "b203471e0a80f94b5987597d73fa04f209a34c32",
+    "safety_branch": "safety/pre-original-contract-reconciliation-9764bc2"
+  },
+  "closure_reference": {
+    "closure_commit": "9764bc2c6c42603b90c5537480885b977f7693b9",
+    "closure_parent": "b203471e0a80f94b5987597d73fa04f209a34c32",
+    "external_validation_state": "CLOSED",
+    "external_validation_evidence": "VALIDATED",
+    "evidence_audit_task": "NM-R4-V5-EXTERNAL-VALIDATION-EVIDENCE-AUDIT-020",
+    "evidence_audit_verdict": "VALIDATED WITH NON-BLOCKING FINDINGS",
+    "governed_constructions": 2,
+    "effective_max_governed_constructions": 2,
+    "third_construction_permitted": false,
+    "final_test_authorized": false
+  },
+  "original_contract_sources": [
+    {
+      "requirement": "H1 generator fidelity; H2 training stability; H3-H5 hedging; research question signature-kernel; five-seed rule; CVaR/turnover thresholds; failure criteria; split governance",
+      "source_file": "reports/protocol/research_protocol_v1.md",
+      "commit": "349a5b3",
+      "authority": "normative \u2014 hypotheses and experimental governance are frozen confirmatory thresholds; research question line 8 specifies signature-kernel",
+      "type": "normative"
+    },
+    {
+      "requirement": "Chronological splits (training 2018-05-01\u20132021-12-31, validation 2022-05-26\u20132023-06-30, final test sealed 2023-11-22\u20132025-12-31; purge 90 + embargo 10; 100-session boundaries)",
+      "source_file": "reports/protocol/research_protocol_amendment_001.md + data/manifests/split_manifest_v1.json",
+      "commit": "81064f9 / 349a5b3 base",
+      "authority": "normative \u2014 split_manifest hash 877caee3f7bb471a491c299a8673fdf1b386b12b9ba7f4d17bd52d2954bdcabe frozen before training",
+      "type": "normative"
+    },
+    {
+      "requirement": "Classical generator baselines: IID bootstrap, block bootstrap, GBM, GJR-GARCH or EGARCH, Heston",
+      "source_file": "reports/protocol/research_protocol_v1.md lines 26-31",
+      "commit": "349a5b3",
+      "authority": "normative \u2014 baseline suite and empirical benchmark are frozen artifacts",
+      "type": "normative"
+    },
+    {
+      "requirement": "Signature methodology underspecified at v1; frozen FALLBACK was finite level-3 Chen-based truncated signature (labelled as approximation) before external validation",
+      "source_file": "reports/research/neural_sde_signature_v1.md Protocol trace + src/neuralmarket/models/signature.py",
+      "commit": "745d342 lineage",
+      "authority": "fallback design frozen with no architecture/signature level pinned by v1; labelled honestly as finite-level approximation",
+      "type": "fallback \u2014 not a silent change"
+    },
+    {
+      "requirement": "SDE solver / stochastic semantics not pinned by tracked protocol at 9764bc2; no torchsde/Stratonovich/reversible-Heun in any committed protocol file",
+      "source_file": "search_files over reports/protocol + src at 9764bc2 (absent)",
+      "commit": "9764bc2",
+      "authority": "design preference stated in task 022 but not a normative v1 line-item",
+      "type": "preference \u2014 not a confirmatory threshold"
+    }
+  ],
+  "current_implementation": {
+    "model": {
+      "class": "neuralmarket.models.structured_vol_sde.StructuredVolatilityNeuralSde",
+      "state_dim": 2,
+      "brownian_dim": 2,
+      "n_context": 4,
+      "hidden_units": 64,
+      "hidden_layers": 2,
+      "activation": "SiLU",
+      "drift": "MLP(t, x, V, ctx) -> mu_x",
+      "diffusion": "sigma_x(V)=softplus(a*V+b)+eps, softplus-constrained positive",
+      "volatility": "dV = kappa(t,ctx)*(theta(t,ctx)-V) dt + eta(t,ctx) dW2, kappa/eta via softplus+eps",
+      "v_clamp": [
+        -10.0,
+        10.0
+      ],
+      "config_hash": "5bdbaabd2fb257a7a82b8c600403e638d860520aa4952055a1b153894caf4157",
+      "diffusion_epsilon": 1e-06,
+      "dt": 0.003968253968253968,
+      "horizon": 63,
+      "signature_level": 3
+    },
+    "training": {
+      "objective": "RBF-MMD over individual truncated-signature feature vectors + per-path log-variance penalty",
+      "modules": [
+        "src/neuralmarket/models/signature.py (Chen level-3)",
+        "src/neuralmarket/models/signature_mmd.py (biased MMD2, Gretton)"
+      ],
+      "standardizer": "per-dim z-score fitted from training-fit real paths only",
+      "bandwidth": "median pairwise squared distance, train_fit_real_standardized, max_vectors 512, floor 1e-8",
+      "variance_penalty": "log_variance_penalty_per_path coefficient 1.0 eps 1e-12",
+      "optimizer": "AdamW lr 1e-3 weight_decay 1e-6 batch 64 max_epochs 400 patience 40 grad_norm_clip 1.0",
+      "seeds_in_config": {
+        "model_init_seed": 8281,
+        "data_seed": 8282,
+        "eval_seed": 8283,
+        "note": "three experiment-purpose seeds, not three trained models"
+      },
+      "fit_fraction": 0.8,
+      "config_yaml": "configs/research/structured_vol_neural_sde_v5.yaml",
+      "config_yaml_sha256": "f9ca3e9b09fdaaf0a631ee1eb7e896ea2f0e2adf8c6b7b11a4206da4d5519972"
+    },
+    "integration": {
+      "discretization": "Euler-Maruyama",
+      "stochastic_interpretation": "Ito-style (no Stratonovich correction)",
+      "timestep": 0.003968253968253968,
+      "horizon": 63,
+      "paths": 1024,
+      "simulator": "simulate_structured(model, context, seed) with torch.Generator.manual_seed",
+      "code": "src/neuralmarket/models/structured_vol_sde.py forward() lines 215-266",
+      "torchsde_installed": false
+    },
+    "randomness": {
+      "independently_trained_v5_models": 1,
+      "frozen_candidate": "data/processed/research/model/structured-volatility-neural-sde-v5/5bdbaabd2fb257a7/checkpoint_final.pt SHA c7b9be5d666ae24fe208cdc9241eab1cbca0cbe95e5576d562fca0bd73ea2be4",
+      "selected_checkpoint": "data/processed/research/model/structured-volatility-neural-sde-v5/5bdbaabd2fb257a7/checkpoint.pt SHA 452f70058eb03a83af248fdb3c85f413264becd302b1e71d11167f10ac7b887f",
+      "training_curve": "data/processed/research/model/structured-volatility-neural-sde-v5/5bdbaabd2fb257a7/training_curve.json SHA e29f2afcdff75e151ca6a85f3c77e7a209a3c1827b6d1abcb191ce36c6d30a2d",
+      "historical_run_invalidated": "69623a82f91ff0db (Amendment 016)",
+      "internal_gate_seeds": {
+        "gate_seed": 7777,
+        "drift_diffusion_seed": 7778,
+        "note": "not training seeds; Amendment 016 provenance formalization"
+      },
+      "evaluation_seeds_do_not_count": true
+    },
+    "evaluation": {
+      "gate_v2": "commit c510533 lineage, criteria in Amendment 016 section 4 (loss < init, variance [0.5,2], dispersion [0.5,2], uniqueness >=0.99, ACF(1) <=0.25, drift/diffusion RMS <=0.50) \u2014 passed",
+      "classical_baselines": [
+        "iid_bootstrap",
+        "block_bootstrap",
+        "gbm",
+        "gjr_garch",
+        "heston"
+      ],
+      "external_validation": "CLOSED at b203471/9764bc2, report-only per-family baseline-relative, no aggregate/H1-H2, both target identities 56b3ba15c0c95d6a89eb59ead89ab5dc669327245bb5f383666a384f3fd3c5b9",
+      "final_test": "sealed (100-session boundary 2023-07-03\u20132023-11-21; final test 2023-11-22\u20132025-12-31, 528 sessions; split_manifest_v1)"
+    }
+  },
+  "gap_classifications": {
+    "five_seed": {
+      "original_requirement": "v1 line 99 All neural comparisons use at least five independent seeds + line 100 must report failures + line 105 separate market-period vs seed uncertainty + hedging endpoint line 85 not driven by one seed",
+      "applies_to": "H1 and H2 jointly; most load-bearing for H2 (stability across seeds) and H3 primary hedging claim",
+      "what_counts": "independent weight init + independent shuffled training trajectory \u2014 not evaluation/bootstrap/gate/bandwidth seeds",
+      "currently_available": 1,
+      "seeds_8281_8282_8283_are": "three experiment-purpose seeds, not three trained models",
+      "evaluation_bootstrap_seeds_count": 0,
+      "classification": "A \u2014 REQUIRED BEFORE FINAL TEST",
+      "remaining_work": "Train four additional v5 instances under byte-identical frozen methodology (same config_hash, objective, dt/horizon/level, gate); report failures honestly; freeze a five-member candidate family identity before any final-test design",
+      "final_test_consequence": "No confirmatory H2/H3 claim from one seed; full original-contract hedging final test requires five"
+    },
+    "signature_method": {
+      "original_intended": "signature-kernel (v1 line 8, signature-kernel; sigkernel/PDE form not pinned)",
+      "current": "finite level-3 lead-lag truncated signature via Chen identity + per-vector RBF-MMD with training-fit bandwidth + log-variance penalty (signature.py + signature_mmd.py)",
+      "scientific_role": "training objective for H1/H2 generator fidelity and stability",
+      "equivalent": false,
+      "note": "Truncated expected-signature MMD masks dispersion collapse (v1 proved at 6.7% dispersion); RBF-MMD was introduced to fix that; true PDE kernel is a different kernel, not a parameter",
+      "methodology_change_required_to_install_original": "New dependency (sigkernel) + new kernel identity",
+      "new_candidate_if_changed": true,
+      "external_evidence_transferable": false,
+      "classification": "B \u2014 ORIGINAL DESIGN PREFERENCE, SCIENTIFICALLY REPLACEABLE",
+      "final_test_consequence": "Can remain confirmatory if frozen and labelled honestly as finite level-3 RBF-MMD; no silent upgrade after closure"
+    },
+    "sde_semantics": {
+      "original_intended": "Stratonovich + torchsde reversible-Heun (stated in task 022 \u00a71 as design intent; no normative v1 line at 9764bc2)",
+      "current": "Euler-Maruyama, Ito-style discretization, dt=1/252, PyTorch-only (structured_vol_sde.py forward lines 238-258, no torchsde import)",
+      "scientific_role": "path simulation numerics; training loss is pathwise signature-MMD, not Girsanov likelihood",
+      "equivalent": false,
+      "methodology_change_required_to_install_original": "New solver package + Stratonovich correction",
+      "retraining_required": true,
+      "new_candidate_if_changed": true,
+      "external_evidence_transferable": false,
+      "classification": "B \u2014 ORIGINAL DESIGN PREFERENCE, SCIENTIFICALLY REPLACEABLE",
+      "final_test_consequence": "Can remain confirmatory if frozen as Euler/Ito dt=1/252 without claiming Stratonovich; no silent solver swap after closure"
+    }
+  },
+  "h1_h2_matrix": {
+    "H1_generator_fidelity": {
+      "original_statement": "the signature-score neural SDE reproduces financial path structure more faithfully than classical and adversarial baselines",
+      "required_candidate": "signature-score neural SDE",
+      "comparators": {
+        "neural_adversarial": "WGAN neural-CDE",
+        "classical": [
+          "iid_bootstrap",
+          "block_bootstrap",
+          "gbm",
+          "gjr_garch_or_egarch",
+          "heston"
+        ]
+      },
+      "metrics": "stylized-fact scorecard families under research-metric-spec-v1 (Amendment 017)",
+      "seed_requirement": 5,
+      "final_test_role": "Not the primary fidelity endpoint \u2014 hedging is; fidelity is descriptively supported by external validation",
+      "current_evidence": "Single-seed report-only external validation a2834558: per-family ranks 1/6 mean, 2/6 excess_kurtosis/skewness, 4/6 return_acf/sq_return_acf/leverage, 5/6 quantiles/variance, 6/6 abs_return_acf; no aggregate/threshold/H1",
+      "unresolved": [
+        "Five-seed replication",
+        "WGAN adversarial comparator",
+        "Per-family label must stay non-confirmatory"
+      ],
+      "claim_consequence": "D \u2014 CLAIM-SCOPE REDUCTION REQUIRED: current supports per-family baseline-relative single-seed report, not confirmatory H1",
+      "status": "NOT PROVEN"
+    },
+    "H2_training_stability": {
+      "original_statement": "the signature-score training objective is more stable across seeds and epochs than adversarial (WGAN) training",
+      "required_candidate": "signature-score neural SDE",
+      "comparators": {
+        "adversarial": "WGAN neural-CDE under comparable budget"
+      },
+      "metrics": "Stability across seeds and epochs; failed-seed reporting; separated seed vs market-period uncertainty",
+      "seed_requirement": 5,
+      "final_test_role": "Stability is an internal/training claim, not a final-test hedging claim, but blocks H2 acceptance",
+      "current_evidence": "No adversarial model trained; one training curve e29f2afc at one seed; reproducibility proven but not stability",
+      "unresolved": [
+        "Five-seed family",
+        "WGAN comparator",
+        "Stability metrics"
+      ],
+      "claim_consequence": "A \u2014 REQUIRED BEFORE FINAL TEST for any H2 claim",
+      "status": "NOT PROVEN"
+    },
+    "H3_cost_aware_hedging": {
+      "original_statement": "deep hedging on signature-score synthetic paths reduces cost-aware hedging risk on real held-out episodes",
+      "required_candidate": "signature-score neural SDE family",
+      "comparators": [
+        "GRU deep hedger",
+        "BS delta",
+        "dynamic BS delta",
+        "cost-adjusted delta"
+      ],
+      "metrics": "Delta_CVaR < 0, paired 95% CI excludes zero, >=5% improvement, >=2 nonzero cost levels, no deterioration in avg loss, no pathological turnover/position, not driven by one seed (v1 lines 77-86), Holm correction, paired dependence-aware inference",
+      "seed_requirement": 5,
+      "final_test_role": "Confirmatory downstream endpoint \u2014 requires sealed final test",
+      "current_evidence": "Not evaluated; final test sealed",
+      "unresolved": [
+        "Hedging policy",
+        "SAP (CVaR procedure, Holm, turnover QC, cost levels)",
+        "Five-seed family"
+      ],
+      "claim_consequence": "A \u2014 blocks confirmatory hedging claim until P0 prerequisites done",
+      "status": "NOT PROVEN"
+    }
+  },
+  "post_validation_methodology_change_analysis": {
+    "governance": "External validation CLOSED (CLOSED, 2/2 consumed, effective_max 2, third FORBIDDEN, terminal_no_tolerance true) \u2014 Amendments 018/019, closure fd142a",
+    "changes": {
+      "signature_objective": {
+        "scope": "level/kernel/bandwidth/penalty",
+        "candidate_identity": "new config_hash => new candidate",
+        "retraining": true,
+        "new_gate": true,
+        "new_external_validation_required": true,
+        "can_inherit_a2834558": false
+      },
+      "solver": {
+        "scope": "Euler -> Heun / Euler-Maruyama -> torchsde",
+        "candidate_identity": "new numerics => new candidate",
+        "retraining": true,
+        "new_gate": true,
+        "new_external_validation_required": true,
+        "can_inherit_a2834558": false
+      },
+      "stochastic_interpretation": {
+        "scope": "Ito -> Stratonovich correction",
+        "candidate_identity": "new semantics => new candidate",
+        "retraining": true,
+        "new_gate": true,
+        "new_external_validation_required": true,
+        "can_inherit_a2834558": false
+      },
+      "architecture": {
+        "scope": "state_dim/brownian_dim/hidden_*",
+        "candidate_identity": "new config_hash => new candidate",
+        "retraining": true,
+        "new_gate": true,
+        "new_external_validation_required": true,
+        "can_inherit_a2834558": false
+      },
+      "training_objective": {
+        "scope": "optimizer/loss weights/patience",
+        "candidate_identity": "new config_hash => new candidate unless proven otherwise via controlled bridging",
+        "can_inherit_a2834558": false
+      }
+    },
+    "bridging_rule": "Any change is a new candidate unless proven otherwise with a controlled bridging argument pre-registered outside this arm",
+    "loophole": "None \u2014 closed validation arm cannot be circumvented"
+  },
+  "final_test_prerequisites": [
+    {
+      "id": 1,
+      "requirement": "External-validation closure complete (report-only, rank boundary, lag caveat)",
+      "source": "Amendments 017-019, closure fd142a",
+      "status": "DONE"
+    },
+    {
+      "id": 2,
+      "requirement": "Current candidate identity frozen (config_hash, selected vs final checkpoint, training curve)",
+      "source": "5bdbaabd2fb257a + 452f7005/c7b9be5d/e29f2a",
+      "status": "DONE"
+    },
+    {
+      "id": 3,
+      "requirement": "Five-seed requirement satisfied OR formally amended with narrowed claim",
+      "source": "v1 line 99 + hedging endpoint line 85",
+      "status": "NOT DONE \u2014 P0"
+    },
+    {
+      "id": 4,
+      "requirement": "Signature methodology frozen as amended claim (finite level-3 RBF-MMD)",
+      "source": "Amendment 020 section 4.2",
+      "status": "DONE"
+    },
+    {
+      "id": 5,
+      "requirement": "Solver/stochastic semantics frozen as Euler/It\u00f4",
+      "source": "Amendment 020 section 4.3",
+      "status": "DONE"
+    },
+    {
+      "id": 6,
+      "requirement": "H1/H2 claim scope frozen (per-family baseline-relative vs confirmatory threshold)",
+      "source": "v1 H1/H2 + Amendment 019 section 7",
+      "status": "DONE"
+    },
+    {
+      "id": 7,
+      "requirement": "Statistical analysis plan (SAP) frozen \u2014 CVaR paired CI, Holm, dependence-aware, turnover/position QC, cost levels, seed-uncertainty decomposition",
+      "source": "v1 Primary endpoint + governance",
+      "status": "NOT DONE"
+    },
+    {
+      "id": 8,
+      "requirement": "Final-test evaluation harness frozen (single-access, sealed-split access, split identity replay, gate diagnostics)",
+      "source": "v1 line 97 + split_manifest_v1",
+      "status": "NOT DONE"
+    },
+    {
+      "id": 9,
+      "requirement": "Independent audit of SAP + harness + seed family complete",
+      "source": "Agent contract",
+      "status": "NOT DONE"
+    },
+    {
+      "id": 10,
+      "requirement": "Explicit final-test authorization (separate R4/R5 decision, NOT this amendment)",
+      "source": "Agent contract risk classes",
+      "status": "NOT AUTHORIZED"
+    }
+  ],
+  "current_v5_final_test_eligibility": {
+    "checkpoint": "data/processed/research/model/structured-volatility-neural-sde-v5/5bdbaabd2fb257a7/checkpoint_final.pt",
+    "sha256": "c7b9be5d666ae24fe208cdc9241eab1cbca0cbe95e5576d562fca0bd73ea2be4",
+    "external_validation": "CLOSED report-only evidence a2834558 (transferable only as descriptive context, not as hedging proof)",
+    "classification": "YES_BUT_ONLY_AFTER_P0_AND_UNDER_NARROWED_CLAIM \u2014 practically D/A: current single-seed checkpoint is eligible as one member of a five-seed family after P0, not as a standalone confirmatory hedge claim",
+    "required_prerequisites": [
+      3,
+      7,
+      8,
+      9,
+      10
+    ]
+  },
+  "five_seed_without_reopening_validation": {
+    "training_replicate_requirement": "Four additional v5 instances under byte-identical frozen methodology, each from a fresh independent model_init_seed, on internal fit/selection data only; record every replicate and any failed seeds",
+    "external_validation_repeat_requirement": "None \u2014 do not re-execute validation; single-seed external validation a2834558 remains the closed evidence for this seed; family variability is characterized on internal/hedging evidence, not by reopening validation",
+    "hedging_final_test_requirement": "GRU hedger evaluation on the sealed final test after prerequisites frozen, consuming all five generator seeds as an ensemble/family \u2014 still one final-test construction"
+  },
+  "priority": {
+    "P0_blocks_final_test": [
+      "Five-seed family completion (four additional trainings)",
+      "SAP freeze for hedging claim",
+      "Final-test single-access harness freeze + independent audit"
+    ],
+    "P1_publication_grade": [
+      "WGAN adversarial comparator under comparable budget (for original H2)",
+      "Hedging policy (GRU vs BS variants under proportional costs)"
+    ],
+    "P2_robustness_extension": [
+      "Separate sigkernel candidate family (true PDE kernel)",
+      "Separate Stratonovich/torchsde candidate family",
+      "H4 CVaR vs entropic + H5 synthetic pretraining extensions"
+    ],
+    "P3_historical_preference": [
+      "Lag-66/horizon-63 caveat already documented; DVC/bookkeeping; copy edits"
+    ],
+    "ordering_rule": "By scientific consequence (confirmatory threshold vs narrative), not by coding effort"
+  },
+  "chosen_strategy": "STRATEGY B \u2014 Freeze a defensible amended methodology around current v5 and narrow claims (hybridized by deferring A as a parallel extension)",
+  "strategy_rationale": "B preserves the only closed, report-only validated single-seed artifact c7b9be5d as seed-1, respects the closed validation arm (no new validation needed to freeze claims), and satisfies the normative five-seed threshold via a bounded pre-registered extension (four more seeds under identical config). Pure A would destroy the validated candidate identity with sigkernel/torchsde installs now impossible to re-validate under the closed arm. Pure C front-loads extension over the P0 blocker. D is not needed \u2014 evidence at 9764bc2 suffices.",
+  "strategy_tradeoff": "Narrows archival claim from true infinite-level sigkernel SDE to finite level-3 lead-lag + RBF-MMD (Euler/Ito dt=1/252) neural SDE; hedging claim remains conditional on five-seed SAP. Sigkernel/Stratonovich become separate candidate families with independent validation lineages, not mutations.",
+  "reconciliation_artifacts": {
+    "amendment_020_path": "reports/protocol/research_protocol_amendment_020.md",
+    "amendment_020_sha256": "43243dd345c5f98b92591174349ee3f42236b08ce689330f5a82c4a8d7c08ba4",
+    "amendment_020_blob": "5315976c34fc88fd6741473e45f4d0b5d3306b13"
+  },
+  "protected_integrity": {
+    "confirmatory_result": "a28345587989ea1d91d46ed7c9b332151b84af98c0d4918f0fc281d03ba4ca38",
+    "closure_json": "fd142ad47006513bbd831019e30701d64356945a048ccf13959acf2a63ad5c20",
+    "amendment_017": "9ff02f54c2264ef3b563062738e3d15e5802f6c92d56e88a284e8caae7c12abd",
+    "amendment_018": "c5ecf9829e5177bd608cbb00e1ec70652b3fe8266c4315b785723b915adc1e40",
+    "amendment_019": "ce851f5aa6ed7f9e8b7d1a5ba7915496492a2f702c6e49d091315af56f57b7b2",
+    "closure_json_sha256": "fd142ad47006513bbd831019e30701d64356945a048ccf13959acf2a63ad5c20",
+    "contract_yaml": "c7544e5b7cd70ab93e5c6b0ac747ad5eb882536faefca1f575834f2713658363",
+    "harness": "726f885a5f0590b542dc4ba989bc5ea0a97afd3f05bb4c06ad9f9c51e1c1e143",
+    "harness_blob": "e77db7b5a99f17d9c55b332f6f81f8fe6ede3b43",
+    "selected_checkpoint": "452f70058eb03a83af248fdb3c85f413264becd302b1e71d11167f10ac7b887f",
+    "training_curve": "e29f2afcdff75e151ca6a85f3c77e7a209a3c1827b6d1abcb191ce36c6d30a2d",
+    "final_checkpoint": "c7b9be5d666ae24fe208cdc9241eab1cbca0cbe95e5576d562fca0bd73ea2be4",
+    "production_gate_v2": "4604231cfc5d26f61808b65ce9269a120ccb44c2c96a590853341e31c9f14bc6",
+    "reproducibility": "6d182d668f7e5a3a8ac39fa3d9a8e5a3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d9fa3d9d",
+    "validation_series": "ec49994bf262b6cd29f8a3ed772f00cfcb901ef04181c14e9ccefb908f47edc8",
+    "target_verification": "56b3ba15c0c95d6a89eb59ead89ab5dc669327245bb5f383666a384f3fd3c5b9"
+  },
+  "authorization": {
+    "further_external_validation": false,
+    "final_test": false,
+    "tuning": false,
+    "retraining": "only if a later governed task explicitly authorizes the four-seed extension",
+    "hedging": false
+  }
+}
