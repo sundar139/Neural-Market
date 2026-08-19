@@ -1,0 +1,5 @@
+v5 external-validation stage complete
+status=EXTERNAL_VALIDATION_COMPLETED
+validation_attempts=1 constructions=1
+evaluations=1
+prohibitions: training_calls=0, refit_calls=0, tuning_calls=0, final_test_attempts=0, provider_calls=0, network_calls=0

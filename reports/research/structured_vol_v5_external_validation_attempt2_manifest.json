@@ -1,0 +1,132 @@
+{
+  "task_id": "NM-R4-V5-EXTERNAL-VALIDATION-EXECUTE-019",
+  "risk": "R4",
+  "construction_number": 2,
+  "construction_of_max": "2 of 2",
+  "effective_max_governed_validations": 2,
+  "third_construction_allowed": false,
+  "terminal_no_tolerance_policy": true,
+  "execution_recipe_head": "f07c07666de096afc279a8b4cdb7074052ea5626",
+  "scientific_source_commit": "357971a67c68492fc0c4f5bf31f94f9685639f65",
+  "harness": {
+    "path": "reports/research/evidence/structured_vol_v5_external_validation_harness.py",
+    "sha256": "726f885a5f0590b542dc4ba989bc5ea0a97afd3f05bb4c06ad9f9c51e1c1e143",
+    "git_blob": "e77db7b5a99f17d9c55b332f6f81f8fe6ede3b43",
+    "working_equals_committed": true
+  },
+  "candidate": {
+    "name": "structured-volatility-neural-sde-v5",
+    "source_commit": "357971a67c68492fc0c4f5bf31f94f9685639f65",
+    "config_hash": "5bdbaabd2fb257a7a82b8c600403e638d860520aa4952055a1b153894caf4157",
+    "checkpoint_path": "data/processed/research/model/structured-volatility-neural-sde-v5/5bdbaabd2fb257a7/checkpoint_final.pt",
+    "checkpoint_sha256": "c7b9be5d666ae24fe208cdc9241eab1cbca0cbe95e5576d562fca0bd73ea2be4"
+  },
+  "contract": {
+    "amendment_017_sha256": "9ff02f54c2264ef3b563062738e3d15e5802f6c92d56e88a284e8caae7c12abd",
+    "amendment_018_sha256": "c5ecf9829e5177bd608cbb00e1ec70652b3fe8266c4315b785723b915adc1e40",
+    "yaml_sha256": "c7544e5b7cd70ab93e5c6b0ac747ad5eb882536faefca1f575834f2713658363",
+    "version": "structured-vol-v5-external-validation-v1"
+  },
+  "metric": {
+    "family_error_method": "neuralmarket.data.research.benchmark._family_errors",
+    "scorecard_implementation": "neuralmarket.eval.scorecard.compute_scorecard",
+    "spec_hash": "5e43a3a3242271802ee7057405836ffb6d12d0ce732d3256dbd362ce5a400eb3"
+  },
+  "result": {
+    "path": "reports/research/structured_vol_v5_external_validation_confirmatory.json",
+    "sha256": "a28345587989ea1d91d46ed7c9b332151b84af98c0d4918f0fc281d03ba4ca38",
+    "status": "EXTERNAL_VALIDATION_COMPLETED",
+    "governance_mode": "report_only",
+    "runtime_source": {
+      "git_commit": "f07c07666de096afc279a8b4cdb7074052ea5626",
+      "git_dirty": false
+    }
+  },
+  "attempt2_evidence": {
+    "transcript_path": "reports/research/structured_vol_v5_external_validation_attempt2_stdout.log",
+    "transcript_sha256": "132ecca481d8eb37d4a908c1a129f02da48f14758809103b4c7e7d4f4abaf6ef",
+    "exit_code_path": "reports/research/structured_vol_v5_external_validation_attempt2_exit_code.txt",
+    "exit_code_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "exit_code": 0,
+    "start_utc": "unknown",
+    "end_utc": "unknown"
+  },
+  "prior_failed_attempt": {
+    "blinded": true,
+    "exit_code_sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+    "failure_classification": "PROVEN_HARNESS_IDENTITY_CHECK_DEFECT",
+    "failure_transcript_sha256": "5063b0f0eceaefb53657c869adc46bfaf8293737b9a8b717d9d75a27da58393d",
+    "model_simulation": false,
+    "task_id": "NM-R4-V5-EXTERNAL-VALIDATION-EXECUTE-015",
+    "validation_constructed": true
+  },
+  "counters": {
+    "baseline_comparison_calls": 1,
+    "checkpoint_substitution_attempts": 0,
+    "external_validation_evaluations": 1,
+    "family_error_calls": 1,
+    "final_test_attempts": 0,
+    "generated_scorecard_calls": 1,
+    "model_simulation_calls": 1,
+    "network_calls": 0,
+    "provider_calls": 0,
+    "refit_calls": 0,
+    "training_calls": 0,
+    "training_series_constructions": 1,
+    "tuning_calls": 0,
+    "validation_scorecard_calls": 1,
+    "validation_series_attempts": 1,
+    "validation_series_constructions": 1
+  },
+  "validation_identity": {
+    "first_date": "2022-05-26",
+    "last_date": "2023-06-30",
+    "observation_count": 274,
+    "series_sha256": "ec49994bf262b6cd29f8a3ed772f00cfcb901ef04181c14e9ccefb908f47edc8",
+    "split": "validation"
+  },
+  "target_verification": {
+    "frozen_identity": "56b3ba15c0c95d6a89eb59ead89ab5dc669327245bb5f383666a384f3fd3c5b9",
+    "match": true,
+    "recomputed_identity": "56b3ba15c0c95d6a89eb59ead89ab5dc669327245bb5f383666a384f3fd3c5b9"
+  },
+  "conditioning": {
+    "context_first_date": "2021-12-01",
+    "context_hash": "a715fbcbbf9484384dd64f64527992a242d7e951131d6da3f3cfbea8fbf72904",
+    "context_last_date": "2021-12-31",
+    "context_source": "final eligible training context (w_boundary; last 22 training returns)",
+    "context_window_id": "w_boundary",
+    "mode": "training_boundary"
+  },
+  "generation": {
+    "horizon": 63,
+    "paths": 1024,
+    "seed": 8283,
+    "shape": [
+      1024,
+      63
+    ]
+  },
+  "protected_integrity_before_after": {
+    "note": "before == after verified; hashes below are current (post-execution) values which equal pre-execution values",
+    "anchors": {
+      "canonical_selected_checkpoint": "c7b9be5d666ae24fe208cdc9241eab1cbca0cbe95e5576d562fca0bd73ea2be4",
+      "amendment_017": "9ff02f54c2264ef3b563062738e3d15e5802f6c92d56e88a284e8caae7c12abd",
+      "amendment_018": "c5ecf9829e5177bd608cbb00e1ec70652b3fe8266c4315b785723b915adc1e40",
+      "contract_yaml": "c7544e5b7cd70ab93e5c6b0ac747ad5eb882536faefca1f575834f2713658363",
+      "repaired_harness": "726f885a5f0590b542dc4ba989bc5ea0a97afd3f05bb4c06ad9f9c51e1c1e143",
+      "construction1_transcript": "5063b0f0eceaefb53657c869adc46bfaf8293737b9a8b717d9d75a27da58393d",
+      "construction1_exit": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+      "benchmark": "b5e24578dc1be6817b1e35a7ae41e53d39967f524757bab81cc2338d7265cc31",
+      "suite": "28a10b1d23ee225b07a94c2f12a01fa08b627e443f1da5eee1329541b9aa139a"
+    },
+    "all_unchanged": true
+  },
+  "final_test_authorized": false,
+  "governance": {
+    "mode": "report_only",
+    "risk": "R4",
+    "status": "EXTERNAL_VALIDATION_COMPLETED",
+    "task_id": "NM-R4-V5-EXTERNAL-VALIDATION-EXECUTE-019"
+  }
+}
