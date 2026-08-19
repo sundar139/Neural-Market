@@ -1,0 +1,248 @@
+{
+  "schema_version": "1.0",
+  "title": "Structured-volatility v5 replicate seed contract",
+  "task_ids": {
+    "reconciliation_task": "NM-R4-ORIGINAL-CONTRACT-RECONCILIATION-022",
+    "reconciliation_commit": "4610ede77e066356ea076f368f965b9ac80eb930",
+    "audit_task": "NM-R4-ORIGINAL-CONTRACT-RECONCILIATION-AUDIT-023",
+    "contract_task": "NM-R4-V5-REPLICATE-SEED-CONTRACT-024"
+  },
+  "amendment_references": {
+    "amendment_020_path": "reports/protocol/research_protocol_amendment_020.md",
+    "amendment_020_sha256": "43243dd345c5f98b92591174349ee3f42236b08ce689330f5a82c4a8d7c08ba4",
+    "amendment_020_status": "otherwise intact; one operational sentence superseded (model_init_seed-only variation)",
+    "amendment_021_path": "reports/protocol/research_protocol_amendment_021.md",
+    "amendment_021_sha256": "4ad94bceed70bb70a282bc472b97bc5fd0aad8bffb856d18bad3743c4bd822c2",
+    "amendment_021_blob": "8c33bd02bb2fd6e3eb0a9404503295b12f343407",
+    "original_protocol": "reports/protocol/research_protocol_v1.md @ 349a5b3 line 99 (normative five independent seeds)"
+  },
+  "scientific_methodology": {
+    "architecture": "StructuredVolatilityNeuralSde state_dim 2 brownian_dim 2 MLP(SiLU hidden 64x2) softplus diffusion + V clamp [-10,10]",
+    "objective": "finite level-3 lead-lag truncated signature (Chen) + per-vector RBF-MMD (biased Gretton) with training-fit standardizer + variance penalty, Euler/It\u00f4 dt 1/252 horizon 63",
+    "modules": [
+      "src/neuralmarket/models/signature.py",
+      "src/neuralmarket/models/signature_mmd.py",
+      "src/neuralmarket/models/structured_vol_sde.py"
+    ],
+    "config_yaml": "configs/research/structured_vol_neural_sde_v5.yaml",
+    "config_yaml_sha256": "f9ca3e9b09fdaaf0a631ee1eb7e896ea2f0e2adf8c6b7b11a4206da4d5519972",
+    "replicate_specific_config_hash_example": "5bdbaabd2fb257a7a82b8c600403e638d860520aa4952055a1b153894caf4157",
+    "family_methodology_identity": "730475987368bf8f408e44e8e387682f178a0cdd7a358939016ba9b6df57a719",
+    "family_methodology_identity_note": "canonical hash of V5ExperimentConfig with training.model_init_seed and training.data_seed stripped (eval_seed 8283 kept as COMMON_FIXED); byte-identical across all five members",
+    "invariants": "no hyperparameter, architecture, objective, dt/horizon, split, optimizer, gate criterion, or gate seed changes between members; only replicate RNG varies"
+  },
+  "rng_wiring": {
+    "model_init_seed_controls": [
+      "random.seed",
+      "numpy.random.seed",
+      "torch.manual_seed / cuda",
+      "parameter initialization"
+    ],
+    "model_init_seed_source": [
+      "src/neuralmarket/models/neural_sde.py:26 set_deterministic_seeds",
+      "src/neuralmarket/research/structured_vol_experiment.py:213,279"
+    ],
+    "data_seed_controls": [
+      "training Brownian noise (noise_gen)",
+      "minibatch/window permutation (order_gen)",
+      "selection-loss stochastic paths (selection_loss -> noise_gen)",
+      "refit Brownian noise + refit permutation"
+    ],
+    "data_seed_source": [
+      "src/neuralmarket/research/neural_sde_trainer_v3.py:218-219,367-368 (and v1/v2 equivalents)"
+    ],
+    "eval_seed_controls": [
+      "post-hoc generation via simulate_structured(model, context, seed=config.eval_seed) only \u2014 no training-time or Gate-v2 participation"
+    ],
+    "eval_seed_source": [
+      "src/neuralmarket/models/structured_vol_sde.py:270-283 simulate_structured",
+      "src/neuralmarket/research/structured_vol_experiment.py:324-326"
+    ],
+    "gate_seeds": {
+      "gate_seed": 7777,
+      "drift_diffusion_seed": 7778,
+      "bootstrap_seed": 8801,
+      "note": "fixed for all members; Amendment 016 provenance"
+    },
+    "minimum_varying_training_set": [
+      "model_init_seed",
+      "data_seed"
+    ],
+    "incorrect_prior_prescription": "model_init_seed only (Amendment 020 section 4.1/6) \u2014 superseded"
+  },
+  "replicate_derivation": {
+    "canonical_field": "replicate_seed",
+    "model_init_seed_formula": "replicate_seed",
+    "data_seed_formula": "replicate_seed + 1",
+    "valid_for": "Python random, NumPy, torch.Generator.manual_seed",
+    "seed_01_check": {
+      "replicate_seed": 8281,
+      "model_init_seed": 8281,
+      "data_seed": 8282,
+      "exact": true
+    },
+    "uniqueness_constraints": [
+      "all replicate_seed unique",
+      "all model_init_seed unique",
+      "all data_seed unique",
+      "no model_init_seed equals any data_seed across members (10 derived seeds pairwise distinct)",
+      "derived seeds valid for generators",
+      "schedule frozen before training and not selected on outcomes"
+    ],
+    "eval_seed_policy": {
+      "value": 8283,
+      "mode": "COMMON_FIXED across all five members",
+      "rationale": "training independence via {model_init_seed, data_seed}; common evaluation provides common-random-number comparability; evaluation noise not confounded with training-seed uncertainty",
+      "gate_seeds_fixed": {
+        "gate_seed": 7777,
+        "drift_diffusion_seed": 7778,
+        "bootstrap_seed": 8801
+      }
+    }
+  },
+  "family_membership": {
+    "family_size": 5,
+    "next_schedule_task": "freeze four replicate_seed values for v5-seed-02..05 respecting uniqueness constraints; then audit before training",
+    "members": [
+      {
+        "member_id": "v5-seed-01",
+        "replicate_seed": 8281,
+        "model_init_seed": 8281,
+        "data_seed": 8282,
+        "eval_seed": 8283,
+        "eval_seed_policy": "COMMON_FIXED",
+        "existing": true,
+        "checkpoint_final_path": "data/processed/research/model/structured-volatility-neural-sde-v5/5bdbaabd2fb257a7/checkpoint_final.pt",
+        "checkpoint_final_sha256": "c7b9be5d666ae24fe208cdc9241eab1cbca0cbe95e5576d562fca0bd73ea2be4",
+        "selected_checkpoint_path": "data/processed/research/model/structured-volatility-neural-sde-v5/5bdbaabd2fb257a7/checkpoint.pt",
+        "selected_checkpoint_sha256": "452f70058eb03a83af248fdb3c85f413264becd302b1e71d11167f10ac7b887f",
+        "training_curve_path": "data/processed/research/model/structured-volatility-neural-sde-v5/5bdbaabd2fb257a7/training_curve.json",
+        "training_curve_sha256": "e29f2afcdff75e151ca6a85f3c77e7a209a3c1827b6d1abcb191ce36c6d30a2d",
+        "config_hash": "5bdbaabd2fb257a7a82b8c600403e638d860520aa4952055a1b153894caf4157"
+      },
+      {
+        "member_id": "v5-seed-02",
+        "replicate_seed": null,
+        "model_init_seed": null,
+        "data_seed": null,
+        "eval_seed": 8283,
+        "status": "UNSCHEDULED"
+      },
+      {
+        "member_id": "v5-seed-03",
+        "replicate_seed": null,
+        "model_init_seed": null,
+        "data_seed": null,
+        "eval_seed": 8283,
+        "status": "UNSCHEDULED"
+      },
+      {
+        "member_id": "v5-seed-04",
+        "replicate_seed": null,
+        "model_init_seed": null,
+        "data_seed": null,
+        "eval_seed": 8283,
+        "status": "UNSCHEDULED"
+      },
+      {
+        "member_id": "v5-seed-05",
+        "replicate_seed": null,
+        "model_init_seed": null,
+        "data_seed": null,
+        "eval_seed": 8283,
+        "status": "UNSCHEDULED"
+      }
+    ],
+    "future_seeds_selected": false
+  },
+  "failed_seed_policy": {
+    "grounding": "reports/protocol/research_protocol_v1.md line 100 (normative) \u2014 failed seeds must be reported and may not be silently discarded",
+    "failure_criteria": [
+      "nonfinite training or selection loss",
+      "no valid checkpoint",
+      ">0.1% nonfinite generated paths",
+      "terminal-dispersion collapse below 10% of real-data dispersion",
+      "generated volatility >10x training reference without documented stress-test reason",
+      "unresolved data-leakage violation",
+      "unreconciled accounting/provenance error"
+    ],
+    "no_new_outcome_dependent_criteria": true,
+    "primary_family": "exactly five pre-scheduled primary slots v5-seed-01..05; a failed primary retains its member ID and seed tuple permanently, is never deleted/relabelled/replaced silently, is never dropped from the roster",
+    "counts_to_report": {
+      "primary_attempted": 5,
+      "primary_valid_completed": "0..5",
+      "failed_in_primary": "5 - completed",
+      "note": "both attempted and valid counts reported separately; later SAP states which denominator is used per claim"
+    },
+    "replacement_reserve_policy": {
+      "reserve_values_selected": false,
+      "rule": "reserve seeds, if used, must themselves be frozen BEFORE the primary training batch begins (or via a separately pre-authorized deterministic reserve schedule with predeclared execution order); reserves execute only in predeclared order and only if needed; a reserve never erases the failed primary; failure count/rate continues to include every failed primary; replacement never selected on outcomes"
+    }
+  },
+  "evidence_requirements": {
+    "per_member_minimum": [
+      "member_id, replicate_seed, model_init_seed, data_seed, eval_seed + frozen eval policy COMMON_FIXED",
+      "starting Git HEAD, scientific source commit (357971a...), Python version, PyTorch version, device cpu, determinism state",
+      "full effective V5ExperimentConfig dict, replicate-specific config_hash, family_methodology_identity",
+      "training-series SHA / fit+selection window identities (split from training returns + WindowSpec)",
+      "selected checkpoint path+SHA, training curve path+SHA, final-refit checkpoint path+SHA",
+      "initial selection loss, best selection loss, best_epoch, final_epoch",
+      "Gate-v2 six exact metrics + per-criterion pass/fail (Amendment 016 section 4) under fixed gate seeds 7777/7778/8801",
+      "failure status and failure reason if any",
+      "training start/end UTC, process exit code, training invocation count",
+      "forbidden-operation counters if available (validation/final-test counts must remain zero \u2014 external validation is CLOSED)"
+    ],
+    "forbidden_in_member_evidence": [
+      "raw validation values",
+      "final-test metrics"
+    ],
+    "family_manifest_schema": "reuses this contract as schema; eventual family manifest will aggregate five per-member records + family counts"
+  },
+  "family_aggregation_boundary": {
+    "allowed_before_hedging_sap": [
+      "per-member metrics; failed_in_primary / completed_in_primary counts; descriptive family summaries already needed for diagnostics: median, IQR, range, per-family rank distribution \u2014 reported descriptively, not as hypothesis test"
+    ],
+    "not_allowed_yet": [
+      "overall H1 PASS / H2 PASS; family winner; post-hoc weighted score; dropping failed runs from denominator; external-validation aggregation"
+    ],
+    "hedging_family_estimator": "mandatory later SAP decision (one hedger per generator seed vs pooled synthetic paths vs other pre-registered design) \u2014 not defined here; Amendment 019 rank boundary remains in force"
+  },
+  "uncertainty_separation": {
+    "original_requirement": "reports/protocol/research_protocol_v1.md line 105 \u2014 market-period and training-seed uncertainty reported separately",
+    "training_seed_dimension": "five primary replicate identities/outcomes v5-seed-01..05, failures preserved, under common eval seed",
+    "market_period_dimension": "handled only by later frozen hedging SAP using dependence-aware procedure (paired, block/dependence-aware, Holm, turnover/position QC \u2014 per v1)",
+    "pooling": "never pool the two into a single bootstrap dimension",
+    "later_sap_requirement": "SAP must consume the family manifest and state the exact estimator before final-test access"
+  },
+  "external_validation_policy": {
+    "state": "CLOSED",
+    "construction_count": "2/2",
+    "effective_max": 2,
+    "third_permitted": false,
+    "terminal_no_tolerance": true,
+    "closure_artifacts": [
+      "reports/research/structured_vol_v5_external_validation_closure.json fd142ad47006513bbd831019e30701d64356945a048ccf13959acf2a63ad5c20"
+    ],
+    "member_01_evidence": "reports/research/structured_vol_v5_external_validation_confirmatory.json a28345587989ea1d91d46ed7c9b332151b84af98c0d4918f0fc281d03ba4ca38 (report-only per-family ranks)",
+    "members_02_to_05_evidence": "NO external-validation evidence \u2014 family robustness from training/selection/Gate-v2 and later separately governed analyses only",
+    "transfer_permitted": false,
+    "note": "no statement may imply member 01 external result transfers to members 02-05; a per-member validation would be member-specific and under the closed arm cannot be constructed"
+  },
+  "authorization": {
+    "seed_schedule_selection": "NOT AUTHORIZED in this contract \u2014 next task after audit",
+    "training": false,
+    "validation_construction": false,
+    "final_test": false,
+    "hedging": false,
+    "torchsde_or_sigkernel_install": false
+  },
+  "protected_integrity_basis": {
+    "amendment_020_sha256": "43243dd345c5f98b92591174349ee3f42236b08ce689330f5a82c4a8d7c08ba4",
+    "reconciliation_json_sha256": "8be7705f78e3d28ca3c5d4902c089a31267df3bb59d88efbbd7e26d2cae29478",
+    "closure_json_sha256": "fd142ad47006513bbd831019e30701d64356945a048ccf13959acf2a63ad5c20",
+    "selected_checkpoint_sha256": "452f70058eb03a83af248fdb3c85f413264becd302b1e71d11167f10ac7b887f",
+    "training_curve_sha256": "e29f2afcdff75e151ca6a85f3c77e7a209a3c1827b6d1abcb191ce36c6d30a2d",
+    "final_checkpoint_sha256": "c7b9be5d666ae24fe208cdc9241eab1cbca0cbe95e5576d562fca0bd73ea2be4",
+    "production_gate_v2_sha256": "4604231cfc5d26f61808b65ce9269a120ccb44c2c96a590853341e31c9f14bc6"
+  }
+}
