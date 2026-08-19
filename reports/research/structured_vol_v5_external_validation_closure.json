@@ -1,0 +1,300 @@
+{
+  "schema_version": "1.0",
+  "task_id": "NM-R4-V5-EXTERNAL-VALIDATION-CLOSURE-021",
+  "closure_status": "CLOSED",
+  "external_validation_evidence_status": "VALIDATED",
+  "evidence_audit_task": "NM-R4-V5-EXTERNAL-VALIDATION-EVIDENCE-AUDIT-020",
+  "evidence_audit_verdict": "VALIDATED WITH NON-BLOCKING FINDINGS",
+  "repository": {
+    "branch": "main",
+    "starting_head": "b203471e0a80f94b5987597d73fa04f209a34c32",
+    "starting_parent": "f07c07666de096afc279a8b4cdb7074052ea5626",
+    "safety_branch": "safety/pre-v5-external-validation-closure-b203471"
+  },
+  "contracts": {
+    "version": "structured-vol-v5-external-validation-v1",
+    "amendment_017_sha256": "9ff02f54c2264ef3b563062738e3d15e5802f6c92d56e88a284e8caae7c12abd",
+    "amendment_018_sha256": "c5ecf9829e5177bd608cbb00e1ec70652b3fe8266c4315b785723b915adc1e40",
+    "yaml_sha256": "c7544e5b7cd70ab93e5c6b0ac747ad5eb882536faefca1f575834f2713658363",
+    "repaired_harness_path": "reports/research/evidence/structured_vol_v5_external_validation_harness.py",
+    "repaired_harness_sha256": "726f885a5f0590b542dc4ba989bc5ea0a97afd3f05bb4c06ad9f9c51e1c1e143",
+    "repaired_harness_blob": "e77db7b5a99f17d9c55b332f6f81f8fe6ede3b43"
+  },
+  "candidate": {
+    "name": "structured-volatility-neural-sde-v5",
+    "scientific_source_commit": "357971a67c68492fc0c4f5bf31f94f9685639f65",
+    "config_hash": "5bdbaabd2fb257a7a82b8c600403e638d860520aa4952055a1b153894caf4157",
+    "final_refit_checkpoint_path": "data/processed/research/model/structured-volatility-neural-sde-v5/5bdbaabd2fb257a7/checkpoint_final.pt",
+    "final_refit_checkpoint_sha256": "c7b9be5d666ae24fe208cdc9241eab1cbca0cbe95e5576d562fca0bd73ea2be4"
+  },
+  "production_artifacts": {
+    "selected_checkpoint_path": "data/processed/research/model/structured-volatility-neural-sde-v5/5bdbaabd2fb257a7/checkpoint.pt",
+    "selected_checkpoint_sha256": "452f70058eb03a83af248fdb3c85f413264becd302b1e71d11167f10ac7b887f",
+    "training_curve_path": "data/processed/research/model/structured-volatility-neural-sde-v5/5bdbaabd2fb257a7/training_curve.json",
+    "training_curve_sha256": "e29f2afcdff75e151ca6a85f3c77e7a209a3c1827b6d1abcb191ce36c6d30a2d",
+    "canonical_production_gate_v2_path": "reports/research/structured_vol_v5_production_gate_v2.json",
+    "canonical_production_gate_v2_sha256": "4604231cfc5d26f61808b65ce9269a120ccb44c2c96a590853341e31c9f14bc6",
+    "note": "Do not call checkpoint_final.pt the selected checkpoint; do not call structured_vol_v5_report.json the canonical Gate-v2 report"
+  },
+  "construction_history": {
+    "construction_1": {
+      "task_id": "NM-R4-V5-EXTERNAL-VALIDATION-EXECUTE-015",
+      "status": "BLINDED_MECHANICAL_FAILURE",
+      "validation_constructed": true,
+      "model_simulation": false,
+      "scientific_outcome_exposed": false,
+      "failure_classification": "PROVEN_HARNESS_IDENTITY_CHECK_DEFECT",
+      "transcript_sha256": "5063b0f0eceaefb53657c869adc46bfaf8293737b9a8b717d9d75a27da58393d",
+      "exit_code_sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+      "exit_code": 1
+    },
+    "construction_2": {
+      "task_id": "NM-R4-V5-EXTERNAL-VALIDATION-EXECUTE-019",
+      "status": "EXTERNAL_VALIDATION_COMPLETED",
+      "validation_constructed": true,
+      "model_simulation": true,
+      "result_path": "reports/research/structured_vol_v5_external_validation_confirmatory.json",
+      "result_sha256": "a28345587989ea1d91d46ed7c9b332151b84af98c0d4918f0fc281d03ba4ca38",
+      "manifest_path": "reports/research/structured_vol_v5_external_validation_attempt2_manifest.json",
+      "manifest_sha256": "549056a1ceccc7b238d73b71b50390fd4e7ad603cb627eb6147516bad7124046",
+      "transcript_sha256": "132ecca481d8eb37d4a908c1a129f02da48f14758809103b4c7e7d4f4abaf6ef",
+      "exit_code_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "exit_code": 0
+    },
+    "construction_3": "FORBIDDEN",
+    "cumulative_governed_constructions": 2,
+    "effective_max_governed_validation_constructions": 2
+  },
+  "validation_identity": {
+    "first_date": "2022-05-26",
+    "last_date": "2023-06-30",
+    "observation_count": 274,
+    "series_sha256": "ec49994bf262b6cd29f8a3ed772f00cfcb901ef04181c14e9ccefb908f47edc8",
+    "split": "validation"
+  },
+  "target_verification": {
+    "frozen_identity": "56b3ba15c0c95d6a89eb59ead89ab5dc669327245bb5f383666a384f3fd3c5b9",
+    "match": true,
+    "recomputed_identity": "56b3ba15c0c95d6a89eb59ead89ab5dc669327245bb5f383666a384f3fd3c5b9"
+  },
+  "target_tolerance": "none",
+  "external_result": {
+    "status": "EXTERNAL_VALIDATION_COMPLETED",
+    "mode": "report_only",
+    "governance_task_id": "NM-R4-V5-EXTERNAL-VALIDATION-EXECUTE-019",
+    "runtime_source": {
+      "git_commit": "f07c07666de096afc279a8b4cdb7074052ea5626",
+      "git_dirty": false
+    },
+    "comparison_summary": {
+      "abs_return_acf": {
+        "candidate_error": 3.486710490520185,
+        "candidate_rank_among_6": 6,
+        "nearest_baseline_name": "iid_bootstrap",
+        "nearest_baseline_error": 0.9690679352990759,
+        "baseline_reference_ranking": [
+          "iid_bootstrap",
+          "gbm",
+          "gjr_garch",
+          "block_bootstrap",
+          "heston"
+        ]
+      },
+      "excess_kurtosis": {
+        "candidate_error": 3.836804786915968,
+        "candidate_rank_among_6": 2,
+        "nearest_baseline_name": "gbm",
+        "nearest_baseline_error": 1.0002047253665014,
+        "baseline_reference_ranking": [
+          "gbm",
+          "gjr_garch",
+          "heston",
+          "block_bootstrap",
+          "iid_bootstrap"
+        ]
+      },
+      "leverage_correlations": {
+        "candidate_error": 0.8964910730043651,
+        "candidate_rank_among_6": 4,
+        "nearest_baseline_name": "gjr_garch",
+        "nearest_baseline_error": 0.5959459399266611,
+        "baseline_reference_ranking": [
+          "gjr_garch",
+          "block_bootstrap",
+          "heston",
+          "gbm",
+          "iid_bootstrap"
+        ]
+      },
+      "mean": {
+        "candidate_error": 0.14075033337285578,
+        "candidate_rank_among_6": 1,
+        "nearest_baseline_name": "iid_bootstrap",
+        "nearest_baseline_error": 0.7734302880088645,
+        "baseline_reference_ranking": [
+          "iid_bootstrap",
+          "heston",
+          "gbm",
+          "gjr_garch",
+          "block_bootstrap"
+        ]
+      },
+      "quantiles": {
+        "candidate_error": 0.18377432954205783,
+        "candidate_rank_among_6": 5,
+        "nearest_baseline_name": "gjr_garch",
+        "nearest_baseline_error": 0.0920550383377654,
+        "baseline_reference_ranking": [
+          "gjr_garch",
+          "gbm",
+          "iid_bootstrap",
+          "block_bootstrap",
+          "heston"
+        ]
+      },
+      "return_acf": {
+        "candidate_error": 0.9614318420271383,
+        "candidate_rank_among_6": 4,
+        "nearest_baseline_name": "heston",
+        "nearest_baseline_error": 0.7803069811056775,
+        "baseline_reference_ranking": [
+          "heston",
+          "gjr_garch",
+          "gbm",
+          "iid_bootstrap",
+          "block_bootstrap"
+        ]
+      },
+      "skewness": {
+        "candidate_error": 1.351250398451968,
+        "candidate_rank_among_6": 2,
+        "nearest_baseline_name": "gbm",
+        "nearest_baseline_error": 1.1752952065672642,
+        "baseline_reference_ranking": [
+          "gbm",
+          "heston",
+          "gjr_garch",
+          "block_bootstrap",
+          "iid_bootstrap"
+        ]
+      },
+      "sq_return_acf": {
+        "candidate_error": 1.3480646832205723,
+        "candidate_rank_among_6": 4,
+        "nearest_baseline_name": "iid_bootstrap",
+        "nearest_baseline_error": 0.9817521558881962,
+        "baseline_reference_ranking": [
+          "iid_bootstrap",
+          "gbm",
+          "heston",
+          "block_bootstrap",
+          "gjr_garch"
+        ]
+      },
+      "variance": {
+        "candidate_error": 0.3050747405615484,
+        "candidate_rank_among_6": 5,
+        "nearest_baseline_name": "gbm",
+        "nearest_baseline_error": 1.5031151535154056e-05,
+        "baseline_reference_ranking": [
+          "gbm",
+          "iid_bootstrap",
+          "block_bootstrap",
+          "gjr_garch",
+          "heston"
+        ]
+      }
+    },
+    "baseline_comparators": [
+      "iid_bootstrap",
+      "block_bootstrap",
+      "gbm",
+      "gjr_garch",
+      "heston"
+    ],
+    "candidate_key": "structured_vol_v5",
+    "family_error_method": "neuralmarket.data.research.benchmark._family_errors",
+    "scorecard_implementation": "neuralmarket.eval.scorecard.compute_scorecard",
+    "spec_hash": "5e43a3a3242271802ee7057405836ffb6d12d0ce732d3256dbd362ce5a400eb3"
+  },
+  "interpretation_policy": {
+    "mode": "REPORT-ONLY",
+    "granularity": "PER-FAMILY",
+    "basis": "BASELINE-RELATIVE",
+    "aggregation": "NONE",
+    "binary_threshold": "NONE",
+    "overall_model_rank": "NONE",
+    "overall_winner": "NONE",
+    "h1_claim": "NOT_PERMITTED_FROM_THIS_RESULT_ALONE",
+    "h2_claim": "NOT_PERMITTED_FROM_THIS_RESULT_ALONE",
+    "allowed_descriptive_ranks": {
+      "mean": "1/6",
+      "excess_kurtosis": "2/6",
+      "skewness": "2/6",
+      "return_acf": "4/6",
+      "sq_return_acf": "4/6",
+      "leverage_correlations": "4/6",
+      "quantiles": "5/6",
+      "variance": "5/6",
+      "abs_return_acf": "6/6"
+    }
+  },
+  "signed_family_error_semantics": {
+    "note": "Scalar families carry signed relative_error; ranking uses magnitude (candidate_error = abs(relative_error)). No contradiction.",
+    "variance": {
+      "family_errors_relative_error": -0.3050747405615484,
+      "ranking_candidate_error": 0.3050747405615484
+    },
+    "skewness": {
+      "family_errors_relative_error": -1.351250398451968,
+      "ranking_candidate_error": 1.351250398451968
+    }
+  },
+  "metric_caveats": {
+    "lag_66_horizon_63": {
+      "metric_lag": 66,
+      "generation_horizon": 63,
+      "generation_paths": 1024,
+      "flattening": "1024 x 63",
+      "convention": "lag-66 simulated temporal pairs cross independent path boundaries; shared identically across candidate and all 5 comparators",
+      "permitted": "baseline-relative comparisons under frozen metric convention remain valid",
+      "not_permitted": "claim lag-66 statistic demonstrates genuine within-path 66-session dependence of the generator",
+      "action": "Do not change metric; do not remove lag 66 retroactively"
+    }
+  },
+  "manifest_metadata_clarifications": {
+    "attempt2_manifest_path": "reports/research/structured_vol_v5_external_validation_attempt2_manifest.json",
+    "attempt2_manifest_sha256": "549056a1ceccc7b238d73b71b50390fd4e7ad603cb627eb6147516bad7124046",
+    "attempt2_manifest_status": "immutable_historical_evidence",
+    "known_findings": [
+      "canonical_selected_checkpoint label actually points to final_refit checkpoint (c7b9be5d...) not the true selected checkpoint (452f7005...)",
+      "canonical production Gate-v2 report anchor omitted"
+    ],
+    "classification": "NON_BLOCKING_REPORTING_METADATA",
+    "manifest_edited": false,
+    "authoritative_supplementary_labels": [
+      "reports/protocol/research_protocol_amendment_019.md",
+      "reports/research/structured_vol_v5_external_validation_closure.json"
+    ]
+  },
+  "authorization_state": {
+    "external_validation_state": "CLOSED",
+    "external_validation_evidence": "VALIDATED",
+    "third_validation_construction_permitted": false,
+    "final_test_authorized": false,
+    "tuning_authorized": false,
+    "retraining_authorized": false,
+    "hedging_authorized_from_this_task": false
+  },
+  "protected_integrity": {
+    "confirmatory_result_sha256": "a28345587989ea1d91d46ed7c9b332151b84af98c0d4918f0fc281d03ba4ca38",
+    "attempt2_manifest_sha256": "549056a1ceccc7b238d73b71b50390fd4e7ad603cb627eb6147516bad7124046",
+    "attempt2_transcript_sha256": "132ecca481d8eb37d4a908c1a129f02da48f14758809103b4c7e7d4f4abaf6ef",
+    "attempt2_exit_sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "attempt1_transcript_sha256": "5063b0f0eceaefb53657c869adc46bfaf8293737b9a8b717d9d75a27da58393d",
+    "attempt1_exit_sha256": "6b86b273ff34fce19d6b804eff5a3f5747ada4eaa22f1d49c01e52ddb7875b4b",
+    "checked_before_and_after": true,
+    "all_unchanged": true
+  },
+  "next_scientific_decision_boundary": "Governed original-research-contract reconciliation before any final-test consideration (five-seed requirement; finite level-3 lead-lag+RBF-MMD vs signature-PDE/sigkernel; Euler/Ito vs Stratonovich/torchsde reversible-Heun)"
+}
