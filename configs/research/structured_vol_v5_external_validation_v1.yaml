@@ -1,0 +1,61 @@
+# Frozen external-validation contract for structured-volatility neural-SDE v5.
+# Pre-registration / methodology ONLY. This file authorizes NO validation-data
+# access and NO execution. Companion: reports/protocol/research_protocol_amendment_017.md.
+version: structured-vol-v5-external-validation-v1
+
+candidate:
+  name: structured-volatility-neural-sde-v5
+  config_hash: 5bdbaabd2fb257a7a82b8c600403e638d860520aa4952055a1b153894caf4157
+  checkpoint_path: data/processed/research/model/structured-volatility-neural-sde-v5/5bdbaabd2fb257a7/checkpoint_final.pt
+  checkpoint_sha256: c7b9be5d666ae24fe208cdc9241eab1cbca0cbe95e5576d562fca0bd73ea2be4
+  source_commit: 357971a67c68492fc0c4f5bf31f94f9685639f65
+  load_semantics: checkpoint_state_only_no_training
+
+target:
+  split: validation
+  empirical_representation: validation_empirical
+  metric_spec: research-metric-spec-v1
+  metric_spec_hash: 5e43a3a3242271802ee7057405836ffb6d12d0ce732d3256dbd362ce5a400eb3
+  benchmark_hash: 2b0dd31e59a3e8becc638e432ca9274d7ab8b2b8829038407cbbfc1700d1593d
+
+conditioning:
+  mode: training_boundary
+  context_source: final eligible training context (w_boundary; last 22 training returns)
+  validation_targets_touch_context: false
+
+generation:
+  horizon_source: frozen v5 config windows.horizon
+  horizon_sessions: 63
+  path_count_source: frozen v5 config n_eval_paths
+  path_count: 1024
+  seed_source: frozen v5 config eval_seed
+  evaluation_seed: 8283
+  return_representation: one_step_daily_log_return_increments
+  initial_price_convention: final training-session close
+
+comparison:
+  scorecard_implementation: neuralmarket.eval.scorecard.compute_scorecard
+  metric_spec: research-metric-spec-v1
+  family_error_method: neuralmarket.data.research.benchmark._family_errors
+  validation_target: frozen validation_empirical (suite.metrics.validation_empirical)
+  baseline_suite:
+    artifact: data/processed/research/benchmark/simulator_baseline_suite_v1.json
+    file_sha256: 28a10b1d23ee225b07a94c2f12a01fa08b627e443f1da5eee1329541b9aa139a
+    suite_hash: 445b1257210f34d9a9b29fbdf2ac4e9b64265f9b3f21e7084f97e4bd935f0099
+  baseline_error_vectors: suite.discrepancies.validation.<comparator> for evaluated classical comparators
+  aggregation: none (per-family only; reuse existing per-family rankings)
+
+classification:
+  mode: report_only
+  success_label: EXTERNAL_VALIDATION_COMPLETED
+
+access:
+  max_top_level_external_validation_evaluations: 1
+  max_validation_series_constructions: 1
+
+prohibitions:
+  training: true
+  refit: true
+  tuning: true
+  final_test: true
+  checkpoint_substitution: true
