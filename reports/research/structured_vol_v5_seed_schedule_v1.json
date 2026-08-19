@@ -1,0 +1,225 @@
+{
+  "schema_version": "structured-vol-v5-seed-schedule-v1",
+  "task_id": "NM-R4-V5-SEED-SCHEDULE-026",
+  "created_before_training": true,
+  "starting_head": "421508f2502e363c0a6573c445ab9bd3e056a5b6",
+  "starting_parent": "4610ede77e066356ea076f368f965b9ac80eb930",
+  "safety_branch": "safety/pre-v5-seed-schedule-421508f",
+  "amendment_021": {
+    "path": "reports/protocol/research_protocol_amendment_021.md",
+    "sha256": "4ad94bceed70bb70a282bc472b97bc5fd0aad8bffb856d18bad3743c4bd822c2",
+    "blob": "8c33bd02bb2fd6e3eb0a9404503295b12f343407",
+    "status": "unchanged"
+  },
+  "replicate_contract": {
+    "path": "reports/research/structured_vol_v5_replicate_seed_contract_v1.json",
+    "sha256": "c28eb6d8d8de89381de9ff28b697c8190d1910af87612a57bbe9df768aa0c98f",
+    "blob": "f04cefae05a74e2968990f89d8b50f01031e4ab1"
+  },
+  "amendment_022": {
+    "path": "reports/protocol/research_protocol_amendment_022.md",
+    "note": "this schedule; Amendment 021 remains unchanged except for superseded sentence scope"
+  },
+  "family_methodology_identity": "730475987368bf8f408e44e8e387682f178a0cdd7a358939016ba9b6df57a719",
+  "family_methodology_note": "canonical hash of V5ExperimentConfig with training.model_init_seed and training.data_seed stripped; eval_seed 8283 kept COMMON_FIXED; byte-identical across all five",
+  "seed_domain": {
+    "replicate_seed_min": 0,
+    "replicate_seed_max": 4294967295,
+    "derivation": "model_init_seed = replicate_seed; data_seed = replicate_seed + 1",
+    "binding_source": "NumPy",
+    "all_valid_for_entry_points": true
+  },
+  "primary_members": [
+    {
+      "member_id": "v5-seed-01",
+      "replicate_seed": 8281,
+      "model_init_seed": 8281,
+      "data_seed": 8282,
+      "eval_seed": 8283,
+      "eval_policy": "COMMON_FIXED_POST_TRAINING",
+      "role": "PRIMARY",
+      "status": "EXISTING_FROZEN",
+      "checkpoint_final_sha256": "c7b9be5d666ae24fe208cdc9241eab1cbca0cbe95e5576d562fca0bd73ea2be4",
+      "selected_checkpoint_sha256": "452f70058eb03a83af248fdb3c85f413264becd302b1e71d11167f10ac7b887f",
+      "training_curve_sha256": "e29f2afcdff75e151ca6a85f3c77e7a209a3c1827b6d1abcb191ce36c6d30a2d"
+    },
+    {
+      "member_id": "v5-seed-02",
+      "replicate_seed": 9281,
+      "model_init_seed": 9281,
+      "data_seed": 9282,
+      "eval_seed": 8283,
+      "eval_policy": "COMMON_FIXED_POST_TRAINING",
+      "role": "PRIMARY",
+      "status": "SCHEDULED_NOT_RUN"
+    },
+    {
+      "member_id": "v5-seed-03",
+      "replicate_seed": 10281,
+      "model_init_seed": 10281,
+      "data_seed": 10282,
+      "eval_seed": 8283,
+      "eval_policy": "COMMON_FIXED_POST_TRAINING",
+      "role": "PRIMARY",
+      "status": "SCHEDULED_NOT_RUN"
+    },
+    {
+      "member_id": "v5-seed-04",
+      "replicate_seed": 11281,
+      "model_init_seed": 11281,
+      "data_seed": 11282,
+      "eval_seed": 8283,
+      "eval_policy": "COMMON_FIXED_POST_TRAINING",
+      "role": "PRIMARY",
+      "status": "SCHEDULED_NOT_RUN"
+    },
+    {
+      "member_id": "v5-seed-05",
+      "replicate_seed": 12281,
+      "model_init_seed": 12281,
+      "data_seed": 12282,
+      "eval_seed": 8283,
+      "eval_policy": "COMMON_FIXED_POST_TRAINING",
+      "role": "PRIMARY",
+      "status": "SCHEDULED_NOT_RUN"
+    }
+  ],
+  "derivation_rule": "replicate_seed(k) = 8281 + 1000 * (k - 1) for k=1..5; descriptive only, does not authorize more primaries",
+  "scheduled_before_training": true,
+  "schedule_rationale": "simple arithmetic spacing of 1000 from historical 8281 to avoid all cross-role training-seed collisions; not scientifically privileged",
+  "common_evaluation": {
+    "eval_seed": 8283,
+    "policy": "COMMON_FIXED_POST_TRAINING",
+    "applies_to": "all five members same",
+    "training_use": "none — post-hoc generation only via simulate_structured",
+    "later_analysis_restriction": "SAP must not treat common draw as independent replicate dimension"
+  },
+  "fixed_gate_seeds": {
+    "gate_seed": 7777,
+    "drift_diffusion_seed": 7778,
+    "bootstrap_seed": 8801,
+    "common_for_all_members": true,
+    "training_independence": false
+  },
+  "collision_proof": {
+    "derived_training_seeds": [8281, 8282, 9281, 9282, 10281, 10282, 11281, 11282, 12281, 12282],
+    "count": 10,
+    "unique_count": 10,
+    "cross_role_collisions": [],
+    "eval_collision": false,
+    "gate_collisions": false,
+    "verdict": "PASS"
+  },
+  "prospective_config_identities": [
+    {
+      "member_id": "v5-seed-01",
+      "replicate_seed": 8281,
+      "model_init_seed": 8281,
+      "data_seed": 8282,
+      "full_config_hash": "5bdbaabd2fb257a7a82b8c600403e638d860520aa4952055a1b153894caf4157",
+      "run_prefix": "5bdbaabd2fb257a7"
+    },
+    {
+      "member_id": "v5-seed-02",
+      "replicate_seed": 9281,
+      "model_init_seed": 9281,
+      "data_seed": 9282,
+      "full_config_hash": "62c7406cb3a2c64237d39559370d70a27f8111f7dd1dc7ee581da9bd475cf00b",
+      "run_prefix": "62c7406cb3a2c642"
+    },
+    {
+      "member_id": "v5-seed-03",
+      "replicate_seed": 10281,
+      "model_init_seed": 10281,
+      "data_seed": 10282,
+      "full_config_hash": "e333325c804d95d2f34ad14138e312cde0a00df2ebf1056741abbdc52a8b0955",
+      "run_prefix": "e333325c804d95d2"
+    },
+    {
+      "member_id": "v5-seed-04",
+      "replicate_seed": 11281,
+      "model_init_seed": 11281,
+      "data_seed": 11282,
+      "full_config_hash": "77e7de9efabb7ce35107e7c9f80f9fb9e28fff6f1a31978c35f601cbf154312b",
+      "run_prefix": "77e7de9efabb7ce3"
+    },
+    {
+      "member_id": "v5-seed-05",
+      "replicate_seed": 12281,
+      "model_init_seed": 12281,
+      "data_seed": 12282,
+      "full_config_hash": "1e8aa171993a1aba52534ae031d05ba5e8dbdb15772678bf3ec72fc68dcde897",
+      "run_prefix": "1e8aa171993a1aba"
+    }
+  ],
+  "prospective_uniqueness": {
+    "full_config_hashes_unique": true,
+    "run_prefixes_unique": true,
+    "family_methodology_identity_exact_across_family": true
+  },
+  "reserve_policy": {
+    "derivation": "reserve_replicate_seed(j) = 12281 + 1000 * j for positive integer j",
+    "initial_capacity": 3,
+    "reserves": [
+      {"slot": "reserve-j01", "j": 1, "replicate_seed": 13281, "model_init_seed": 13281, "data_seed": 13282, "eval_seed": 8283, "order": 1},
+      {"slot": "reserve-j02", "j": 2, "replicate_seed": 14281, "model_init_seed": 14281, "data_seed": 14282, "eval_seed": 8283, "order": 2},
+      {"slot": "reserve-j03", "j": 3, "replicate_seed": 15281, "model_init_seed": 15281, "data_seed": 15282, "eval_seed": 8283, "order": 3}
+    ],
+    "numerical_execution_authorized": false,
+    "execution_order": "j=1 then 2 then 3 only as needed; no skipping; later governed task must materialize and verify tuple and collisions before any reserve execution",
+    "outcome_based_selection": false,
+    "frozen_before_primary_training": true
+  },
+  "primary_failure_semantics": {
+    "primary_scheduled": 5,
+    "definitions": {
+      "PRIMARY_COMPLETE": "all five primary runs have been attempted",
+      "PRIMARY_FULLY_VALID": "primary_valid_completed == 5",
+      "PRIMARY_UNDERFILLED": "PRIMARY_COMPLETE and primary_valid_completed < 5"
+    },
+    "permanence": "failed primary remains in roster forever with exact seed tuple; never silently discarded, never relabelled as reserve, never erased if reserve later completes",
+    "counters": ["primary_scheduled", "primary_attempted", "primary_valid_completed", "failed_in_primary"],
+    "reserve_counts_as_primary": false
+  },
+  "under_filled_policy": {
+    "primary_scheduled": 5,
+    "primary_complete": "all five primary runs have been attempted",
+    "fully_valid": "primary_valid_completed == 5",
+    "under_filled": "PRIMARY_COMPLETE and primary_valid_completed < 5",
+    "failure_denominator": "both primary_attempted and primary_valid_completed reported separately; failed_in_primary = 5 - primary_valid_completed once PRIMARY_COMPLETE",
+    "final_test_consequence": "PRIMARY_UNDERFILLED => H2 remains NOT PROVEN and H3/final-test authorization remains BLOCKED; no silent use of only valid primaries as five-seed primary family",
+    "reserve_treatment": "reserves, if later separately authorized, reported separately from primary roster; do not retroactively fill primary count",
+    "later_SAP_requirement": "SAP must explicitly define whether reserves can contribute to a completed-model estimator while retaining primary failure-rate reporting",
+    "post_hoc_narrowing_allowed": false
+  },
+  "external_validation_firewall": {
+    "state": "CLOSED",
+    "construction_count": 2,
+    "effective_max": 2,
+    "third_permitted": false,
+    "member_01": "existing report-only external evidence a28345587989ea1d91d46ed7c9b332151b84af98c0d4918f0fc281d03ba4ca38",
+    "members_02_to_05": "no external evidence",
+    "reserves": "no external evidence",
+    "transfer_forbidden": true,
+    "validation_reconstruction": false
+  },
+  "authorization": {
+    "numerical_schedule": "FROZEN",
+    "training_members_02_to_05": false,
+    "reserve_training": false,
+    "validation": false,
+    "final_test": false,
+    "hedging": false,
+    "next_required": "independent read-only audit of this numerical schedule and prospective config identities before any training authorization"
+  },
+  "required_next_audit": "Independent Claude read-only audit of the frozen numerical schedule before any training authorization",
+  "execution_provenance_requirement": "every future member execution must freeze/record the exact runner or execution-harness SHA/blob BEFORE interpreter start (Audit 025 minor finding)",
+  "protected_integrity_basis": {
+    "amendment_021": "4ad94bceed70bb70a282bc472b97bc5fd0aad8bffb856d18bad3743c4bd822c2",
+    "replicate_contract": "c28eb6d8d8de89381de9ff28b697c8190d1910af87612a57bbe9df768aa0c98f",
+    "selected_checkpoint": "452f70058eb03a83af248fdb3c85f413264becd302b1e71d11167f10ac7b887f",
+    "training_curve": "e29f2afcdff75e151ca6a85f3c77e7a209a3c1827b6d1abcb191ce36c6d30a2d",
+    "final_checkpoint": "c7b9be5d666ae24fe208cdc9241eab1cbca0cbe95e5576d562fca0bd73ea2be4",
+    "production_gate_v2": "4604231cfc5d26f61808b65ce9269a120ccb44c2c96a590853341e31c9f14bc6"
+  }
+}
