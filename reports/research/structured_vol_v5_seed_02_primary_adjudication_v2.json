@@ -1,0 +1,305 @@
+{
+  "schema_version": "structured-vol-v5-primary-adjudication-v2",
+  "supersedes": {
+    "path": "reports/research/structured_vol_v5_seed_02_primary_adjudication.json",
+    "sha256": "0a72b79639bab045cc5c49f82e5861cbed035f27035439fc037e8128d071c47c",
+    "git_blob": "b19ba21ef61ba1c5648283e5014f9b0f12081736"
+  },
+  "supersession_reason": "derived-evidence key-mapping and epoch-metadata correction",
+  "member_id": "v5-seed-02",
+  "replicate_seed": 9281,
+  "model_init_seed": 9281,
+  "data_seed": 9282,
+  "eval_seed": 8283,
+  "full_config_hash": "62c7406cb3a2c64237d39559370d70a27f8111f7dd1dc7ee581da9bd475cf00b",
+  "run_prefix": "62c7406cb3a2c642",
+  "family_methodology_identity": "730475987368bf8f408e44e8e387682f178a0cdd7a358939016ba9b6df57a719",
+  "family_methodology_note": "canonical hash of V5ExperimentConfig with training.model_init_seed and training.data_seed stripped; eval_seed 8283 kept as COMMON_FIXED; byte-identical across all five members",
+  "authorization": {
+    "path": "reports/research/authorizations/structured_vol_v5_primary_training/v5-seed-02.json",
+    "sha256": "27e5a51df2f93bfef1e67f8fcdb0746b7a172aa9a63f80a4604607bb9c68ffc5",
+    "git_blob": "3759c2528175ab77160e5b0d2473b2747b98e54a",
+    "committed_git_blob": "3759c2528175ab77160e5b0d2473b2747b98e54a"
+  },
+  "runner": {
+    "path": "reports/research/evidence/structured_vol_v5_replicate_training_runner.py",
+    "git_blob": "7b46e0f6c805687977cd685ebb97741bd4243cbe",
+    "local_sha256": "8843340bf445eb32f2cf1c005666c8eaf4f36a8173c5da3f2da1c1dcfc04e860",
+    "committed_git_blob": "7b46e0f6c805687977cd685ebb97741bd4243cbe"
+  },
+  "execution_contract": {
+    "path": "reports/research/structured_vol_v5_training_execution_contract_v5.json",
+    "git_blob": "84a59c4d966b349be705a8a29fad07f81282ebdc",
+    "sha256": "191b2b2c399749a29796671ff21d3e51a349a83194fac333cc5ec1e1cac59f65",
+    "committed_git_blob": "84a59c4d966b349be705a8a29fad07f81282ebdc"
+  },
+  "schedule": {
+    "path": "reports/research/structured_vol_v5_seed_schedule_v1.json",
+    "git_blob": "558d08bfee98dbd0c170d65e6a9b1737700c9e98",
+    "sha256": "8c471c3311b05e647b543e46e310a8f1b1055ec00d4690f726dcd6d775f06fd0",
+    "committed_git_blob": "558d08bfee98dbd0c170d65e6a9b1737700c9e98"
+  },
+  "canonical_recipe": "20d90f7484fe5df7cd62755a5810c8de78e5e92f",
+  "recipe_head": "20d90f7484fe5df7cd62755a5810c8de78e5e92f",
+  "amendment_029": {
+    "path": "reports/protocol/research_protocol_amendment_029.md",
+    "sha256": "8eea2a734e7043bb1fc55cd43fcc7befda6f334f4a06bb3cef870c27f9d972d1",
+    "git_blob": "b6eca6eed0f03974bb7a1c132ff95981cce07a2a"
+  },
+  "raw_evidence": {
+    "execution_started": {
+      "path": "reports/research/structured_vol_v5_replicates/62c7406cb3a2c642/execution_started.json",
+      "sha256": "53af9ed6c4e33d07d5ab096d706100369d317ab1499bb7e9f2883e341393f939",
+      "git_blob": "b45d0a5b70d6148e8373eecffc1c48bc506a7223"
+    },
+    "training_stdout_log": {
+      "path": "reports/research/structured_vol_v5_replicates/62c7406cb3a2c642/training_stdout.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "git_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    },
+    "training_exit_code": {
+      "path": "reports/research/structured_vol_v5_replicates/62c7406cb3a2c642/training_exit_code.txt",
+      "sha256": "13bf7b3039c63bf5a50491fa3cfd8eb4e699d1ba1436315aef9cbe5711530354",
+      "git_blob": "573541ac9702dd3969c9bc859d2b91ec1f7e6e56"
+    },
+    "training_execution_manifest": {
+      "path": "reports/research/structured_vol_v5_replicates/62c7406cb3a2c642/training_execution_manifest.json",
+      "sha256": "147cbed10a55e2502db793fb2e9d3fc6c60113c3abb08415580eee771a531871",
+      "git_blob": "6c18955b482dc67e3a49a2e9d0e802026a42a968"
+    },
+    "training_report": {
+      "path": "reports/research/structured_vol_v5_replicates/62c7406cb3a2c642/training_report.json",
+      "sha256": "f1c998f4ed4bf117ec61131f9d4ca113235bc48fbc11855164d07235efe0c34f",
+      "git_blob": "d62ca14261c907f21901742e98da2cbc6cb61c40"
+    }
+  },
+  "raw_runner_terminal_status": "COMPLETED",
+  "raw_runner_exit_code": 0,
+  "raw_runner_failure_category": null,
+  "scientific_invocation_count": 1,
+  "training_series_sha256": "4863b2cc63a09ffb03bbe455c7859c46b521b6f7bef8212e0e3876ac8488669c",
+  "window_counts": {
+    "fit_window_count": 672,
+    "selection_window_count": 107,
+    "embargo_gap_windows": 62,
+    "all_training_derived_window_count": 841,
+    "all_training_window_count_definition": "derived sliding windows across the complete frozen training split (672 fit + 107 selection + 62 embargo-gap)",
+    "training_return_count": 925,
+    "training_session_count": 926,
+    "training_return_count_note": "925 is the number of training daily log-returns (926 sessions minus one); NOT the derived window count"
+  },
+  "fit_window_count": 672,
+  "selection_window_count": 107,
+  "all_training_window_count": 841,
+  "all_training_window_count_definition": "derived sliding windows across the complete frozen training split",
+  "training_return_count": 925,
+  "training_session_count": 926,
+  "optimization": {
+    "initial_selection_total": 9.447866439819336,
+    "best_selection_total": 0.6258251070976257,
+    "initial_internal_rbf": 0.6696473956108093,
+    "best_internal_rbf": 0.04126167297363281,
+    "best_epoch": 8,
+    "final_epoch": 48,
+    "training_curve_last_epoch": 48,
+    "early_stop_interpretation": "best epoch 8 + patience 40 = final epoch 48"
+  },
+  "initial_selection_total": 9.447866439819336,
+  "best_selection_total": 0.6258251070976257,
+  "initial_internal_rbf": 0.6696473956108093,
+  "best_internal_rbf": 0.04126167297363281,
+  "best_epoch": 8,
+  "final_epoch": 48,
+  "seeds": {
+    "gate_seed": 7777,
+    "drift_diffusion_seed": 7778,
+    "bootstrap_seed": 8801
+  },
+  "gate_seed": 7777,
+  "drift_diffusion_seed": 7778,
+  "bootstrap_seed": 8801,
+  "criteria": {
+    "criterion_1": {
+      "metric": "best_selection_total < initial_selection_total",
+      "initial_selection_total": 9.447866439819336,
+      "best_selection_total": 0.6258251070976257,
+      "operator": "<",
+      "threshold": "best < initial",
+      "value_ok": true,
+      "pass": true
+    },
+    "criterion_2": {
+      "metric": "variance_ratio",
+      "gate_key": "variance_ratio",
+      "value": 1.604621208120106,
+      "operator": "range",
+      "threshold": [
+        0.5,
+        2.0
+      ],
+      "threshold_str": "0.50 <= variance_ratio <= 2.00",
+      "value_ok": true,
+      "pass": true
+    },
+    "criterion_3": {
+      "metric": "terminal_dispersion_ratio",
+      "gate_key": "terminal_dispersion_ratio",
+      "value": 1.7490240367051637,
+      "operator": "range",
+      "threshold": [
+        0.5,
+        2.0
+      ],
+      "threshold_str": "0.50 <= terminal_dispersion_ratio <= 2.00",
+      "value_ok": true,
+      "pass": true
+    },
+    "criterion_4": {
+      "metric": "path_uniqueness_fraction",
+      "gate_key": "path_uniqueness_fraction",
+      "value": 1.0,
+      "operator": "ge",
+      "threshold": 0.99,
+      "threshold_str": "path_uniqueness_fraction >= 0.99",
+      "value_ok": true,
+      "pass": true
+    },
+    "criterion_5": {
+      "metric": "return_acf1_abs_diff",
+      "gate_key": "return_acf1_abs_diff",
+      "value": 0.053962308505563134,
+      "operator": "le",
+      "threshold": 0.25,
+      "threshold_str": "return_acf1_abs_diff <= 0.25",
+      "value_ok": true,
+      "pass": true
+    },
+    "criterion_6": {
+      "metric": "drift_diffusion_rms_ratio",
+      "gate_key": "drift_diffusion_rms_ratio",
+      "value": 0.028829878414236947,
+      "operator": "le",
+      "threshold": 0.5,
+      "threshold_str": "drift_diffusion_rms_ratio <= 0.5",
+      "value_ok": true,
+      "pass": true
+    }
+  },
+  "runner_gate_passed": true,
+  "governed_six_criterion_pass": true,
+  "terminal_wasserstein": {
+    "raw": 0.026208418978427517,
+    "normalized": 0.6040767839981898,
+    "acceptance_role": "REPORT_ONLY",
+    "note": "Wasserstein is report-only and does not affect governed pass"
+  },
+  "governed_primary_status": "PRIMARY_VALID_COMPLETED",
+  "model_artifacts": {
+    "selected_checkpoint": {
+      "path": "data/processed/research/model/structured-volatility-neural-sde-v5/62c7406cb3a2c642/checkpoint.pt",
+      "sha256": "9e6f8cd030d073d5c93ac36c94c55b09366f07b2f153f181fc82daedffc0064e",
+      "size_bytes": 84853
+    },
+    "training_curve": {
+      "path": "data/processed/research/model/structured-volatility-neural-sde-v5/62c7406cb3a2c642/training_curve.json",
+      "sha256": "631b272347acea4e1ebd1c25e218cb54884003a7b89ec5068095a210bf87e650",
+      "size_bytes": 3945
+    },
+    "final_checkpoint": {
+      "path": "data/processed/research/model/structured-volatility-neural-sde-v5/62c7406cb3a2c642/checkpoint_final.pt",
+      "sha256": "b867af03b7a00dce0536b4460f3f49d6eac440e45931c2a30ba1557cc0892a6e",
+      "size_bytes": 85057
+    },
+    "note": "model artifacts are untracked scientific outputs (gitignored); no committed Git blob is recorded for these paths"
+  },
+  "runtime_provenance": {
+    "python_version": "3.11.9 (tags/v3.11.9:de54cf5, Apr  2 2024, 10:12:12) [MSC v.1938 64 bit (AMD64)]",
+    "pytorch_version": "2.13.0+cpu",
+    "device": "cpu",
+    "determinism": {
+      "torch_deterministic": true,
+      "cudnn_benchmark": false
+    },
+    "scientific_source_commit": "357971a67c68492fc0c4f5bf31f94f9685639f65",
+    "execution_head": "ff2cf4ebad193ef6e40afad1a4936be6efbd7eaf"
+  },
+  "data_provenance": {
+    "training_series_sha256": "4863b2cc63a09ffb03bbe455c7859c46b521b6f7bef8212e0e3876ac8488669c",
+    "effective_config": {
+      "version": "structured-volatility-neural-sde-v5",
+      "sde": {
+        "state_dim": 2,
+        "brownian_dim": 2,
+        "n_context": 4,
+        "hidden_units": 64,
+        "hidden_layers": 2,
+        "activation": "SiLU",
+        "diffusion_epsilon": 1e-06,
+        "dt": 0.003968253968253968,
+        "horizon": 63,
+        "signature_level": 3,
+        "v_clamp_min": -10.0,
+        "v_clamp_max": 10.0
+      },
+      "training": {
+        "optimizer": "AdamW",
+        "learning_rate": 0.001,
+        "weight_decay": 1e-06,
+        "batch_size": 64,
+        "max_epochs": 400,
+        "patience": 40,
+        "grad_norm_clip": 1.0,
+        "model_init_seed": 9281,
+        "data_seed": 9282,
+        "eval_seed": 8283,
+        "fit_fraction": 0.8
+      },
+      "windows": {
+        "context_lookback": 22,
+        "horizon": 63,
+        "dt": 0.003968253968253968
+      },
+      "objective": {
+        "kernel": "rbf",
+        "signature_level": 3,
+        "standardize_features": true,
+        "standardization_floor_eps": 1e-08,
+        "bandwidth_source": "train_fit_real_standardized",
+        "bandwidth_method": "median_pairwise_squared_distance",
+        "bandwidth_max_vectors": 512,
+        "variance_penalty_coefficient": 1.0,
+        "variance_eps": 1e-12,
+        "gate_variance_ratio_lo": 0.5,
+        "gate_variance_ratio_hi": 2.0,
+        "gate_dispersion_ratio_lo": 0.5,
+        "gate_dispersion_ratio_hi": 2.0,
+        "gate_uniqueness_min": 0.99,
+        "gate_return_acf1_max_diff": 0.25,
+        "gate_drift_diffusion_ratio_max": 0.5,
+        "internal_gate_seed": 7777,
+        "internal_selection_paths_per_window": 16
+      },
+      "n_eval_paths": 1024,
+      "eval_seed": 8283,
+      "eval_initial_price_convention": "final training-session close"
+    },
+    "fit_window_count": 672,
+    "selection_window_count": 107,
+    "all_training_window_count": 841,
+    "training_return_count": 925,
+    "training_session_count": 926
+  },
+  "execution_provenance": {
+    "start_utc": "2026-08-20T05:20:12.588639+00:00",
+    "training_start_utc": "2026-08-20T05:20:14.277325+00:00",
+    "training_end_utc": "2026-08-20T05:23:23.427763+00:00",
+    "end_utc": "2026-08-20T05:24:03.066615+00:00",
+    "adjudicated_utc": "2026-08-20T05:50:11.977585+00:00"
+  },
+  "adjudicator": {
+    "helper_path": "reports/research/evidence/structured_vol_v5_primary_adjudicator.py",
+    "helper_sha256": "82c867151a257381dd35f4f32648e054a6266ad8f753096b7d8da420eb28c2ea",
+    "helper_git_blob": "39a45348056eef339958ae8298ff5d0886476cd9",
+    "method": "deterministic evidence derivation from raw gate_diagnostics; fail-closed on missing/malformed/non-finite values"
+  }
+}
