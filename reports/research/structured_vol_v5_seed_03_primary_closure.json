@@ -1,0 +1,93 @@
+{
+  "schema_version": "structured-vol-v5-seed03-primary-closure-v1",
+  "closure_task_id": "NM-R4-V5-SEED-03-ATTEMPT-CLOSURE-046",
+  "forensic_record": {
+    "path": "reports/research/evidence/structured_vol_v5_seed_03_attempt_forensic_record.json",
+    "schema_version": "structured-vol-v5-seed03-attempt-forensic-v1"
+  },
+  "member_id": "v5-seed-03",
+  "scheduled_primary_member": true,
+  "seeds": {
+    "replicate_seed": 10281,
+    "model_init_seed": 10281,
+    "data_seed": 10282,
+    "eval_seed": 8283
+  },
+  "full_config_hash": "e333325c804d95d2f34ad14138e312cde0a00df2ebf1056741abbdc52a8b0955",
+  "run_prefix": "e333325c804d95d2",
+  "family_methodology_identity": "730475987368bf8f408e44e8e387682f178a0cdd7a358939016ba9b6df57a719",
+  "authorization": {
+    "path": "reports/research/authorizations/structured_vol_v5_primary_training/v5-seed-03.json",
+    "sha256": "61224c0f59b4d0985d6f40cbe3f0e2e6d95bdf663594b8ba9c300afae14bc902",
+    "git_blob": "9e5de9d03042429ba12f0324f6d8bb51701f5228"
+  },
+  "runner": {
+    "path": "reports/research/evidence/structured_vol_v5_replicate_training_runner.py",
+    "git_blob": "7b46e0f6c805687977cd685ebb97741bd4243cbe"
+  },
+  "execution_contract": {
+    "path": "reports/research/structured_vol_v5_training_execution_contract_v5.json",
+    "git_blob": "84a59c4d966b349be705a8a29fad07f81282ebdc"
+  },
+  "schedule": {
+    "path": "reports/research/structured_vol_v5_seed_schedule_v1.json",
+    "git_blob": "558d08bfee98dbd0c170d65e6a9b1737700c9e98"
+  },
+  "irreversible_starts": 2,
+  "scientific_invocations": 2,
+  "max_scientific_invocations": 1,
+  "protocol_compliant": false,
+  "surviving_execution": {
+    "path": "reports/research/structured_vol_v5_replicates/e333325c804d95d2",
+    "execution_started": {
+      "path": "reports/research/structured_vol_v5_replicates/e333325c804d95d2/execution_started.json",
+      "sha256": "09292aabfc32459669d943166a73acb08e3148dd74c95c1895a0c1b9e6dceae2",
+      "git_blob": "b7c9bbaec47b019395cd2d440ffa550ac958f333",
+      "start_utc": "2026-08-20T06:13:15.340182+00:00",
+      "attempt_number": 1
+    },
+    "training_execution_manifest": {
+      "path": "reports/research/structured_vol_v5_replicates/e333325c804d95d2/training_execution_manifest.json",
+      "sha256": "1bc974ab7ca4b70967460318b218fd72a6da0eaf994d982c01273a6e17db075b",
+      "git_blob": "20612f93336bf8605d6de0ca3a3df8949be46a90"
+    },
+    "training_report": {
+      "path": "reports/research/structured_vol_v5_replicates/e333325c804d95d2/training_report.json",
+      "sha256": "145edc4142e8cbeff62f325686b230248b97af61fcc96bcfdeeb64293a04037e",
+      "git_blob": "117eb8238409090257fa6736e471e008b8969b3c"
+    },
+    "checkpoint": {
+      "path": "data/processed/research/model/structured-volatility-neural-sde-v5/e333325c804d95d2/checkpoint.pt",
+      "sha256": "63074f5d22235d38d004e84560f30eda1c6576dd8375be56e373742da64d07c2"
+    },
+    "training_curve": {
+      "path": "data/processed/research/model/structured-volatility-neural-sde-v5/e333325c804d95d2/training_curve.json",
+      "sha256": "8a5044f607a3ee99ea654b09b1a0ea572d37ba270393f71843635d3d777a78dd"
+    },
+    "final_checkpoint": {
+      "path": "data/processed/research/model/structured-volatility-neural-sde-v5/e333325c804d95d2/checkpoint_final.pt",
+      "sha256": "70da48a9ea473350bc0ed682ee306a6e5b8bdff3aec74031143cc1db6578f4c4"
+    },
+    "terminal_status": "COMPLETED",
+    "six_criterion_pass": true,
+    "internal_status": "SIX_CRITERION_PASS",
+    "internal_validity": true,
+    "best_epoch": 44,
+    "final_epoch": 84
+  },
+  "surviving_adjudication_v2": {
+    "path": "reports/research/structured_vol_v5_seed_03_primary_adjudication_v2.json",
+    "sha256": "a9fd6b496b571c26db071af2ed2887e0ff752b6d8040d26d465aefd307338dc6",
+    "git_blob": "3f6e029551ceb628cea1adf3b468b308a7cad6d8",
+    "six_criterion_pass": true,
+    "validity_note": "internally valid as scientific evidence but superseded for PRIMARY FAMILY ADMISSIBILITY by this closure"
+  },
+  "governed_primary_status": "ATTEMPTED_FAILED_GOVERNANCE",
+  "protocol_violation": "DOUBLE_SCIENTIFIC_INVOCATION",
+  "primary_family_admissible": false,
+  "failure_retained_in_primary_record": true,
+  "automatic_replacement": false,
+  "reserve_authorized": false,
+  "statement": "The second execution's good numerical result does not erase the first scientific invocation. Seed-03 is NOT PRIMARY_VALID_COMPLETED.",
+  "closure_utc": "2026-08-20T22:05:30.673758+00:00"
+}
