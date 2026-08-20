@@ -1,0 +1,38 @@
+{
+  "schema_version": "structured-vol-v5-training-execution-contract-v4",
+  "task_id": "NM-R4-V5-TRAINING-RUNNER-V4-REPAIR-033",
+  "starting_head": "33c7bdf637b3291a0452a30e522378d62fd807fb",
+  "safety_branch": "safety/pre-v5-training-runner-v4-repair-33c7bdf",
+  "replaces": {
+    "v1": {"blob": "97149dc3b25c7b65997664e3b67b800c6bed1008", "status": "SUPERSEDED"},
+    "v2": {"blob": "1c20175755319f187bb865c7cef3ccbbacc58ebd", "status": "SUPERSEDED"},
+    "v3": {"blob": "05b1551978c6db9a00e0400f87fc6dd3f2fdd200", "status": "SUPERSEDED"}
+  },
+  "runner": {
+    "path": "reports/research/evidence/structured_vol_v5_replicate_training_runner.py",
+    "git_commit": "88fc3cc6cf3186c0d84c33f77f772fe9b869954c",
+    "git_blob": "89aaa10a91259cd4fb4a4b448f3c6f4907b3a3d8",
+    "local_sha256": "74ab19646fbe373db071bbc59ad9377993d1bbb901dcfecab14baa2bf3f30ae3",
+    "complete_or_absent": true,
+    "publication": "os.link(temp, dest) exclusive"
+  },
+  "authorization": {
+    "schema_literal": "structured-vol-v5-primary-training-authorization-v1",
+    "field_count": 20,
+    "fields": ["schema_version","authorization_task_id","member_id","replicate_seed","model_init_seed","data_seed","eval_seed","full_config_hash","run_prefix","family_methodology_identity","schedule_git_blob","schedule_sha256","execution_contract_git_blob","runner_git_blob","execution_recipe_head","training_authorized","validation_authorized","final_test_authorized","reserve","max_training_invocations"],
+    "committed_required": true,
+    "head_blob_required": true,
+    "worktree_clean_required": true,
+    "index_clean_required": true,
+    "worktree_equals_head_required": true,
+    "staged_new_forbidden": true,
+    "precommit_exception": false
+  },
+  "frozen": {
+    "schedule_blob": "558d08bfee98dbd0c170d65e6a9b1737700c9e98",
+    "schedule_sha": "8c471c3311b05e647b543e46e310a8f1b1055ec00d4690f726dcd6d775f06fd0",
+    "family_methodology": "730475987368bf8f408e44e8e387682f178a0cdd7a358939016ba9b6df57a719"
+  },
+  "member_allowlist": ["v5-seed-02","v5-seed-03","v5-seed-04","v5-seed-05"],
+  "status": {"v1":"SUPERSEDED","v2":"SUPERSEDED","v3":"SUPERSEDED","v4":"CURRENT","authorization_freeze":"NOT_AUTHORIZED","member_training":"NOT_AUTHORIZED","final_test":"NOT_AUTHORIZED"}
+}
