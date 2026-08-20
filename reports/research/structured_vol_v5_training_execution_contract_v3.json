@@ -1,0 +1,42 @@
+{
+  "schema_version": "structured-vol-v5-training-execution-contract-v3",
+  "task_id": "NM-R4-V5-TRAINING-RUNNER-V3-REPAIR-032",
+  "audit_task": "NM-R4-V5-TRAINING-RUNNER-V2-AUDIT-031",
+  "created_before_training": true,
+  "starting_head": "a76b36f62a7a9577abc690c7f13ea224397bf4b6",
+  "starting_parent": "fd24c538a15d69ef2d27cecd878d2c31e8e7312e",
+  "safety_branch": "safety/pre-v5-training-runner-v3-repair-a76b36f",
+  "replaces": {
+    "v1": {"path": "reports/research/structured_vol_v5_training_execution_contract_v1.json", "status": "SUPERSEDED", "git_blob": "97149dc3b25c7b65997664e3b67b800c6bed1008", "sha256": "9318e6e74061b193ea00f9711ebd1758c14335c9182f53351644e61d94fa0ee6"},
+    "v2": {"path": "reports/research/structured_vol_v5_training_execution_contract_v2.json", "status": "SUPERSEDED", "git_blob": "1c20175755319f187bb865c7cef3ccbbacc58ebd", "sha256": "f21c222c191ede39104aed2b5a7ff71107f81bdd0a071e09fa71f05abdda6677"}
+  },
+  "runner": {
+    "path": "reports/research/evidence/structured_vol_v5_replicate_training_runner.py",
+    "git_commit": "b9d03924fce24e387ff1668065359fa1e2978ff4",
+    "git_blob": "476c07aa1dcea77d13b29c352f8acb4dbf858f9e",
+    "local_worktree_sha256": "7690b3dc746c1a9056a4957996819bb2a0d147a203ee57110946c0c1b6280ec3",
+    "complete_or_absent": true,
+    "publication_primitive": "os.link(temp, dest) exclusive",
+    "required_fields": ["schema_version","authorization_task_id","member_id","replicate_seed","model_init_seed","data_seed","eval_seed","full_config_hash","run_prefix","family_methodology_identity","schedule_git_blob","schedule_sha256","execution_contract_git_blob","runner_git_blob","execution_recipe_head","training_authorized","validation_authorized","final_test_authorized","reserve","max_training_invocations"],
+    "required_field_count": 20,
+    "schema_literal": "structured-vol-v5-primary-training-authorization-v1",
+    "max_invocations": 1
+  },
+  "frozen": {
+    "schedule_blob": "558d08bfee98dbd0c170d65e6a9b1737700c9e98",
+    "schedule_sha": "8c471c3311b05e647b543e46e310a8f1b1055ec00d4690f726dcd6d775f06fd0",
+    "family_methodology": "730475987368bf8f408e44e8e387682f178a0cdd7a358939016ba9b6df57a719",
+    "amendment_023_blob": "5328f73cff24e8705bad1fe3583a2bb963989e"
+  },
+  "member_allowlist": ["v5-seed-02","v5-seed-03","v5-seed-04","v5-seed-05"],
+  "denied": {"member_01": "v5-seed-01 EXISTING_FROZEN", "reserves": ["reserve-01","reserve-02","reserve-03"], "generic_report": "reports/research/structured_vol_v5_report.json"},
+  "member_identities": {
+    "v5-seed-02": {"replicate_seed": 9281, "full_config_hash": "62c7406cb3a2c64237d39559370d70a27f8111f7dd1dc7ee581da9bd475cf00b", "run_prefix": "62c7406cb3a2c642"},
+    "v5-seed-03": {"replicate_seed": 10281, "full_config_hash": "e333325c804d95d2f34ad14138e312cde0a00df2ebf1056741abbdc52a8b0955", "run_prefix": "e333325c804d95d2"},
+    "v5-seed-04": {"replicate_seed": 11281, "full_config_hash": "77e7de9efabb7ce35107e7c9f80f9fb9e28fff6f1a31978c35f601cbf154312b", "run_prefix": "77e7de9efabb7ce3"},
+    "v5-seed-05": {"replicate_seed": 12281, "full_config_hash": "1e8aa171993a1aba52534ae031d05ba5e8dbdb15772678bf3ec72fc68dcde897", "run_prefix": "1e8aa171993a1aba"}
+  },
+  "gate_failure": {"terminal_status": "FAILED", "failure_category": "GATE_V2_FAILED", "exit_code": 2, "retry": false},
+  "execution_contract_status": {"v1": "SUPERSEDED", "v2": "SUPERSEDED", "v3": "CURRENT", "training_eligible": false},
+  "authorization_state": {"numerical_schedule": "FROZEN", "runner_v3": "FROZEN", "member_training": false, "reserves": false, "validation": false, "external_validation": "CLOSED 2/2", "final_test": false, "hedging": false}
+}
