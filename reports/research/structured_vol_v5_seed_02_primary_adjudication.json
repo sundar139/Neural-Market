@@ -1,0 +1,213 @@
+{
+  "schema_version": "structured-vol-v5-seed-adjudication-v1",
+  "member_id": "v5-seed-02",
+  "replicate_seed": 9281,
+  "model_init_seed": 9281,
+  "data_seed": 9282,
+  "eval_seed": 8283,
+  "full_config_hash": "62c7406cb3a2c64237d39559370d70a27f8111f7dd1dc7ee581da9bd475cf00b",
+  "run_prefix": "62c7406cb3a2c642",
+  "family_methodology_identity": "730475987368bf8f408e44e8e387682f178a0cdd7a358939016ba9b6df57a719",
+  "authorization_path": "reports/research/authorizations/structured_vol_v5_primary_training/v5-seed-02.json",
+  "authorization_sha256": "27e5a51df2f93bfef1e67f8fcdb0746b7a172aa9a63f80a4604607bb9c68ffc5",
+  "authorization_git_blob": "3759c2528175ab77160e5b0d2473b2747b98e54a",
+  "runner_git_blob": "7b46e0f6c805687977cd685ebb97741bd4243cbe",
+  "execution_contract_git_blob": "84a59c4d966b349be705a8a29fad07f81282ebdc",
+  "recipe_head": "20d90f7484fe5df7cd62755a5810c8de78e5e92f",
+  "amendment_029_path": "reports/protocol/research_protocol_amendment_029.md",
+  "amendment_029_sha256": "8eea2a734e7043bb1fc55cd43fcc7befda6f334f4a06bb3cef870c27f9d972d1",
+  "amendment_029_git_blob": "b6eca6eed0f03974bb7a1c132ff95981cce07a2a",
+  "raw_runner_terminal_status": "COMPLETED",
+  "raw_runner_exit_code": 0,
+  "raw_runner_failure_category": null,
+  "criterion_1": {
+    "initial_selection_total": 9.447866439819336,
+    "best_selection_total": 0.6258251070976257,
+    "pass": true,
+    "description": "best_selection_total < initial_selection_total"
+  },
+  "criteria_2_to_6": {
+    "gate_passed": true,
+    "pass": true,
+    "gate_diagnostics": {
+      "gate_spec_hash": "f27e5ccaba27c527f5149ff49e460dd45d9662cc86f26f5237aeffbda57d2469",
+      "bootstrap_method": "block",
+      "bootstrap_block_length": 22,
+      "bootstrap_seed": 8801,
+      "n_real_bootstrap": 1024,
+      "n_generated": 1024,
+      "real_bootstrap_terminal_std": 0.043385906680542215,
+      "generated_terminal_std": 0.07588299363851547,
+      "terminal_dispersion_ratio": 1.7490240367051637,
+      "terminal_wasserstein_raw": 0.026208418978427517,
+      "terminal_wasserstein_normalized": 0.6040767839981898,
+      "real_daily_variance": 6.282044341787696e-05,
+      "generated_daily_variance": 0.00010080301581183448,
+      "variance_ratio": 1.604621208120106,
+      "acf_lags": [
+        1,
+        2,
+        3,
+        5,
+        10,
+        20
+      ],
+      "real_acf": {
+        "1": -0.06526538289034757,
+        "2": -0.03296067281502658,
+        "3": -0.13463671543414815,
+        "5": 0.012851039397019036,
+        "10": 0.0030290132685613287,
+        "20": -0.020060841132819442
+      },
+      "generated_acf": {
+        "1": -0.011303074384784435,
+        "2": -0.01156129002610823,
+        "3": -0.008662369737199182,
+        "5": -0.0001669288117731085,
+        "10": 0.00012887829631917639,
+        "20": 0.004494592620154223
+      },
+      "acf_rmse": 0.05776424456747971,
+      "acf_max_error": 0.12597434569694896,
+      "real_return_acf1": -0.06526538289034757,
+      "generated_return_acf1": -0.011303074384784435,
+      "return_acf1_abs_diff": 0.053962308505563134,
+      "real_abs_return_acf": {
+        "1": 0.3450408696273621,
+        "2": 0.26038676314410736,
+        "3": 0.15469912273302663,
+        "5": -0.03448468048273919,
+        "10": 0.034676844483678054,
+        "20": -0.0379329126709174
+      },
+      "generated_abs_return_acf": {
+        "1": 0.4779646680324529,
+        "2": 0.4312459374862455,
+        "3": 0.37397058170006214,
+        "5": 0.288630704607482,
+        "10": 0.09057790287696606,
+        "20": -0.15333561673783877
+      },
+      "real_sq_return_acf": {
+        "1": 0.3089785947579526,
+        "2": 0.20100657051221507,
+        "3": 0.05184692981044602,
+        "5": -0.04593829579471629,
+        "10": -0.004108219916712899,
+        "20": 0.025566445756656103
+      },
+      "generated_sq_return_acf": {
+        "1": 0.2582164455105704,
+        "2": 0.21840710472841554,
+        "3": 0.17466384605653504,
+        "5": 0.1152911073986671,
+        "10": 0.015203240973561185,
+        "20": -0.0656562165790183
+      },
+      "cond_var_log_correlation": -0.21152818097039058,
+      "generated_per_path_var_max": 0.00023105549917090684,
+      "generated_per_path_var_min": 3.898152499459684e-05,
+      "real_per_path_var_max": 8.469382009934634e-05,
+      "real_per_path_var_min": 3.447740527917631e-05,
+      "conditional_variance_matched_paths": 107,
+      "path_uniqueness_fraction": 1.0,
+      "drift_increment_rms": 0.0007993709159586973,
+      "diffusion_increment_rms": 0.02772716917057642,
+      "drift_diffusion_rms_ratio": 0.028829878414236947,
+      "gate_seed": 7777,
+      "criterion_results": {
+        "variance_ratio": true,
+        "terminal_dispersion": true,
+        "uniqueness": true,
+        "acf1_agreement": true,
+        "drift_diffusion_ratio": true
+      },
+      "gate_passed": true
+    },
+    "criteria": {
+      "variance_ratio": {
+        "value": 1.604621208120106,
+        "range": [
+          0.5,
+          2.0
+        ],
+        "pass": true
+      },
+      "terminal_dispersion": {
+        "value": 1.7490240367051637,
+        "range": [
+          0.5,
+          2.0
+        ],
+        "pass": true
+      },
+      "path_uniqueness": {
+        "value": "not_in_diagnostics",
+        "pass": true
+      },
+      "acf1_error": {
+        "value": 6.282044341787696e-05,
+        "pass": true
+      },
+      "drift_diffusion_ratio": {
+        "value": "f27e5ccaba27c527f5149ff49e460dd45d9662cc86f26f5237aeffbda57d2469",
+        "pass": true
+      }
+    }
+  },
+  "governed_six_criterion_pass": true,
+  "governed_primary_status": "PRIMARY_VALID_COMPLETED",
+  "selected_checkpoint": {
+    "path": "data\\processed\\research\\model\\structured-volatility-neural-sde-v5\\62c7406cb3a2c642\\checkpoint.pt",
+    "sha256": "9e6f8cd030d073d5c93ac36c94c55b09366f07b2f153f181fc82daedffc0064e",
+    "git_blob": "592df5d33f9342902d5526a710ef4a2c633fe058"
+  },
+  "training_curve": {
+    "path": "data\\processed\\research\\model\\structured-volatility-neural-sde-v5\\62c7406cb3a2c642\\training_curve.json",
+    "sha256": "631b272347acea4e1ebd1c25e218cb54884003a7b89ec5068095a210bf87e650",
+    "git_blob": "bd9c8cfbf15a5a0baf287818ba163423e2fb3917"
+  },
+  "final_checkpoint": {
+    "path": "data\\processed\\research\\model\\structured-volatility-neural-sde-v5\\62c7406cb3a2c642\\checkpoint_final.pt",
+    "sha256": "b867af03b7a00dce0536b4460f3f49d6eac440e45931c2a30ba1557cc0892a6e",
+    "git_blob": "feef0df2fc721db36a5ca17c4ce96af95ee7da33"
+  },
+  "training_report": {
+    "path": "reports\\research\\structured_vol_v5_replicates\\62c7406cb3a2c642\\training_report.json",
+    "sha256": "f1c998f4ed4bf117ec61131f9d4ca113235bc48fbc11855164d07235efe0c34f",
+    "git_blob": "d62ca14261c907f21901742e98da2cbc6cb61c40"
+  },
+  "manifest": {
+    "path": "reports\\research\\structured_vol_v5_replicates\\62c7406cb3a2c642\\training_execution_manifest.json",
+    "sha256": "147cbed10a55e2502db793fb2e9d3fc6c60113c3abb08415580eee771a531871",
+    "git_blob": "6c18955b482dc67e3a49a2e9d0e802026a42a968"
+  },
+  "transcript": {
+    "path": "reports/research/structured_vol_v5_replicates/62c7406cb3a2c642/training_stdout.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "exit_file": {
+    "path": "reports/research/structured_vol_v5_replicates/62c7406cb3a2c642/training_exit_code.txt",
+    "sha256": "13bf7b3039c63bf5a50491fa3cfd8eb4e699d1ba1436315aef9cbe5711530354"
+  },
+  "start_marker": {
+    "path": "reports\\research\\structured_vol_v5_replicates\\62c7406cb3a2c642\\execution_started.json",
+    "sha256": "53af9ed6c4e33d07d5ab096d706100369d317ab1499bb7e9f2883e341393f939",
+    "git_blob": "b45d0a5b70d6148e8373eecffc1c48bc506a7223"
+  },
+  "scientific_training_invocations": 1,
+  "validation_constructions": 0,
+  "external_evaluations": 0,
+  "final_test_accesses": 0,
+  "provider_calls": 0,
+  "network_calls": 0,
+  "start_utc": "2026-08-20T05:20:12.588639+00:00",
+  "end_utc": "2026-08-20T05:24:03.066615+00:00",
+  "adjudicated_utc": "2026-08-20T05:24:30.158947+00:00",
+  "wasserstein_report_only": 0.6040767839981898,
+  "best_epoch": 8,
+  "final_epoch": 8,
+  "initial_internal_rbf": 0.6696473956108093,
+  "best_internal_rbf": 0.04126167297363281
+}
