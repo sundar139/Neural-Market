@@ -268,17 +268,31 @@ def check_authorization(member_id: str, auth_path: Path | None) -> dict[str, Any
         raise RuntimeError("authorization artifact required for --execute; none provided")
     if not auth_path.exists():
         raise RuntimeError(f"authorization artifact missing: {auth_path}")
+    # Must be inside repository
+    try:
+        auth_path.resolve().relative_to(REPO.resolve())
+    except ValueError:
+        raise RuntimeError(f"authorization outside repository: {auth_path}")
     if not _is_tracked(auth_path):
         raise RuntimeError(f"authorization artifact not tracked: {auth_path}")
-    if not _is_clean(auth_path):
-        raise RuntimeError(f"authorization artifact not clean: {auth_path}")
-    # Authorization should be committed; staged-but-uncommitted is allowed only for
-    # isolated-temp-repo tests — in production, commit first.
-    # We enforce committed HEAD blob matches working blob when HEAD blob exists.
+    # Require HEAD blob exists (committed)
     head_blob = _git_head_blob(auth_path)
+    if not head_blob:
+        raise RuntimeError(f"authorization not committed (no HEAD blob): {auth_path}")
+    # Worktree and index must be clean
+    try:
+        rel = auth_path.relative_to(REPO).as_posix() if auth_path.is_absolute() else auth_path.as_posix()
+    except ValueError:
+        rel = auth_path.as_posix()
+    r1 = subprocess.run(["git", "diff", "--quiet", "--", rel], cwd=str(REPO), capture_output=True, check=False)
+    if r1.returncode != 0:
+        raise RuntimeError(f"authorization has unstaged modification: {auth_path}")
+    r2 = subprocess.run(["git", "diff", "--cached", "--quiet", "--", rel], cwd=str(REPO), capture_output=True, check=False)
+    if r2.returncode != 0:
+        raise RuntimeError(f"authorization has staged modification: {auth_path}")
     work_blob = _git_blob(auth_path)
-    if head_blob and work_blob != head_blob:
-        raise RuntimeError(f"authorization staged-but-uncommitted: {auth_path}")
+    if work_blob != head_blob:
+        raise RuntimeError(f"authorization worktree blob != HEAD blob: {auth_path}")
     data: dict[str, Any] = json.loads(auth_path.read_text(encoding="utf-8"))
     for f in REQUIRED_AUTH_FIELDS:
         if f not in data:

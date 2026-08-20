@@ -211,12 +211,47 @@ def test_incomplete_auth_refused(tmp_path: Path):
         _cleanup_auth(auth)
 
 
+def _check_with_mock(auth_path, member_id, expected_match):
+    import subprocess as _sp
+    from unittest.mock import patch
+    data = __import__('json').loads(auth_path.read_text(encoding='utf-8'))
+    rb = data['runner_git_blob']
+    cb = data['execution_contract_git_blob']
+    sb = data['schedule_git_blob']
+    blob = _sp.run(['git', 'hash-object', str(auth_path)], capture_output=True, text=True, check=True).stdout.strip()
+    def _mb(path):
+        s = str(path)
+        if s == str(auth_path): return blob
+        if 'replicate_training_runner' in s: return rb
+        if 'training_execution_contract' in s: return cb
+        if 'seed_schedule' in s: return sb
+        return blob
+    def _mh(path):
+        s = str(path)
+        if 'replicate_training_runner' in s: return rb
+        if 'training_execution_contract' in s: return cb
+        if 'seed_schedule' in s: return sb
+        return blob
+    with patch.object(_runner, '_is_tracked', return_value=True), patch.object(_runner, '_is_clean', return_value=True), patch.object(_runner, '_git_head_blob', side_effect=_mh), patch.object(_runner, '_git_blob', side_effect=_mb), patch.object(_runner, '_is_ancestor', return_value=True):
+        _orig = _sp.run
+        def _mr(cmd, *a, **kw):
+            if isinstance(cmd, list) and 'rev-parse' in str(cmd):
+                ac = str(cmd[-1]) if cmd else ''
+                if 'replicate_training_runner' in ac: return type('R', (), {'returncode':0,'stdout':rb+chr(10),'stderr':''})()
+                if 'training_execution_contract' in ac: return type('R', (), {'returncode':0,'stdout':cb+chr(10),'stderr':''})()
+                if 'seed_schedule' in ac: return type('R', (), {'returncode':0,'stdout':sb+chr(10),'stderr':''})()
+            if isinstance(cmd, list) and 'diff' in str(cmd): return type('R', (), {'returncode':0,'stdout':'','stderr':''})()
+            if isinstance(cmd, list) and 'merge-base' in str(cmd): return type('R', (), {'returncode':0,'stdout':'','stderr':''})()
+            return _orig(cmd, *a, **kw)
+        with patch('subprocess.run', side_effect=_mr):
+            with __import__('pytest').raises(RuntimeError, match=expected_match):
+                _runner.check_authorization(member_id, auth_path)
+
 # 13. hostile validation_authorized=true refused
 def test_hostile_validation_true_refused(tmp_path: Path):
     auth = _make_auth(tmp_path, "v5-seed-02", validation_authorized=True)
     try:
-        with pytest.raises(RuntimeError, match="validation_authorized must be false"):
-            _runner.check_authorization("v5-seed-02", auth)
+        _check_with_mock(auth, "v5-seed-02", "validation_authorized must be false")
     finally:
         _cleanup_auth(auth)
 
@@ -225,8 +260,7 @@ def test_hostile_validation_true_refused(tmp_path: Path):
 def test_hostile_final_test_true_refused(tmp_path: Path):
     auth = _make_auth(tmp_path, "v5-seed-02", final_test_authorized=True)
     try:
-        with pytest.raises(RuntimeError, match="final_test_authorized must be false"):
-            _runner.check_authorization("v5-seed-02", auth)
+        _check_with_mock(auth, "v5-seed-02", "final_test_authorized must be false")
     finally:
         _cleanup_auth(auth)
 
@@ -235,8 +269,7 @@ def test_hostile_final_test_true_refused(tmp_path: Path):
 def test_hostile_reserve_true_refused(tmp_path: Path):
     auth = _make_auth(tmp_path, "v5-seed-02", reserve=True)
     try:
-        with pytest.raises(RuntimeError, match="reserve must be false"):
-            _runner.check_authorization("v5-seed-02", auth)
+        _check_with_mock(auth, "v5-seed-02", "reserve must be false")
     finally:
         _cleanup_auth(auth)
 
@@ -245,8 +278,7 @@ def test_hostile_reserve_true_refused(tmp_path: Path):
 def test_hostile_max_invocations_refused(tmp_path: Path):
     auth = _make_auth(tmp_path, "v5-seed-02", max_training_invocations=2)
     try:
-        with pytest.raises(RuntimeError, match="max_training_invocations must be 1"):
-            _runner.check_authorization("v5-seed-02", auth)
+        _check_with_mock(auth, "v5-seed-02", "max_training_invocations must be 1")
     finally:
         _cleanup_auth(auth)
 
