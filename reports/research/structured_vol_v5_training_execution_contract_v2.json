@@ -1,0 +1,127 @@
+{
+  "schema_version": "structured-vol-v5-training-execution-contract-v2",
+  "task_id": "NM-R4-V5-TRAINING-RUNNER-REPAIR-030",
+  "audit_task": "NM-R4-V5-TRAINING-RUNNER-AUDIT-029",
+  "created_before_training": true,
+  "starting_head": "f1b69248e9f266dcd85ca963e89f74b95dc054ca",
+  "starting_parent": "3091dd5d7bd89ed9cdfee36fed97d197418c70e8",
+  "safety_branch": "safety/pre-v5-training-runner-repair-f1b6924",
+  "replaces": {
+    "v1_path": "reports/research/structured_vol_v5_training_execution_contract_v1.json",
+    "v1_status": "SUPERSEDED_EXECUTION_CONTRACT",
+    "v1_training_authorization_eligible": false,
+    "v1_git_blob": "97149dc3b25c7b65997664e3b67b800c6bed1008",
+    "v1_sha256": "9318e6e74061b193ea00f9711ebd1758c14335c9182f53351644e61d94fa0ee6",
+    "actual_v1_amendment_023_blob": "5328f73cff24e8705bad1fe3583a2bb963989e",
+    "note": "v1 identities correct by SHA; prior prompt had transcription errors for two Git blobs — actual blobs above are authoritative"
+  },
+  "runner": {
+    "path": "reports/research/evidence/structured_vol_v5_replicate_training_runner.py",
+    "git_commit": "fd24c538a15d69ef2d27cecd878d2c31e8e7312e",
+    "git_blob": "8e3dadc2ee5a5c078ee3241995708e56ec8ed7c1",
+    "local_worktree_sha256": "cd5cc6d74b59da82c797e45db2889b0a69e60ff8ffd076cb3bd25c437a6341ca",
+    "committed_equality": true,
+    "scientific_logic_duplicated": false,
+    "call_graph": "load_schedule -> derive_effective_config -> verify_config_hash/family_hash -> check_no_overwrite -> check_authorization(19 fields) -> _runner_self_check -> exclusive execution_started -> _run_scientific_training (train_internal_v3 -> checkpoint/curve -> refit_final_v3 -> evaluate_gate_v2) -> finally terminal evidence",
+    "single_scientific_call_site": "_run_scientific_training",
+    "max_invocations": 1
+  },
+  "runner_path": "reports/research/evidence/structured_vol_v5_replicate_training_runner.py",
+  "frozen_contracts": {
+    "amendment_021": "4ad94bceed70bb70a282bc472b97bc5fd0aad8bffb856d18bad3743c4bd822c2",
+    "replicate_contract": "c28eb6d8d8de89381de9ff28b697c8190d1910af87612a57bbe9df768aa0c98f",
+    "amendment_022": "4416f7a9a847bade1b8d864ae582f9d22971df389035b26d0a7e2858772c4f31",
+    "seed_schedule": "8c471c3311b05e647b543e46e310a8f1b1055ec00d4690f726dcd6d775f06fd0",
+    "seed_schedule_blob": "558d08bfee98dbd0c170d65e6a9b1737700c9e98",
+    "family_methodology_identity": "730475987368bf8f408e44e8e387682f178a0cdd7a358939016ba9b6df57a719",
+    "amendment_023": "869fb2a46a69b48fd1e08a78e24f2281086c24f08972a90142df8a0a49926b7b",
+    "actual_amendment_023_blob": "5328f73cff24e8705bad1fe3583a2bb963989e"
+  },
+  "member_allowlist": ["v5-seed-02", "v5-seed-03", "v5-seed-04", "v5-seed-05"],
+  "denied": {
+    "member_01": "v5-seed-01 EXISTING_FROZEN — refused",
+    "reserves": ["reserve-01", "reserve-02", "reserve-03", "reserve-j01", "reserve-j02", "reserve-j03"],
+    "generic_report": "reports/research/structured_vol_v5_report.json — refused, never used"
+  },
+  "member_identities": {
+    "v5-seed-02": {"replicate_seed": 9281, "model_init_seed": 9281, "data_seed": 9282, "eval_seed": 8283, "full_config_hash": "62c7406cb3a2c64237d39559370d70a27f8111f7dd1dc7ee581da9bd475cf00b", "run_prefix": "62c7406cb3a2c642"},
+    "v5-seed-03": {"replicate_seed": 10281, "model_init_seed": 10281, "data_seed": 10282, "eval_seed": 8283, "full_config_hash": "e333325c804d95d2f34ad14138e312cde0a00df2ebf1056741abbdc52a8b0955", "run_prefix": "e333325c804d95d2"},
+    "v5-seed-04": {"replicate_seed": 11281, "model_init_seed": 11281, "data_seed": 11282, "eval_seed": 8283, "full_config_hash": "77e7de9efabb7ce35107e7c9f80f9fb9e28fff6f1a31978c35f601cbf154312b", "run_prefix": "77e7de9efabb7ce3"},
+    "v5-seed-05": {"replicate_seed": 12281, "model_init_seed": 12281, "data_seed": 12282, "eval_seed": 8283, "full_config_hash": "1e8aa171993a1aba52534ae031d05ba5e8dbdb15772678bf3ec72fc68dcde897", "run_prefix": "1e8aa171993a1aba"}
+  },
+  "prospective_reserve_identities": {
+    "reserve-01": {"replicate_seed": 13281, "data_seed": 13282, "full_config_hash": "38c5113b27568e14eabb04621595e7114b8140577459abfe7061ffafd118b605", "run_prefix": "38c5113b27568e14"},
+    "reserve-02": {"replicate_seed": 14281, "data_seed": 14282, "full_config_hash": "423277df1ac4cd9a4088141e4cc483561b29d4aa6ff2973e57d379cdbe3d2969", "run_prefix": "423277df1ac4cd9a"},
+    "reserve-03": {"replicate_seed": 15281, "data_seed": 15282, "full_config_hash": "e89b0ac0956d197e8b335b28873e6d6802ff8176a21e18f35a5d3d7e88dbb2df", "run_prefix": "e89b0ac0956d197e"},
+    "execution_authorized": false
+  },
+  "namespaces": {
+    "report_root": "reports/research/structured_vol_v5_replicates",
+    "model_root": "data/processed/research/model/structured-volatility-neural-sde-v5",
+    "per_member_report_files": ["execution_started.json", "training_stdout.log", "training_exit_code.txt", "training_execution_manifest.json", "training_report.json"],
+    "pre_existing_scheduled_namespaces_exist": false,
+    "overwrite_permitted": false
+  },
+  "execution_semantics": {
+    "default": "DRY RUN ONLY — no dirs, no data construction beyond config objects, no training",
+    "execute_requirement": "requires --authorization pointing to a tracked/clean committed JSON with all 19 fields matching; none exists at 3ac43ca so --execute refused until authorization exists",
+    "execution_started": "exclusive open('x') before scientific call with full seed tuple + authorization/contract/runner/recipe provenance; if exists REFUSE; once created ATTEMPTED; no retry",
+    "max_invocations_per_process": 1,
+    "retry": "none",
+    "failure_behavior": "always persist transcript, exit code nonzero, FAILED manifest with sanitized reason; execution_started survives; no false-success report"
+  },
+  "authorization_handshake": {
+    "required_fields": ["schema_version", "authorization_task_id", "member_id", "replicate_seed", "model_init_seed", "data_seed", "eval_seed", "full_config_hash", "run_prefix", "family_methodology_identity", "schedule_git_blob", "schedule_sha256", "execution_contract_git_blob", "runner_git_blob", "execution_recipe_head", "training_authorized", "validation_authorized", "final_test_authorized", "reserve", "max_training_invocations"],
+    "required_field_count": 19,
+    "enforcement": "all 19 present, correct type/value, exact seed tuple, exact blobs, ancestor recipe head, firewall fields false/true as specified",
+    "must_be_tracked_and_clean": true,
+    "none_exists_at_3ac43ca": true
+  },
+  "tracked_text_identity": {
+    "authority": "Git blob ID is authoritative for tracked text",
+    "local_worktree_sha256_role": "informational local_worktree_sha256; not load-bearing",
+    "runner_self_verification": "HEAD:<runner_path> equals authorization.runner_git_blob and file has no diff"
+  },
+  "historical_quarantine": {
+    "reports/research/structured_vol_v5_report.json": {"sha256": "c5ed284fe44af3cd2a04d8553d97b5830042c7cfbf1404a453ea084b23512548", "classification": "HISTORICAL_NON_MEMBER_EVIDENCE", "eligible_for_member_evidence": false},
+    "reports/research/neural_sde_signature_v3_report.json": {"sha256": "585ecd886a3619c0ee95242bd8cf668fe529e48e67d42b41676133519645a312", "classification": "HISTORICAL_NON_MEMBER_EVIDENCE", "eligible_for_member_evidence": false},
+    "reports/research/neural_sde_signature_v4_report.json": {"sha256": "cb4610d08e9545562d78d8c72b1a7d01381bc33ae1ac35e0a564397e70ece29c", "classification": "HISTORICAL_NON_MEMBER_EVIDENCE", "eligible_for_member_evidence": false}
+  },
+  "manifest_schema_supersession": {
+    "amendment_021_wording": "replicate contract may be reused as family manifest schema",
+    "amendment_022_rule": "separately versioned structured-vol-v5-completed-family-v1",
+    "controlling_rule": "Amendment 022 supersedes Amendment 021 — completed-family manifest has distinct schema structured-vol-v5-completed-family-v1",
+    "completed_family_schema": "structured-vol-v5-completed-family-v1 (not created in this task)"
+  },
+  "external_validation_firewall": {
+    "state": "CLOSED",
+    "construction_count": 2,
+    "effective_max": 2,
+    "third_permitted": false,
+    "no_validation_reconstruction": true
+  },
+  "protected_integrity_basis": {
+    "schedule": "8c471c3311b05e647b543e46e310a8f1b1055ec00d4690f726dcd6d775f06fd0",
+    "amendment_022": "4416f7a9a847bade1b8d864ae582f9d22971df389035b26d0a7e2858772c4f31",
+    "amendment_021": "4ad94bceed70bb70a282bc472b97bc5fd0aad8bffb856d18bad3743c4bd822c2",
+    "replicate_contract": "c28eb6d8d8de89381de9ff28b697c8190d1910af87612a57bbe9df768aa0c98f",
+    "selected_checkpoint": "452f70058eb03a83af248fdb3c85f413264becd302b1e71d11167f10ac7b887f",
+    "training_curve": "e29f2afcdff75e151ca6a85f3c77e7a209a3c1827b6d1abcb191ce36c6d30a2d",
+    "final_checkpoint": "c7b9be5d666ae24fe208cdc9241eab1cbca0cbe95e5576d562fca0bd73ea2be4",
+    "production_gate_v2": "4604231cfc5d26f61808b65ce9269a120ccb44c2c96a590853341e31c9f14bc6"
+  },
+  "authorization_state": {
+    "numerical_schedule": "FROZEN",
+    "training_runner_v2": "FROZEN",
+    "execution_contract_v1": "SUPERSEDED",
+    "execution_contract_v2": "FROZEN",
+    "member_02_to_05_training": false,
+    "reserve_training": false,
+    "validation": false,
+    "external_validation": "CLOSED 2/2",
+    "third_validation_construction": "FORBIDDEN",
+    "final_test": false,
+    "hedging": false,
+    "next_action": "Independent Claude read-only audit of repaired runner + contract v2"
+  }
+}
