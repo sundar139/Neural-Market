@@ -50,7 +50,7 @@ def _make_auth(tmp_path: Path, member_id: str = "v5-seed-02", **overrides) -> Pa
             check=True,
         ).stdout.strip()
     base = {
-        "schema_version": "1.0",
+        "schema_version": "structured-vol-v5-primary-training-authorization-v1",
         "authorization_task_id": "NM-R4-TEST-AUTH-001",
         "member_id": member_id,
         "replicate_seed": {"v5-seed-02": 9281, "v5-seed-03": 10281, "v5-seed-04": 11281, "v5-seed-05": 12281}[member_id],
