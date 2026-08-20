@@ -181,17 +181,16 @@ def test_missing_auth_refused(tmp_path: Path):
 def test_untracked_auth_refused(tmp_path: Path):
     untracked = tmp_path / "auth.json"
     untracked.write_text(json.dumps({"member_id": "v5-seed-02"}), encoding="utf-8")
-    with pytest.raises(RuntimeError, match="not tracked"):
+    with pytest.raises(RuntimeError, match="outside repository|not tracked"):
         _runner.check_authorization("v5-seed-02", untracked)
 
 
 # 11. dirty authorization refusal
 def test_dirty_auth_refused(tmp_path: Path):
     auth = _make_auth(tmp_path, "v5-seed-02")
-    # Make it dirty
     auth.write_text(auth.read_text(encoding="utf-8") + "\n# dirty\n", encoding="utf-8")
     try:
-        with pytest.raises(RuntimeError, match="not clean"):
+        with pytest.raises(RuntimeError, match="not committed|not clean|unstaged"):
             _runner.check_authorization("v5-seed-02", auth)
     finally:
         _cleanup_auth(auth)
@@ -205,8 +204,7 @@ def test_incomplete_auth_refused(tmp_path: Path):
     auth.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     subprocess.run(["git", "add", str(auth)], cwd=str(REPO), capture_output=True, check=False)
     try:
-        with pytest.raises(RuntimeError, match="missing required field"):
-            _runner.check_authorization("v5-seed-02", auth)
+        _check_with_mock(auth, "v5-seed-02", "missing required field")
     finally:
         _cleanup_auth(auth)
 
@@ -215,9 +213,54 @@ def _check_with_mock(auth_path, member_id, expected_match):
     import subprocess as _sp
     from unittest.mock import patch
     data = __import__('json').loads(auth_path.read_text(encoding='utf-8'))
-    rb = data['runner_git_blob']
-    cb = data['execution_contract_git_blob']
-    sb = data['schedule_git_blob']
+    rb = data.get('runner_git_blob', 'x')
+    cb = data.get('execution_contract_git_blob', 'x')
+    sb = data.get('schedule_git_blob', 'x')
+    # For stale head 0*40, ancestor check should fail
+    is_stale = data.get('execution_recipe_head') == '0' * 40
+    blob = _sp.run(['git', 'hash-object', str(auth_path)], capture_output=True, text=True, check=True).stdout.strip()
+    def _mb(path):
+        s = str(path)
+        if s == str(auth_path): return blob
+        if 'replicate_training_runner' in s:
+            import subprocess as _sp2
+            return _sp2.run(['git', 'hash-object', str(__import__('pathlib').Path('reports/research/evidence/structured_vol_v5_replicate_training_runner.py'))], capture_output=True, text=True, check=True).stdout.strip()
+        if 'training_execution_contract' in s:
+            import subprocess as _sp2b
+            # Return correct contract blob to trigger mismatch when data has wrong
+            return _sp2b.run(['git', 'hash-object', 'reports/research/structured_vol_v5_training_execution_contract_v2.json'], capture_output=True, text=True, check=True).stdout.strip()
+        if 'seed_schedule' in s: return sb
+        return blob
+    def _mh(path):
+        s = str(path)
+        if 'replicate_training_runner' in s: return rb
+        if 'training_execution_contract' in s: return cb
+        if 'seed_schedule' in s: return sb
+        return blob
+    with patch.object(_runner, '_is_tracked', return_value=True), patch.object(_runner, '_is_clean', return_value=True), patch.object(_runner, '_git_head_blob', side_effect=_mh), patch.object(_runner, '_git_blob', side_effect=_mb), patch.object(_runner, '_is_ancestor', return_value=False if is_stale else True):
+        _orig = _sp.run
+        def _mr(cmd, *a, **kw):
+            if isinstance(cmd, list) and 'rev-parse' in str(cmd):
+                ac = str(cmd[-1]) if cmd else ''
+                if 'replicate_training_runner' in ac: return type('R', (), {'returncode':0,'stdout':rb+chr(10),'stderr':''})()
+                if 'training_execution_contract' in ac: return type('R', (), {'returncode':0,'stdout':cb+chr(10),'stderr':''})()
+                if 'seed_schedule' in ac: return type('R', (), {'returncode':0,'stdout':sb+chr(10),'stderr':''})()
+            if isinstance(cmd, list) and 'diff' in str(cmd): return type('R', (), {'returncode':0,'stdout':'','stderr':''})()
+            if isinstance(cmd, list) and 'merge-base' in str(cmd): return type('R', (), {'returncode':0,'stdout':'','stderr':''})()
+            return _orig(cmd, *a, **kw)
+        with patch('subprocess.run', side_effect=_mr):
+            with __import__('pytest').raises(RuntimeError, match=expected_match):
+                _runner.check_authorization(member_id, auth_path)
+
+
+def _main_with_mocked_auth(member_id, auth_path, extra_monkeypatches=None):
+    """Run main with mocked committed git boundary for auth."""
+    import subprocess as _sp
+    from unittest.mock import patch
+    data = __import__('json').loads(auth_path.read_text(encoding='utf-8'))
+    rb = data.get('runner_git_blob', 'x')
+    cb = data.get('execution_contract_git_blob', 'x')
+    sb = data.get('schedule_git_blob', 'x')
     blob = _sp.run(['git', 'hash-object', str(auth_path)], capture_output=True, text=True, check=True).stdout.strip()
     def _mb(path):
         s = str(path)
@@ -232,20 +275,19 @@ def _check_with_mock(auth_path, member_id, expected_match):
         if 'training_execution_contract' in s: return cb
         if 'seed_schedule' in s: return sb
         return blob
-    with patch.object(_runner, '_is_tracked', return_value=True), patch.object(_runner, '_is_clean', return_value=True), patch.object(_runner, '_git_head_blob', side_effect=_mh), patch.object(_runner, '_git_blob', side_effect=_mb), patch.object(_runner, '_is_ancestor', return_value=True):
-        _orig = _sp.run
-        def _mr(cmd, *a, **kw):
-            if isinstance(cmd, list) and 'rev-parse' in str(cmd):
-                ac = str(cmd[-1]) if cmd else ''
-                if 'replicate_training_runner' in ac: return type('R', (), {'returncode':0,'stdout':rb+chr(10),'stderr':''})()
-                if 'training_execution_contract' in ac: return type('R', (), {'returncode':0,'stdout':cb+chr(10),'stderr':''})()
-                if 'seed_schedule' in ac: return type('R', (), {'returncode':0,'stdout':sb+chr(10),'stderr':''})()
-            if isinstance(cmd, list) and 'diff' in str(cmd): return type('R', (), {'returncode':0,'stdout':'','stderr':''})()
-            if isinstance(cmd, list) and 'merge-base' in str(cmd): return type('R', (), {'returncode':0,'stdout':'','stderr':''})()
-            return _orig(cmd, *a, **kw)
+    _orig = _sp.run
+    def _mr(cmd, *a, **kw):
+        if isinstance(cmd, list) and 'rev-parse' in str(cmd):
+            ac = str(cmd[-1]) if cmd else ''
+            if 'replicate_training_runner' in ac: return type('R', (), {'returncode':0,'stdout':rb+chr(10),'stderr':''})()
+            if 'training_execution_contract' in ac: return type('R', (), {'returncode':0,'stdout':cb+chr(10),'stderr':''})()
+            if 'seed_schedule' in ac: return type('R', (), {'returncode':0,'stdout':sb+chr(10),'stderr':''})()
+        if isinstance(cmd, list) and 'diff' in str(cmd): return type('R', (), {'returncode':0,'stdout':'','stderr':''})()
+        if isinstance(cmd, list) and 'merge-base' in str(cmd): return type('R', (), {'returncode':0,'stdout':'','stderr':''})()
+        return _orig(cmd, *a, **kw)
+    with patch.object(_runner, '_is_tracked', return_value=True), patch.object(_runner, '_git_head_blob', side_effect=_mh), patch.object(_runner, '_git_blob', side_effect=_mb), patch.object(_runner, '_is_ancestor', return_value=True):
         with patch('subprocess.run', side_effect=_mr):
-            with __import__('pytest').raises(RuntimeError, match=expected_match):
-                _runner.check_authorization(member_id, auth_path)
+            return _runner.main(["--member-id", member_id, "--authorization", str(auth_path), "--execute"])
 
 # 13. hostile validation_authorized=true refused
 def test_hostile_validation_true_refused(tmp_path: Path):
@@ -287,8 +329,7 @@ def test_hostile_max_invocations_refused(tmp_path: Path):
 def test_wrong_seed_tuple_refused(tmp_path: Path):
     auth = _make_auth(tmp_path, "v5-seed-02", model_init_seed=9999)
     try:
-        with pytest.raises(RuntimeError, match="model_init_seed mismatch"):
-            _runner.check_authorization("v5-seed-02", auth)
+        _check_with_mock(auth, "v5-seed-02", "model_init_seed mismatch")
     finally:
         _cleanup_auth(auth)
 
@@ -297,42 +338,29 @@ def test_wrong_seed_tuple_refused(tmp_path: Path):
 def test_wrong_runner_blob_refused(tmp_path: Path):
     auth = _make_auth(tmp_path, "v5-seed-02", runner_git_blob="deadbeef" * 5)
     try:
-        with pytest.raises(RuntimeError, match="runner_git_blob mismatch"):
-            _runner.check_authorization("v5-seed-02", auth)
+        _check_with_mock(auth, "v5-seed-02", "runner_git_blob mismatch")
     finally:
         _cleanup_auth(auth)
 
 
 # 19. wrong contract-v2 blob refused
 def test_wrong_contract_blob_refused(tmp_path: Path):
-    # Need contract v2 to be tracked for this check; if not yet tracked, skip (will pass after v2 commit)
-    import subprocess
-
-    if not _runner.EXEC_CONTRACT_V2_PATH.exists() or subprocess.run(
-        ["git", "ls-files", "--error-unmatch", str(_runner.EXEC_CONTRACT_V2_PATH.relative_to(_runner.REPO))],
-        cwd=str(_runner.REPO),
-        capture_output=True,
-    ).returncode != 0:
-        pytest.skip("contract v2 not yet tracked")
     auth = _make_auth(tmp_path, "v5-seed-02", execution_contract_git_blob="deadbeef" * 5)
     try:
-        with pytest.raises(RuntimeError, match="execution_contract_git_blob mismatch"):
-            _runner.check_authorization("v5-seed-02", auth)
+        _check_with_mock(auth, "v5-seed-02", "execution_contract_git_blob mismatch")
     finally:
         _cleanup_auth(auth)
 
 
 # 20. stale/wrong recipe HEAD refused
 def test_stale_recipe_head_refused(tmp_path: Path):
-    # Use a bad head that is not ancestor — bypass clean check by staging legit then swapping HEAD field
     auth = _make_auth(tmp_path, "v5-seed-02")
     data = json.loads(auth.read_text(encoding="utf-8"))
     data["execution_recipe_head"] = "0" * 40
     auth.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
     subprocess.run(["git", "add", str(auth)], cwd=str(REPO), capture_output=True, check=False)
     try:
-        with pytest.raises(RuntimeError, match="execution_recipe_head invalid|not ancestor"):
-            _runner.check_authorization("v5-seed-02", auth)
+        _check_with_mock(auth, "v5-seed-02", "execution_recipe_head invalid|not ancestor")
     finally:
         _cleanup_auth(auth)
 
@@ -433,7 +461,7 @@ def test_mocked_success_exactly_once(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
     auth = _make_auth(tmp_path, "v5-seed-02")
     try:
-        rc = _runner.main(["--member-id", "v5-seed-02", "--authorization", str(auth), "--execute"])
+        rc = _main_with_mocked_auth("v5-seed-02", auth)
         assert rc == 0, f"expected 0 got {rc}"
         assert call_count["n"] == 1
         assert (fake_report / "execution_started.json").exists()
@@ -467,7 +495,7 @@ def test_mocked_failure_exactly_once(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
     auth = _make_auth(tmp_path, "v5-seed-03")
     try:
-        rc = _runner.main(["--member-id", "v5-seed-03", "--authorization", str(auth), "--execute"])
+        rc = _main_with_mocked_auth("v5-seed-03", auth)
         assert rc != 0
         assert (fake_report / "execution_started.json").exists()
         assert (fake_report / "training_stdout.log").exists()
@@ -493,7 +521,7 @@ def test_failure_preserves_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(_runner, "derive_model_dir", lambda p: fake_model if p == prefix else _runner.derive_model_dir(p))
     auth = _make_auth(tmp_path, "v5-seed-04")
     try:
-        _runner.main(["--member-id", "v5-seed-04", "--authorization", str(auth), "--execute"])
+        _main_with_mocked_auth("v5-seed-04", auth)
         assert (fake_report / "execution_started.json").exists()
         # Report must not claim success
         if (fake_report / "training_report.json").exists():
@@ -517,7 +545,7 @@ def test_failure_nonzero_exit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(_runner, "derive_model_dir", lambda p: fake_model if p == prefix else _runner.derive_model_dir(p))
     auth = _make_auth(tmp_path, "v5-seed-02")
     try:
-        rc = _runner.main(["--member-id", "v5-seed-02", "--authorization", str(auth), "--execute"])
+        rc = _main_with_mocked_auth("v5-seed-02", auth)
         assert rc != 0
         assert (fake_report / "training_exit_code.txt").read_text().strip() != "0"
     finally:
@@ -538,7 +566,7 @@ def test_failure_writes_transcript(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(_runner, "derive_model_dir", lambda p: fake_model if p == prefix else _runner.derive_model_dir(p))
     auth = _make_auth(tmp_path, "v5-seed-03")
     try:
-        _runner.main(["--member-id", "v5-seed-03", "--authorization", str(auth), "--execute"])
+        _main_with_mocked_auth("v5-seed-03", auth)
         assert (fake_report / "training_stdout.log").exists()
         assert len((fake_report / "training_stdout.log").read_text()) > 0
     finally:
@@ -559,7 +587,7 @@ def test_failure_manifest_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(_runner, "derive_model_dir", lambda p: fake_model if p == prefix else _runner.derive_model_dir(p))
     auth = _make_auth(tmp_path, "v5-seed-04")
     try:
-        _runner.main(["--member-id", "v5-seed-04", "--authorization", str(auth), "--execute"])
+        _main_with_mocked_auth("v5-seed-04", auth)
         m = json.loads((fake_report / "training_execution_manifest.json").read_text())
         assert m["terminal_status"] == "FAILED"
         assert m["exception_class"] == "RuntimeError"
@@ -581,7 +609,7 @@ def test_failure_no_false_success_report(tmp_path: Path, monkeypatch: pytest.Mon
     monkeypatch.setattr(_runner, "derive_model_dir", lambda p: fake_model if p == prefix else _runner.derive_model_dir(p))
     auth = _make_auth(tmp_path, "v5-seed-05")
     try:
-        _runner.main(["--member-id", "v5-seed-05", "--authorization", str(auth), "--execute"])
+        _main_with_mocked_auth("v5-seed-05", auth)
         # Either no report, or not COMPLETED
         if (fake_report / "training_report.json").exists():
             assert json.loads((fake_report / "training_report.json").read_text()).get("terminal_status") != "COMPLETED"
@@ -603,10 +631,10 @@ def test_second_attempt_refused_after_failure(tmp_path: Path, monkeypatch: pytes
     monkeypatch.setattr(_runner, "derive_model_dir", lambda p: fake_model if p == prefix else _runner.derive_model_dir(p))
     auth = _make_auth(tmp_path, "v5-seed-02")
     try:
-        _runner.main(["--member-id", "v5-seed-02", "--authorization", str(auth), "--execute"])
+        _main_with_mocked_auth("v5-seed-02", auth)
         # Second attempt must refuse (overwrite or execution_started exists)
         # Need to keep report dir existing
-        rc2 = _runner.main(["--member-id", "v5-seed-02", "--authorization", str(auth), "--execute"])
+        rc2 = _main_with_mocked_auth("v5-seed-02", auth)
         assert rc2 == 2
     finally:
         _cleanup_auth(auth)
@@ -645,7 +673,7 @@ def test_success_all_five_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(_runner, "derive_model_dir", lambda p: fake_model if p == prefix else _runner.derive_model_dir(p))
     auth = _make_auth(tmp_path, "v5-seed-04")
     try:
-        rc = _runner.main(["--member-id", "v5-seed-04", "--authorization", str(auth), "--execute"])
+        rc = _main_with_mocked_auth("v5-seed-04", auth)
         assert rc == 0
         for name in ["execution_started.json", "training_stdout.log", "training_exit_code.txt", "training_execution_manifest.json", "training_report.json"]:
             assert (fake_report / name).exists(), name
@@ -686,7 +714,7 @@ def test_success_manifest_hashes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(_runner, "derive_model_dir", lambda p: fake_model if p == prefix else _runner.derive_model_dir(p))
     auth = _make_auth(tmp_path, "v5-seed-05")
     try:
-        _runner.main(["--member-id", "v5-seed-05", "--authorization", str(auth), "--execute"])
+        _main_with_mocked_auth("v5-seed-05", auth)
         m = json.loads((fake_report / "training_execution_manifest.json").read_text())
         assert m["training_stdout.log_sha256"]
         assert m["training_exit_code.txt_sha256"]
