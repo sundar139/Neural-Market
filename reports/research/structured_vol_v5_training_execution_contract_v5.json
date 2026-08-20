@@ -1,4 +1,93 @@
 {
   "schema_version": "structured-vol-v5-training-execution-contract-v5",
-  "placeholder": true
+  "task_id": "NM-R4-V5-TRAINING-RUNNER-V5-REPAIR-035",
+  "starting_head": "9ea422452552c58eff0f0e8a42124b6e07ad324f",
+  "safety_branch": "safety/pre-v5-training-runner-v5-repair-9ea4224",
+  "replaces": {
+    "v1": {
+      "blob": "97149dc3b25c7b65997664e3b67b800c6bed1008",
+      "status": "SUPERSEDED"
+    },
+    "v2": {
+      "blob": "1c20175755319f187bb865c7cef3ccbbacc58ebd",
+      "status": "SUPERSEDED"
+    },
+    "v3": {
+      "blob": "05b1551978c6db9a00e0400f87fc6dd3f2fdd200",
+      "status": "SUPERSEDED"
+    },
+    "v4": {
+      "blob": "bde68b06dc25f39a7ef5c4a044409516351c0a8c",
+      "status": "SUPERSEDED"
+    }
+  },
+  "runner": {
+    "path": "reports/research/evidence/structured_vol_v5_replicate_training_runner.py",
+    "git_commit": "41042ad78ed6348d9b1fa11a4ae7d582e3e0e104",
+    "git_blob": "7b46e0f6c805687977cd685ebb97741bd4243cbe",
+    "local_sha256": "8843340bf445eb32f2cf1c005666c8eaf4f36a8173c5da3f2da1c1dcfc04e860",
+    "complete_or_absent": true,
+    "publication": "os.link(temp, dest) exclusive",
+    "current_contract": "reports/research/structured_vol_v5_training_execution_contract_v5.json"
+  },
+  "authorization": {
+    "schema_literal": "structured-vol-v5-primary-training-authorization-v1",
+    "field_count": 20,
+    "fields": [
+      "schema_version",
+      "authorization_task_id",
+      "member_id",
+      "replicate_seed",
+      "model_init_seed",
+      "data_seed",
+      "eval_seed",
+      "full_config_hash",
+      "run_prefix",
+      "family_methodology_identity",
+      "schedule_git_blob",
+      "schedule_sha256",
+      "execution_contract_git_blob",
+      "runner_git_blob",
+      "execution_recipe_head",
+      "training_authorized",
+      "validation_authorized",
+      "final_test_authorized",
+      "reserve",
+      "max_training_invocations"
+    ],
+    "committed_required": true,
+    "head_blob_required": true,
+    "worktree_clean_required": true,
+    "index_clean_required": true,
+    "worktree_equals_head_required": true,
+    "staged_new_forbidden": true,
+    "precommit_exception": false
+  },
+  "frozen": {
+    "schedule_blob": "558d08bfee98dbd0c170d65e6a9b1737700c9e98",
+    "schedule_sha": "8c471c3311b05e647b543e46e310a8f1b1055ec00d4690f726dcd6d775f06fd0",
+    "family_methodology": "730475987368bf8f408e44e8e387682f178a0cdd7a358939016ba9b6df57a719"
+  },
+  "member_allowlist": [
+    "v5-seed-02",
+    "v5-seed-03",
+    "v5-seed-04",
+    "v5-seed-05"
+  ],
+  "exit_codes": {
+    "completed": 0,
+    "exception": 1,
+    "pre_start_refusal": 2,
+    "gate_failed": 3
+  },
+  "status": {
+    "v1": "SUPERSEDED",
+    "v2": "SUPERSEDED",
+    "v3": "SUPERSEDED",
+    "v4": "SUPERSEDED",
+    "v5": "CURRENT",
+    "authorization_freeze": "NOT_AUTHORIZED",
+    "member_training": "NOT_AUTHORIZED",
+    "final_test": "NOT_AUTHORIZED"
+  }
 }
