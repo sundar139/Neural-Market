@@ -1,0 +1,22 @@
+{
+  "schema_version": "structured-vol-v5-primary-training-authorization-v1",
+  "authorization_task_id": "NM-R4-V5-PRIMARY-AUTHORIZATION-FREEZE-037",
+  "member_id": "v5-seed-02",
+  "replicate_seed": 9281,
+  "model_init_seed": 9281,
+  "data_seed": 9282,
+  "eval_seed": 8283,
+  "full_config_hash": "62c7406cb3a2c64237d39559370d70a27f8111f7dd1dc7ee581da9bd475cf00b",
+  "run_prefix": "62c7406cb3a2c642",
+  "family_methodology_identity": "730475987368bf8f408e44e8e387682f178a0cdd7a358939016ba9b6df57a719",
+  "schedule_git_blob": "558d08bfee98dbd0c170d65e6a9b1737700c9e98",
+  "schedule_sha256": "8c471c3311b05e647b543e46e310a8f1b1055ec00d4690f726dcd6d775f06fd0",
+  "execution_contract_git_blob": "84a59c4d966b349be705a8a29fad07f81282ebdc",
+  "runner_git_blob": "7b46e0f6c805687977cd685ebb97741bd4243cbe",
+  "execution_recipe_head": "20d90f7484fe5df7cd62755a5810c8de78e5e92f",
+  "training_authorized": true,
+  "validation_authorized": false,
+  "final_test_authorized": false,
+  "reserve": false,
+  "max_training_invocations": 1
+}
