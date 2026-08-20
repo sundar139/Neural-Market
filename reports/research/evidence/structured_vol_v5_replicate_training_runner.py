@@ -3,7 +3,7 @@
 Fail-closed: allowlist is exactly v5-seed-02..05, member #1 and reserves are
 refused, namespaces are hash-derived, overwrite and retry are refused,
 execution_started is exclusive-create, and --execute requires a tracked/
-committed authorization artifact binding runner + contract v2 identities.
+committed authorization artifact binding runner + contract v5 identities.
 Exactly one scientific training invocation is reachable and only after the
 irreversible start. Terminal evidence is always persisted. No scientific
 model/trainer logic is duplicated beyond orchestration glue.
@@ -40,7 +40,7 @@ FIXED_GATE_SEEDS = {"gate_seed": 7777, "drift_diffusion_seed": 7778, "bootstrap_
 ALLOWLIST = {"v5-seed-02", "v5-seed-03", "v5-seed-04", "v5-seed-05"}
 HISTORICAL_GENERIC_REPORT = REPO / "reports/research/structured_vol_v5_report.json"
 HARNESS_PATH = REPO / "reports/research/evidence/structured_vol_v5_replicate_training_runner.py"
-EXEC_CONTRACT_V2_PATH = REPO / "reports/research/structured_vol_v5_training_execution_contract_v2.json"
+EXEC_CONTRACT_PATH = REPO / "reports/research/structured_vol_v5_training_execution_contract_v5.json"
 
 # Schedule-derived expected hashes (frozen at 89fcc9c)
 EXPECTED_CONFIG_HASHES: dict[str, str] = {
@@ -334,22 +334,21 @@ def check_authorization(member_id: str, auth_path: Path | None) -> dict[str, Any
         raise RuntimeError("runner has no HEAD blob (not committed)")
     if current_runner_blob != head_runner_blob:
         raise RuntimeError("runner blob mismatch: working vs HEAD (commit first)")
-    # Contract v2 blob must match current tracked contract v2 — skipped for pre-v2 test auths
-    # For tests that use a mock contract blob (not yet committed), allow a placeholder if v2 not yet tracked,
-    # but at real execution time v2 must exist and match.
-    if EXEC_CONTRACT_V2_PATH.exists() and _is_tracked(EXEC_CONTRACT_V2_PATH):
-        current_contract_blob = _git_blob(EXEC_CONTRACT_V2_PATH)
-        head_contract_blob = _git_head_blob(EXEC_CONTRACT_V2_PATH)
-        if data["execution_contract_git_blob"] != current_contract_blob:
-            raise RuntimeError("authorization execution_contract_git_blob mismatch")
-        if head_contract_blob and current_contract_blob != head_contract_blob:
-            raise RuntimeError("execution contract v2 not clean/committed")
-        if not _is_clean(EXEC_CONTRACT_V2_PATH):
-            raise RuntimeError("execution contract v2 not clean")
-    else:
-        # v2 not yet committed (runner pre-v2 phase) — skip contract blob binding in tests
-        # but require the field to exist (already checked above)
-        pass
+    # Contract v5 blob must match current tracked contract v5 (unconditional)
+    if not EXEC_CONTRACT_PATH.exists():
+        raise RuntimeError(f"current execution contract missing: {EXEC_CONTRACT_PATH}")
+    if not _is_tracked(EXEC_CONTRACT_PATH):
+        raise RuntimeError(f"current execution contract not tracked: {EXEC_CONTRACT_PATH}")
+    head_contract_blob = _git_head_blob(EXEC_CONTRACT_PATH)
+    if not head_contract_blob:
+        raise RuntimeError(f"current execution contract not committed: {EXEC_CONTRACT_PATH}")
+    if not _is_clean(EXEC_CONTRACT_PATH):
+        raise RuntimeError(f"current execution contract not clean: {EXEC_CONTRACT_PATH}")
+    current_contract_blob = _git_blob(EXEC_CONTRACT_PATH)
+    if current_contract_blob != head_contract_blob:
+        raise RuntimeError(f"current execution contract worktree != HEAD: {EXEC_CONTRACT_PATH}")
+    if data["execution_contract_git_blob"] != current_contract_blob:
+        raise RuntimeError("authorization execution_contract_git_blob mismatch")
     # Schedule SHA check (allow local_worktree_sha256 alias)
     sched_sha_key = "schedule_sha256" if "schedule_sha256" in data else "local_worktree_sha256" if "local_worktree_sha256" in data else None
     if sched_sha_key is None:
@@ -362,10 +361,10 @@ def check_authorization(member_id: str, auth_path: Path | None) -> dict[str, Any
         raise RuntimeError("authorization execution_recipe_head invalid")
     if not _is_ancestor(recipe_head):
         raise RuntimeError("authorization execution_recipe_head is not ancestor of HEAD")
-    # Recipe must contain runner, contract v3, and schedule at their authorized blobs
+    # Recipe must contain runner, contract v5, and schedule at their authorized blobs
     for rel_path, expected_blob_key in [
         (HARNESS_PATH.relative_to(REPO).as_posix(), "runner_git_blob"),
-        (EXEC_CONTRACT_V2_PATH.relative_to(REPO).as_posix(), "execution_contract_git_blob"),
+        (EXEC_CONTRACT_PATH.relative_to(REPO).as_posix(), "execution_contract_git_blob"),
         (FROZEN_SCHEDULE_PATH.relative_to(REPO).as_posix(), "schedule_git_blob"),
     ]:
         r = subprocess.run(
@@ -411,10 +410,7 @@ def _exclusive_create_execution_started(
     auth_path: Path,
 ) -> Path:
     # Build complete payload in memory first (complete-or-absent semantics)
-    if EXEC_CONTRACT_V2_PATH.exists() and _is_tracked(EXEC_CONTRACT_V2_PATH):
-        ec_blob = _git_blob(EXEC_CONTRACT_V2_PATH)
-    else:
-        ec_blob = str(auth_data.get("execution_contract_git_blob", ""))
+    ec_blob = _git_blob(EXEC_CONTRACT_PATH)
     payload: dict[str, Any] = {
         "schema_version": "1.0",
         "member_id": member_id,
@@ -711,7 +707,7 @@ def main(argv: list[str] | None = None) -> int:
             "family_methodology_identity": EXPECTED_FAMILY_HASH,
             "runner_git_blob": _git_blob(HARNESS_PATH),
             "runner_head_blob": _git_head_blob(HARNESS_PATH),
-            "execution_contract_git_blob": _git_blob(EXEC_CONTRACT_V2_PATH) if EXEC_CONTRACT_V2_PATH.exists() else None,
+            "execution_contract_git_blob": _git_blob(EXEC_CONTRACT_PATH),
             "schedule_git_blob": FROZEN_SCHEDULE_BLOB,
             "authorization_path": auth_path.relative_to(REPO).as_posix() if auth_path and auth_path.is_absolute() else (str(auth_path) if auth_path else None),
             "authorization_git_blob": _git_blob(auth_path) if auth_path and auth_path.exists() else None,
@@ -738,9 +734,14 @@ def main(argv: list[str] | None = None) -> int:
                 except Exception:
                     pass
         if training_result is not None:
-            for k in ["checkpoint_path", "checkpoint_sha256", "curve_path", "curve_sha256", "final_checkpoint_path", "final_checkpoint_sha256"]:
+            # Always persist scientific evidence, even on GATE_V2_FAILED
+            for k in ["checkpoint_path", "checkpoint_sha256", "curve_path", "curve_sha256", "final_checkpoint_path", "final_checkpoint_sha256", "gate_diagnostics", "gate_passed", "best_epoch", "final_epoch", "initial_internal_rbf", "best_internal_rbf", "initial_selection_total", "best_selection_total", "training_series_sha256", "fit_window_count", "selection_window_count", "training_start_utc", "training_end_utc"]:
                 if k in training_result and training_result[k] is not None:
                     manifest[k] = training_result[k]
+            # Gate seeds always
+            manifest["gate_seed"] = FIXED_GATE_SEEDS["gate_seed"]
+            manifest["drift_diffusion_seed"] = FIXED_GATE_SEEDS["drift_diffusion_seed"]
+            manifest["bootstrap_seed"] = FIXED_GATE_SEEDS["bootstrap_seed"]
             if status_val == "COMPLETED":
                 report_path = report_dir / "training_report.json"
                 try:
@@ -757,10 +758,11 @@ def main(argv: list[str] | None = None) -> int:
                         "execution_head": repo_head,
                         "scientific_source_commit": "357971a67c68492fc0c4f5bf31f94f9685639f65",
                         "runner_git_blob": _git_blob(HARNESS_PATH),
-                        "execution_contract_git_blob": _git_blob(EXEC_CONTRACT_V2_PATH) if EXEC_CONTRACT_V2_PATH.exists() else None,
+                        "execution_contract_git_blob": _git_blob(EXEC_CONTRACT_PATH),
                         "authorization_git_blob": _git_blob(auth_path) if auth_path and auth_path.exists() else None,
                         "execution_recipe_head": str(auth_data["execution_recipe_head"]),
                         "python_version": sys.version,
+                        "pytorch_version": __import__("torch").__version__,
                         "device": "cpu",
                         "determinism": {"torch_deterministic": True, "cudnn_benchmark": False},
                         "effective_config": {
@@ -821,12 +823,12 @@ def main(argv: list[str] | None = None) -> int:
     pending_exc: BaseException | None = None
     try:
         training_result = _run_scientific_training(member_id, report_dir, model_dir)
-        # Gate-v2 failure is terminal FAILED (not COMPLETED)
+        # Gate-v2 failure is terminal FAILED (not COMPLETED) — exit 3
         gate_passed = bool(training_result.get("gate_passed", True)) if training_result else True
         if not gate_passed:
             failure_category = "GATE_V2_FAILED"
             status = "FAILED"
-            exit_code = 2
+            exit_code = 3
             exc_class = "GateV2Failed"
             exc_info = "frozen Gate-v2 returned gate_passed=false"
         else:
