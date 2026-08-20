@@ -15,6 +15,8 @@ import datetime
 import hashlib
 import io
 import json
+import os
+import re
 import subprocess
 import sys
 import traceback
@@ -257,6 +259,8 @@ REQUIRED_AUTH_FIELDS: list[str] = [
     "reserve",
     "max_training_invocations",
 ]
+EXPECTED_SCHEMA_VERSION = "structured-vol-v5-primary-training-authorization-v1"
+_AUTH_TASK_RE = re.compile(r"^NM-R4-[A-Z0-9][A-Z0-9_\-]*-\d+$")
 
 
 def check_authorization(member_id: str, auth_path: Path | None) -> dict[str, Any]:
@@ -268,10 +272,22 @@ def check_authorization(member_id: str, auth_path: Path | None) -> dict[str, Any
         raise RuntimeError(f"authorization artifact not tracked: {auth_path}")
     if not _is_clean(auth_path):
         raise RuntimeError(f"authorization artifact not clean: {auth_path}")
+    # Must be committed: HEAD blob must exist and equal working blob
+    head_blob = _git_head_blob(auth_path)
+    if not head_blob:
+        raise RuntimeError(f"authorization not committed (no HEAD blob): {auth_path}")
+    work_blob = _git_blob(auth_path)
+    if work_blob != head_blob:
+        raise RuntimeError(f"authorization staged-but-uncommitted: {auth_path}")
     data: dict[str, Any] = json.loads(auth_path.read_text(encoding="utf-8"))
     for f in REQUIRED_AUTH_FIELDS:
         if f not in data:
             raise RuntimeError(f"authorization missing required field: {f}")
+    if data["schema_version"] != EXPECTED_SCHEMA_VERSION:
+        raise RuntimeError(f"authorization schema_version must be {EXPECTED_SCHEMA_VERSION!r}")
+    task_id = data["authorization_task_id"]
+    if not isinstance(task_id, str) or not task_id.strip() or not _AUTH_TASK_RE.match(task_id.strip()):
+        raise RuntimeError("authorization_task_id must be nonempty and match NM-R4-*-NNN pattern")
     # Type/value checks
     if data["member_id"] != member_id:
         raise RuntimeError("authorization member_id mismatch")
@@ -332,6 +348,20 @@ def check_authorization(member_id: str, auth_path: Path | None) -> dict[str, Any
         raise RuntimeError("authorization execution_recipe_head invalid")
     if not _is_ancestor(recipe_head):
         raise RuntimeError("authorization execution_recipe_head is not ancestor of HEAD")
+    # Recipe must contain runner, contract v3, and schedule at their authorized blobs
+    for rel_path, expected_blob_key in [
+        (HARNESS_PATH.relative_to(REPO).as_posix(), "runner_git_blob"),
+        (EXEC_CONTRACT_V2_PATH.relative_to(REPO).as_posix(), "execution_contract_git_blob"),
+        (FROZEN_SCHEDULE_PATH.relative_to(REPO).as_posix(), "schedule_git_blob"),
+    ]:
+        r = subprocess.run(
+            ["git", "rev-parse", f"{recipe_head}:{rel_path}"],
+            cwd=str(REPO), capture_output=True, text=True, check=False,
+        )
+        if r.returncode != 0:
+            raise RuntimeError(f"recipe commit missing {rel_path}")
+        if r.stdout.strip() != str(data[expected_blob_key]):
+            raise RuntimeError(f"recipe {rel_path} blob mismatch")
     # Firewall fields
     if data["training_authorized"] is not True:
         raise RuntimeError("authorization training_authorized must be true")
@@ -366,43 +396,62 @@ def _exclusive_create_execution_started(
     auth_data: dict[str, Any],
     auth_path: Path,
 ) -> Path:
+    # Build complete payload in memory first (complete-or-absent semantics)
+    if EXEC_CONTRACT_V2_PATH.exists() and _is_tracked(EXEC_CONTRACT_V2_PATH):
+        ec_blob = _git_blob(EXEC_CONTRACT_V2_PATH)
+    else:
+        ec_blob = str(auth_data.get("execution_contract_git_blob", ""))
+    payload: dict[str, Any] = {
+        "schema_version": "1.0",
+        "member_id": member_id,
+        "replicate_seed": int(auth_data["replicate_seed"]),
+        "model_init_seed": int(auth_data["model_init_seed"]),
+        "data_seed": int(auth_data["data_seed"]),
+        "eval_seed": int(auth_data["eval_seed"]),
+        "full_config_hash": EXPECTED_CONFIG_HASHES[member_id],
+        "run_prefix": prefix,
+        "family_methodology_identity": EXPECTED_FAMILY_HASH,
+        "runner_git_blob": _git_blob(HARNESS_PATH),
+        "execution_contract_git_blob": ec_blob,
+        "schedule_git_blob": FROZEN_SCHEDULE_BLOB,
+        "schedule_sha256": FROZEN_SCHEDULE_SHA,
+        "execution_recipe_head": str(auth_data["execution_recipe_head"]),
+        "authorization_path": auth_path.relative_to(REPO).as_posix() if auth_path.is_absolute() else auth_path.as_posix(),
+        "authorization_git_blob": _git_blob(auth_path),
+        "start_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "attempt_number": 1,
+        "training_invocations_before_start": _SCIENTIFIC_INVOCATIONS,
+        "validation_authorized": False,
+        "final_test_authorized": False,
+        "reserve": False,
+    }
+    serialized = (json.dumps(payload, indent=2) + "\n").encode("utf-8")
+    # Create report directory, then atomically publish via temp file + hard link
     report_dir.mkdir(parents=True, exist_ok=True)
     p = report_dir / "execution_started.json"
+    if p.exists():
+        raise RuntimeError(f"execution_started already exists: {p}")
+    tmp_path = report_dir / f".execution_started.tmp.{os.getpid()}"
     try:
-        fp = p.open("x", encoding="utf-8")
-    except FileExistsError as e:
-        raise RuntimeError(f"execution_started already exists (exclusive-create refused): {p}") from e
-    with fp:
-        # execution_contract_git_blob: use auth's value if v2 not yet tracked (pre-v2 tests)
-        if EXEC_CONTRACT_V2_PATH.exists() and _is_tracked(EXEC_CONTRACT_V2_PATH):
-            ec_blob = _git_blob(EXEC_CONTRACT_V2_PATH)
-        else:
-            ec_blob = str(auth_data.get("execution_contract_git_blob", ""))
-        payload: dict[str, Any] = {
-            "schema_version": "1.0",
-            "member_id": member_id,
-            "replicate_seed": int(auth_data["replicate_seed"]),
-            "model_init_seed": int(auth_data["model_init_seed"]),
-            "data_seed": int(auth_data["data_seed"]),
-            "eval_seed": int(auth_data["eval_seed"]),
-            "full_config_hash": EXPECTED_CONFIG_HASHES[member_id],
-            "run_prefix": prefix,
-            "family_methodology_identity": EXPECTED_FAMILY_HASH,
-            "runner_git_blob": _git_blob(HARNESS_PATH),
-            "execution_contract_git_blob": ec_blob,
-            "schedule_git_blob": FROZEN_SCHEDULE_BLOB,
-            "schedule_sha256": FROZEN_SCHEDULE_SHA,
-            "execution_recipe_head": str(auth_data["execution_recipe_head"]),
-            "authorization_path": auth_path.relative_to(REPO).as_posix() if auth_path.is_absolute() else auth_path.as_posix(),
-            "authorization_git_blob": _git_blob(auth_path),
-            "start_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-            "attempt_number": 1,
-            "training_invocations_before_start": _SCIENTIFIC_INVOCATIONS,
-            "validation_authorized": False,
-            "final_test_authorized": False,
-            "reserve": False,
-        }
-        fp.write(json.dumps(payload, indent=2) + "\n")
+        tmp_path.write_bytes(serialized)
+        tmp_path.chmod(0o644)
+        # Flush and fsync before publish
+        with tmp_path.open("r+b") as f:
+            f.flush()
+            os.fsync(f.fileno())
+        # Atomic exclusive publish: hard link (fails if dest exists)
+        try:
+            os.link(str(tmp_path), str(p))
+        except FileExistsError as e:
+            raise RuntimeError(f"execution_started already exists (exclusive-create refused): {p}") from e
+        except OSError:
+            # Hard link not available (cross-device) — fail closed rather than overwrite
+            raise RuntimeError(f"atomic publish unavailable for {p}")
+    finally:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
     return p
 
 
@@ -451,6 +500,7 @@ def _run_scientific_training(member_id: str, report_dir: Path, model_dir: Path) 
     inventory = ResearchInventory.model_validate(json.loads(inventory_path.read_text(encoding="utf-8")))
     training_series = build_underlying_series(inventory=inventory, split="training", raw_root=raw_root, processed_root=processed_root)
     training_returns = training_series.returns_array
+    training_series_sha = training_series.series_sha256
     session_dates = training_series.session_dates
     return_dates = tuple(session_dates[1:])
     spec = eff.windows
@@ -459,6 +509,8 @@ def _run_scientific_training(member_id: str, report_dir: Path, model_dir: Path) 
     normalizer = fit_feature_normalizer(feature_matrix)
     cumret_scale = fit_cumret_scale(training_returns, spec.horizon)
     split = split_fit_selection(windows, eff.training.fit_fraction, spec)
+    fit_count = split.n_fit
+    sel_count = split.n_selection
     statistics = build_v3_statistics(split.fit_windows, normalizer, cumret_scale, spec, eff.objective)
 
     device = torch.device("cpu")
@@ -468,8 +520,10 @@ def _run_scientific_training(member_id: str, report_dir: Path, model_dir: Path) 
     model = StructuredVolatilityNeuralSde(eff.sde).to(device=device, dtype=dtype)
     _ = count_parameters(model)
     training_returns_tensor = torch.tensor(training_returns, dtype=dtype)
+    training_start_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     outcome = train_internal_v3(model, eff.training, split, normalizer, training_returns_tensor, statistics, spec, eff.objective)
+    training_end_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     gate_spec = load_gate_spec_v2(str(gate_yaml))
     gate_diagnostics, gate_passed = evaluate_gate_v2(model, split, normalizer, training_returns_tensor, spec, gate_spec)
@@ -509,6 +563,10 @@ def _run_scientific_training(member_id: str, report_dir: Path, model_dir: Path) 
     return {
         "config_hash": config_hash,
         "run_prefix": prefix,
+        "training_series_sha256": training_series_sha,
+        "fit_window_count": fit_count,
+        "selection_window_count": sel_count,
+        "all_training_window_count": len(windows),
         "checkpoint_path": str(checkpoint_path),
         "checkpoint_sha256": checkpoint_sha,
         "curve_path": str(curve_path),
@@ -518,8 +576,13 @@ def _run_scientific_training(member_id: str, report_dir: Path, model_dir: Path) 
         "gate_diagnostics": gate_diagnostics,
         "gate_passed": gate_passed,
         "best_epoch": outcome.best_epoch,
+        "final_epoch": outcome.final_epoch,
         "initial_internal_rbf": outcome.initial_internal_rbf,
         "best_internal_rbf": outcome.best_internal_rbf,
+        "initial_selection_total": float(outcome.selection_total_curve[0]) if outcome.selection_total_curve else None,
+        "best_selection_total": float(outcome.selection_total_curve[outcome.best_epoch - 1]) if outcome.best_epoch > 0 and len(outcome.selection_total_curve) >= outcome.best_epoch else None,
+        "training_start_utc": training_start_utc,
+        "training_end_utc": training_end_utc,
     }
 
 
@@ -600,46 +663,32 @@ def main(argv: list[str] | None = None) -> int:
     # From here, member is ATTEMPTED — terminal evidence must always be persisted
     stdout_buf = io.StringIO()
     start_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    status = "UNKNOWN"
-    exit_code = 1
+    status: str | None = None
+    failure_category: str | None = None
+    exit_code: int | None = None
     exc_info: str | None = None
     exc_class: str | None = None
     training_result: dict[str, Any] | None = None
+    _terminal_success = False
 
     # Capture stdout/stderr into buffer while training runs
     old_stdout = sys.stdout
     old_stderr = sys.stderr
     sys.stdout = stdout_buf  # type: ignore[assignment]
     sys.stderr = stdout_buf  # type: ignore[assignment]
-    try:
-        training_result = _run_scientific_training(member_id, report_dir, model_dir)
-        status = "COMPLETED"
-        exit_code = 0
-    except Exception as e:
-        exc_class = type(e).__name__
-        exc_info = "".join(traceback.format_exception_only(type(e), e)).strip()[:2000]
-        # Sanitize: do not leak raw traces with paths beyond class+message
-        status = "FAILED"
-        exit_code = 1
-        # Write sanitized message to buffer as well
-        print(f"FAILURE: {exc_class}: {exc_info}", file=stdout_buf)
-    finally:
-        sys.stdout = old_stdout  # type: ignore[assignment]
-        sys.stderr = old_stderr  # type: ignore[assignment]
+    # Use a helper to guarantee terminal evidence even for BaseException,
+    # without returning from inside finally (which would swallow BaseException).
+    def _persist_terminal(exit_code_val: int, status_val: str) -> int:
         end_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
         transcript = stdout_buf.getvalue()
-
-        # Always persist terminal evidence
         try:
             (report_dir / "training_stdout.log").write_text(transcript, encoding="utf-8")
         except Exception:
             pass
         try:
-            (report_dir / "training_exit_code.txt").write_text(str(exit_code) + "\n", encoding="utf-8")
+            (report_dir / "training_exit_code.txt").write_text(str(exit_code_val) + "\n", encoding="utf-8")
         except Exception:
             pass
-
-        # Build manifest
         manifest: dict[str, Any] = {
             "schema_version": "1.0",
             "member_id": member_id,
@@ -655,8 +704,9 @@ def main(argv: list[str] | None = None) -> int:
             "execution_started_path": str(execution_started_path),
             "start_utc": start_utc,
             "end_utc": end_utc,
-            "terminal_status": status,
-            "exit_code": exit_code,
+            "terminal_status": status_val,
+            "failure_category": failure_category,
+            "exit_code": exit_code_val,
             "exception_class": exc_class,
             "failure_reason": exc_info,
             "scientific_training_invocations": _SCIENTIFIC_INVOCATIONS,
@@ -666,52 +716,83 @@ def main(argv: list[str] | None = None) -> int:
             "provider_calls": 0,
             "network_calls": 0,
         }
-        # Hashes of artifacts actually present
         for name in ["training_stdout.log", "training_exit_code.txt", "execution_started.json"]:
-            p = report_dir / name
-            if p.exists():
+            p2 = report_dir / name
+            if p2.exists():
                 try:
-                    manifest[f"{name}_sha256"] = hashlib.sha256(p.read_bytes()).hexdigest()
+                    manifest[f"{name}_sha256"] = hashlib.sha256(p2.read_bytes()).hexdigest()
                 except Exception:
                     pass
         if training_result is not None:
             for k in ["checkpoint_path", "checkpoint_sha256", "curve_path", "curve_sha256", "final_checkpoint_path", "final_checkpoint_sha256"]:
                 if k in training_result and training_result[k] is not None:
                     manifest[k] = training_result[k]
-            # training_report.json — only on COMPLETED
-            if status == "COMPLETED":
+            if status_val == "COMPLETED":
                 report_path = report_dir / "training_report.json"
                 try:
-                    # Minimal report with required evidence fields
+                    # Full member evidence per Amendment 025 §6 — no invented values
+                    eff2 = derive_effective_config(member_id)
+                    repo_head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(REPO), capture_output=True, text=True, check=True).stdout.strip()
                     report: dict[str, Any] = {
+                        "schema_version": "1.0",
                         "member_id": member_id,
                         "replicate_seed": int(auth_data["replicate_seed"]),
                         "model_init_seed": int(auth_data["model_init_seed"]),
                         "data_seed": int(auth_data["data_seed"]),
                         "eval_seed": int(auth_data["eval_seed"]),
-                        "config_hash": EXPECTED_CONFIG_HASHES[member_id],
-                        "run_prefix": prefix,
-                        "family_methodology_identity": EXPECTED_FAMILY_HASH,
+                        "execution_head": repo_head,
+                        "scientific_source_commit": "357971a67c68492fc0c4f5bf31f94f9685639f65",
                         "runner_git_blob": _git_blob(HARNESS_PATH),
                         "execution_contract_git_blob": _git_blob(EXEC_CONTRACT_V2_PATH) if EXEC_CONTRACT_V2_PATH.exists() else None,
+                        "authorization_git_blob": _git_blob(auth_path) if auth_path and auth_path.exists() else None,
+                        "execution_recipe_head": str(auth_data["execution_recipe_head"]),
+                        "python_version": sys.version,
+                        "device": "cpu",
+                        "determinism": {"torch_deterministic": True, "cudnn_benchmark": False},
+                        "effective_config": {
+                            "version": eff2.version,
+                            "sde": asdict(eff2.sde),
+                            "training": asdict(eff2.training),
+                            "windows": asdict(eff2.windows),
+                            "objective": asdict(eff2.objective),
+                            "n_eval_paths": eff2.n_eval_paths,
+                            "eval_seed": eff2.eval_seed,
+                            "eval_initial_price_convention": eff2.eval_initial_price_convention,
+                        },
+                        "full_config_hash": EXPECTED_CONFIG_HASHES[member_id],
+                        "run_prefix": prefix,
+                        "family_methodology_identity": EXPECTED_FAMILY_HASH,
+                        "training_series_sha256": training_result.get("training_series_sha256"),
+                        "fit_window_count": training_result.get("fit_window_count"),
+                        "selection_window_count": training_result.get("selection_window_count"),
                         "training_report_created_utc": end_utc,
                         "gate_diagnostics": training_result.get("gate_diagnostics"),
                         "gate_passed": training_result.get("gate_passed"),
-                        "terminal_status": status,
+                        "gate_seed": FIXED_GATE_SEEDS["gate_seed"],
+                        "drift_diffusion_seed": FIXED_GATE_SEEDS["drift_diffusion_seed"],
+                        "bootstrap_seed": FIXED_GATE_SEEDS["bootstrap_seed"],
+                        "terminal_status": status_val,
+                        "failure_category": failure_category,
+                        "manifest_path": str(report_dir / "training_execution_manifest.json"),
                     }
+                    for k2 in ["initial_internal_rbf", "best_internal_rbf", "initial_selection_total", "best_selection_total", "best_epoch", "final_epoch", "checkpoint_path", "checkpoint_sha256", "curve_path", "curve_sha256", "final_checkpoint_path", "final_checkpoint_sha256", "training_start_utc", "training_end_utc"]:
+                        if k2 in training_result and training_result[k2] is not None:
+                            report[k2] = training_result[k2]
+                    report["scientific_training_invocations"] = _SCIENTIFIC_INVOCATIONS
+                    report["validation_constructions"] = 0
+                    report["external_evaluations"] = 0
+                    report["final_test_accesses"] = 0
+                    report["provider_calls"] = 0
+                    report["network_calls"] = 0
                     report_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
                     manifest["training_report_sha256"] = hashlib.sha256(report_path.read_bytes()).hexdigest()
                 except Exception as e:
                     manifest["training_report_error"] = str(e)[:500]
-
-        # Persist manifest (write-once; exclusive if possible but fallback to overwrite-once)
         manifest_path = report_dir / "training_execution_manifest.json"
         try:
-            # Try exclusive first
             with manifest_path.open("x", encoding="utf-8") as fp:
                 fp.write(json.dumps(manifest, indent=2) + "\n")
         except FileExistsError:
-            # Should not happen — manifest is terminal evidence for this attempt only
             try:
                 manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
             except Exception:
@@ -721,11 +802,55 @@ def main(argv: list[str] | None = None) -> int:
                 manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
             except Exception:
                 pass
+        return exit_code_val
 
-        # Also mirror manifest hash if needed
-        # execution_started must remain (never delete)
-        # No retry — return based on scientific outcome
-        return exit_code
+    pending_exc: BaseException | None = None
+    try:
+        training_result = _run_scientific_training(member_id, report_dir, model_dir)
+        # Gate-v2 failure is terminal FAILED (not COMPLETED)
+        gate_passed = bool(training_result.get("gate_passed", True)) if training_result else True
+        if not gate_passed:
+            failure_category = "GATE_V2_FAILED"
+            status = "FAILED"
+            exit_code = 2
+            exc_class = "GateV2Failed"
+            exc_info = "frozen Gate-v2 returned gate_passed=false"
+        else:
+            status = "COMPLETED"
+            failure_category = None
+            exit_code = 0
+    except BaseException as e:
+        # Capture BaseException (including KeyboardInterrupt/SystemExit) without swallowing
+        if isinstance(e, Exception):
+            exc_class = type(e).__name__
+            exc_info = "".join(traceback.format_exception_only(type(e), e)).strip()[:2000]
+            failure_category = "EXCEPTION"
+        else:
+            exc_class = type(e).__name__
+            exc_info = str(e)[:2000] if str(e) else type(e).__name__
+            failure_category = "BASE_EXCEPTION"
+        status = "FAILED"
+        exit_code = 1
+        print(f"FAILURE: {exc_class}: {exc_info}", file=stdout_buf)
+        # For BaseException, re-raise after persisting terminal evidence
+        if not isinstance(e, Exception):
+            pending_exc = e
+    finally:
+        # Restore std streams before persisting (so manifest writes go to real stdout)
+        sys.stdout = old_stdout  # type: ignore[assignment]
+        sys.stderr = old_stderr  # type: ignore[assignment]
+        # Best-effort terminal persistence; never swallow pending BaseException
+        try:
+            exit_code_to_persist = exit_code if exit_code is not None else 1
+            status_to_persist = status if status is not None else "FAILED"
+            _persist_terminal(exit_code_to_persist, status_to_persist)
+        except BaseException:
+            if pending_exc is None:
+                raise
+        if pending_exc is not None:
+            raise pending_exc
+
+    return exit_code if exit_code is not None else 1
 
 
 if __name__ == "__main__":
