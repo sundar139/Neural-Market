@@ -1,0 +1,301 @@
+{
+  "schema_version": "structured-vol-v5-primary-adjudication-v2",
+  "supersedes": null,
+  "member_id": "v5-seed-04",
+  "replicate_seed": 11281,
+  "model_init_seed": 11281,
+  "data_seed": 11282,
+  "eval_seed": 8283,
+  "full_config_hash": "77e7de9efabb7ce35107e7c9f80f9fb9e28fff6f1a31978c35f601cbf154312b",
+  "run_prefix": "77e7de9efabb7ce3",
+  "family_methodology_identity": "730475987368bf8f408e44e8e387682f178a0cdd7a358939016ba9b6df57a719",
+  "family_methodology_note": "canonical hash of V5ExperimentConfig with training.model_init_seed and training.data_seed stripped; eval_seed 8283 kept as COMMON_FIXED; byte-identical across all five members",
+  "authorization": {
+    "path": "reports/research/authorizations/structured_vol_v5_primary_training/v5-seed-04.json",
+    "sha256": "f605a28e34e8862f373efd3025abf04cf57221b78d3ab37eec1de244bba06e85",
+    "git_blob": "275842f4a630222a2de43be7f11282c06090c8f9",
+    "committed_git_blob": "275842f4a630222a2de43be7f11282c06090c8f9"
+  },
+  "runner": {
+    "path": "reports/research/evidence/structured_vol_v5_replicate_training_runner.py",
+    "git_blob": "7b46e0f6c805687977cd685ebb97741bd4243cbe",
+    "local_sha256": "8843340bf445eb32f2cf1c005666c8eaf4f36a8173c5da3f2da1c1dcfc04e860",
+    "committed_git_blob": "7b46e0f6c805687977cd685ebb97741bd4243cbe"
+  },
+  "execution_contract": {
+    "path": "reports/research/structured_vol_v5_training_execution_contract_v5.json",
+    "git_blob": "84a59c4d966b349be705a8a29fad07f81282ebdc",
+    "sha256": "191b2b2c399749a29796671ff21d3e51a349a83194fac333cc5ec1e1cac59f65",
+    "committed_git_blob": "84a59c4d966b349be705a8a29fad07f81282ebdc"
+  },
+  "schedule": {
+    "path": "reports/research/structured_vol_v5_seed_schedule_v1.json",
+    "git_blob": "558d08bfee98dbd0c170d65e6a9b1737700c9e98",
+    "sha256": "8c471c3311b05e647b543e46e310a8f1b1055ec00d4690f726dcd6d775f06fd0",
+    "committed_git_blob": "558d08bfee98dbd0c170d65e6a9b1737700c9e98"
+  },
+  "amendments": {
+    "029": {
+      "path": "reports/protocol/research_protocol_amendment_029.md"
+    },
+    "032": {
+      "path": "reports/protocol/research_protocol_amendment_032.md"
+    },
+    "033": {
+      "path": "reports/protocol/research_protocol_amendment_033.md"
+    }
+  },
+  "raw_marker": {
+    "path": "reports/research/structured_vol_v5_replicates/77e7de9efabb7ce3/execution_started.json",
+    "sha256": "6dfc7333fba8f71a66f95591f29a0bc977f8398e7d03774abae25f6f702f0dad",
+    "git_blob": "47506516e4b221b1ebf8c799fd3ab673946a4572"
+  },
+  "raw_transcript": {
+    "path": "reports/research/structured_vol_v5_replicates/77e7de9efabb7ce3/training_stdout.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "git_blob": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+  },
+  "raw_exit": {
+    "path": "reports/research/structured_vol_v5_replicates/77e7de9efabb7ce3/training_exit_code.txt",
+    "sha256": "13bf7b3039c63bf5a50491fa3cfd8eb4e699d1ba1436315aef9cbe5711530354",
+    "git_blob": "573541ac9702dd3969c9bc859d2b91ec1f7e6e56"
+  },
+  "raw_manifest": {
+    "path": "reports/research/structured_vol_v5_replicates/77e7de9efabb7ce3/training_execution_manifest.json",
+    "sha256": "a426644f0f6002aa5010e65385e0e4fff5b9aa384d32b7e086804acb622c1c01",
+    "git_blob": "5ef9e17b3c72e63ec3a0091777d94f612cc32025"
+  },
+  "raw_report": {
+    "path": "reports/research/structured_vol_v5_replicates/77e7de9efabb7ce3/training_report.json",
+    "sha256": "40c2389c649132c819c82c7398589b3d6f4eb6f47ae9411b3813a23ca9f87364",
+    "git_blob": "816eff3d75ffdc54050de4571fada172958e86f2"
+  },
+  "raw_runner_terminal_status": "COMPLETED",
+  "raw_runner_exit": 0,
+  "scientific_training_invocations": 1,
+  "training_series_sha256": "4863b2cc63a09ffb03bbe455c7859c46b521b6f7bef8212e0e3876ac8488669c",
+  "fit_window_count": 672,
+  "selection_window_count": 107,
+  "all_training_derived_windows": 841,
+  "all_training_derivation": "672 fit + 107 selection + 62 embargo-gap = 841 derived training windows; 925 returns / 926 sessions",
+  "training_structure_verified": {
+    "sessions": 926,
+    "returns": 925,
+    "fit": 672,
+    "selection": 107,
+    "embargo_gap": 62,
+    "total_derived": 841,
+    "source": "recomputed via build_underlying_series + build_windows/split_fit_selection pipeline (frozen); matches report fit/selection"
+  },
+  "epochs": {
+    "best_epoch": 105,
+    "final_epoch": 145,
+    "curve_last_epoch": 145,
+    "early_stop_patience": 40
+  },
+  "gate": {
+    "gate_spec_hash": "f27e5ccaba27c527f5149ff49e460dd45d9662cc86f26f5237aeffbda57d2469",
+    "gate_seed": 7777,
+    "drift_diffusion_seed": 7778,
+    "bootstrap_seed": 8801,
+    "gate_passed": true,
+    "diagnostics": {
+      "gate_spec_hash": "f27e5ccaba27c527f5149ff49e460dd45d9662cc86f26f5237aeffbda57d2469",
+      "bootstrap_method": "block",
+      "bootstrap_block_length": 22,
+      "bootstrap_seed": 8801,
+      "n_real_bootstrap": 1024,
+      "n_generated": 1024,
+      "real_bootstrap_terminal_std": 0.043385906680542215,
+      "generated_terminal_std": 0.06154396012425423,
+      "terminal_dispersion_ratio": 1.4185242359324846,
+      "terminal_wasserstein_raw": 0.034912894922257465,
+      "terminal_wasserstein_normalized": 0.8047058963023875,
+      "real_daily_variance": 6.282044341787696e-05,
+      "generated_daily_variance": 0.00010606161959003657,
+      "variance_ratio": 1.6883296872727003,
+      "acf_lags": [
+        1,
+        2,
+        3,
+        5,
+        10,
+        20
+      ],
+      "real_acf": {
+        "1": -0.06526538289034757,
+        "2": -0.03296067281502658,
+        "3": -0.13463671543414815,
+        "5": 0.012851039397019036,
+        "10": 0.0030290132685613287,
+        "20": -0.020060841132819442
+      },
+      "generated_acf": {
+        "1": -0.005976924296222852,
+        "2": -0.012262318980358986,
+        "3": -0.013302326951184742,
+        "5": -0.008079219350966676,
+        "10": -0.01139389868211115,
+        "20": -0.0017386458750198225
+      },
+      "acf_rmse": 0.05722379452920851,
+      "acf_max_error": 0.1213343884829634,
+      "real_return_acf1": -0.06526538289034757,
+      "generated_return_acf1": -0.005976924296222852,
+      "return_acf1_abs_diff": 0.05928845859412472,
+      "real_abs_return_acf": {
+        "1": 0.3450408696273621,
+        "2": 0.26038676314410736,
+        "3": 0.15469912273302663,
+        "5": -0.03448468048273919,
+        "10": 0.034676844483678054,
+        "20": -0.0379329126709174
+      },
+      "generated_abs_return_acf": {
+        "1": 0.09092940026347648,
+        "2": 0.07865502712164239,
+        "3": 0.05382797516835103,
+        "5": 0.03986011190462792,
+        "10": 0.010699139705824243,
+        "20": -0.01922048270786349
+      },
+      "real_sq_return_acf": {
+        "1": 0.3089785947579526,
+        "2": 0.20100657051221507,
+        "3": 0.05184692981044602,
+        "5": -0.04593829579471629,
+        "10": -0.004108219916712899,
+        "20": 0.025566445756656103
+      },
+      "generated_sq_return_acf": {
+        "1": 0.114636203698788,
+        "2": 0.08910678112431686,
+        "3": 0.062368643497636544,
+        "5": 0.035071878360120316,
+        "10": 0.007266785332428123,
+        "20": -0.021172443626110964
+      },
+      "cond_var_log_correlation": 0.09298352818197024,
+      "generated_per_path_var_max": 0.00021723625832237303,
+      "generated_per_path_var_min": 6.392599607352167e-05,
+      "real_per_path_var_max": 8.469382009934634e-05,
+      "real_per_path_var_min": 3.447740527917631e-05,
+      "conditional_variance_matched_paths": 107,
+      "path_uniqueness_fraction": 1.0,
+      "drift_increment_rms": 0.0007004740887465997,
+      "diffusion_increment_rms": 0.019733581923261505,
+      "drift_diffusion_rms_ratio": 0.0354965505740697,
+      "gate_seed": 7777,
+      "criterion_results": {
+        "variance_ratio": true,
+        "terminal_dispersion": true,
+        "uniqueness": true,
+        "acf1_agreement": true,
+        "drift_diffusion_ratio": true
+      },
+      "gate_passed": true
+    }
+  },
+  "criteria": {
+    "criterion_1": {
+      "metric": "best_selection_total < initial_selection_total",
+      "initial_selection_total": 10.436654090881348,
+      "best_selection_total": 0.5285217761993408,
+      "operator": "<",
+      "threshold": "best < initial",
+      "value_ok": true,
+      "pass": true
+    },
+    "criterion_2": {
+      "metric": "variance_ratio",
+      "gate_key": "variance_ratio",
+      "value": 1.6883296872727003,
+      "value_ok": true,
+      "operator": "range",
+      "threshold": [
+        0.5,
+        2.0
+      ],
+      "pass": true,
+      "threshold_str": "0.50 <= variance_ratio <= 2.00"
+    },
+    "criterion_3": {
+      "metric": "terminal_dispersion_ratio",
+      "gate_key": "terminal_dispersion_ratio",
+      "value": 1.4185242359324846,
+      "value_ok": true,
+      "operator": "range",
+      "threshold": [
+        0.5,
+        2.0
+      ],
+      "pass": true,
+      "threshold_str": "0.50 <= terminal_dispersion_ratio <= 2.00"
+    },
+    "criterion_4": {
+      "metric": "path_uniqueness_fraction",
+      "gate_key": "path_uniqueness_fraction",
+      "value": 1.0,
+      "value_ok": true,
+      "operator": "ge",
+      "threshold": 0.99,
+      "pass": true,
+      "threshold_str": "path_uniqueness_fraction >= 0.99"
+    },
+    "criterion_5": {
+      "metric": "return_acf1_abs_diff",
+      "gate_key": "return_acf1_abs_diff",
+      "value": 0.05928845859412472,
+      "value_ok": true,
+      "operator": "le",
+      "threshold": 0.25,
+      "pass": true,
+      "threshold_str": "return_acf1_abs_diff <= 0.25"
+    },
+    "criterion_6": {
+      "metric": "drift_diffusion_rms_ratio",
+      "gate_key": "drift_diffusion_rms_ratio",
+      "value": 0.0354965505740697,
+      "value_ok": true,
+      "operator": "le",
+      "threshold": 0.5,
+      "pass": true,
+      "threshold_str": "drift_diffusion_rms_ratio <= 0.5"
+    },
+    "governed_six_criterion_pass": true,
+    "wasserstein_report_only": {
+      "metric": "terminal_wasserstein_normalized",
+      "value": 0.8047058963023875,
+      "acceptance_role": "REPORT_ONLY"
+    }
+  },
+  "governed_six_criterion_pass": true,
+  "governed_status": "PRIMARY_VALID_COMPLETED",
+  "model_artifacts": {
+    "checkpoint": {
+      "path": "data/processed/research/model/structured-volatility-neural-sde-v5/77e7de9efabb7ce3/checkpoint.pt",
+      "sha256": "87d022152ba28f886b56bcf966ebc18d40e73d911258a83f01ece150ce8e7a89",
+      "size": 84853
+    },
+    "curve": {
+      "path": "data/processed/research/model/structured-volatility-neural-sde-v5/77e7de9efabb7ce3/training_curve.json",
+      "sha256": "641e61268f4fdbbd7de514fe3ea52cc9db46c2b150fe0a07238eaed6c619ae6b",
+      "size": 11622
+    },
+    "final_checkpoint": {
+      "path": "data/processed/research/model/structured-volatility-neural-sde-v5/77e7de9efabb7ce3/checkpoint_final.pt",
+      "sha256": "4927e6b6b575e20a904599821883c63a229a2f8fe9e2bfe7990ff1f0191c7db3",
+      "size": 85057
+    }
+  },
+  "execution_identity": {
+    "execution_head": "ce28ef544f4559c6436ca655af437e26c39b5353",
+    "execution_recipe_head": "20d90f7484fe5df7cd62755a5810c8de78e5e92f",
+    "start_utc": "2026-08-20T23:48:48.923702+00:00",
+    "end_utc": "2026-08-21T00:06:58.875624+00:00"
+  },
+  "closure_reference": {
+    "seed_03_closure": "reports/research/structured_vol_v5_seed_03_primary_closure.json",
+    "seed_03_status": "ATTEMPTED_FAILED_GOVERNANCE"
+  }
+}
