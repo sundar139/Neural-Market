@@ -77,3 +77,4 @@ Thumbs.db
 # DVC local state
 /.dvc/cache/
 /.dvc/tmp/
+.venv-gpu/

@@ -206,10 +206,14 @@ def run_v5_experiment(
         split.fit_windows, normalizer, cumret_scale, spec, config.objective
     )
 
-    # Initialize structured volatility model
-    device = torch.device("cpu")
+    # Initialize structured volatility model (device explicit; default cpu for frozen lineage)
+    requested = getattr(config, "device", "cpu")
+    from neuralmarket.core.device import configure_device_determinism, resolve_device
+
+    device = resolve_device(str(requested))
     dtype = torch.float32
     configure_determinism(True)
+    configure_device_determinism(device, enabled=True)
     set_deterministic_seeds(config.training.model_init_seed)
     model = StructuredVolatilityNeuralSde(config.sde).to(device=device, dtype=dtype)
     n_params = count_parameters(model)
