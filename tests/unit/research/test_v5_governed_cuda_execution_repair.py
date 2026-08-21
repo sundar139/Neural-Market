@@ -446,8 +446,19 @@ def test_runner_report_device_not_hardcoded_cpu(tmp_path: Path):
 
 def test_report_device_propagates_from_runtime_identity(tmp_path: Path, monkeypatch):
     """Integration: a v2 CUDA run writes requested/resolved + runtime identity."""
+    if not torch.cuda.is_available():
+        pytest.skip("requires CUDA")
+    from neuralmarket.core.device import configure_device_determinism, resolve_device
+    from neuralmarket.core.runtime_identity import build_runtime_identity
+
     _reset()
     auth = _make_v2_auth("v5-seed-04", "cuda", "cuda", "a" * 64)
+    resolved = resolve_device("cuda")
+    configure_device_determinism(resolved, enabled=True)
+    runtime_identity = build_runtime_identity(requested_device="cuda", resolved_device=str(resolved))
+    auth_data = json.loads(auth.read_text(encoding="utf-8"))
+    auth_data["expected_runtime_identity_sha256"] = runtime_identity["runtime_identity_sha256"]
+    auth.write_text(json.dumps(auth_data, indent=2) + "\n", encoding="utf-8")
     fake_report = tmp_path / "report_ok" / _runner.RUN_PREFIXES["v5-seed-04"]
     fake_model = tmp_path / "model_ok" / _runner.RUN_PREFIXES["v5-seed-04"]
 
@@ -528,18 +539,7 @@ def test_report_device_propagates_from_runtime_identity(tmp_path: Path, monkeypa
              patch.object(_runner, "_is_clean", return_value=True), \
              patch.object(_runner, "_git_head_blob", side_effect=_mh), \
              patch.object(_runner, "_git_blob", side_effect=_mb), \
-             patch.object(_runner, "_is_ancestor", return_value=True), \
-             patch("neuralmarket.core.device.resolve_device", return_value=torch.device("cuda")), \
-             patch("neuralmarket.core.device.configure_device_determinism"), \
-             patch(
-                 "neuralmarket.core.runtime_identity.build_runtime_identity",
-                 return_value={
-                     "schema_version": "runtime-identity-v1",
-                     "requested_device": "cuda",
-                     "resolved_device": "cuda",
-                     "runtime_identity_sha256": "a" * 64,
-                 },
-             ):
+             patch.object(_runner, "_is_ancestor", return_value=True):
             rc = _runner.main(["--member-id", "v5-seed-04", "--authorization", str(auth), "--execute"])
             assert rc == 0, f"expected success, got {rc}"
             started = json.loads((fake_report / "execution_started.json").read_text())
