@@ -195,7 +195,9 @@ def test_v1_current_identity_inspects_but_cannot_authorize_execution(tmp_path: P
         _cleanup(auth)
 
 
-def test_v1_execute_refuses_before_marker_and_science(tmp_path: Path, monkeypatch):
+def test_v1_execute_refuses_before_marker_and_science(
+    tmp_path: Path, monkeypatch, capsys: pytest.CaptureFixture[str]
+):
     _reset()
     auth = _make_v1_auth("v5-seed-02")
     fake_report = tmp_path / "report" / _runner.RUN_PREFIXES["v5-seed-02"]
@@ -208,6 +210,7 @@ def test_v1_execute_refuses_before_marker_and_science(tmp_path: Path, monkeypatc
     try:
         rc = _main_with_mocked_v2(auth, "v5-seed-02", fake_report, fake_model, monkeypatch)
         assert rc == 2
+        assert "schema v1 is historical-only" in capsys.readouterr().err
         assert not (fake_report / "execution_started.json").exists()
         assert _runner._SCIENTIFIC_INVOCATIONS == 0
     finally:
