@@ -447,9 +447,9 @@ def test_runner_report_device_not_hardcoded_cpu(tmp_path: Path):
 def test_report_device_propagates_from_runtime_identity(tmp_path: Path, monkeypatch):
     """Integration: a v2 CUDA run writes requested/resolved + runtime identity."""
     _reset()
-    auth = _make_v2_auth("v5-seed-05", "cuda", "cuda", "a" * 64)
-    fake_report = tmp_path / "report_ok" / _runner.RUN_PREFIXES["v5-seed-05"]
-    fake_model = tmp_path / "model_ok" / _runner.RUN_PREFIXES["v5-seed-05"]
+    auth = _make_v2_auth("v5-seed-04", "cuda", "cuda", "a" * 64)
+    fake_report = tmp_path / "report_ok" / _runner.RUN_PREFIXES["v5-seed-04"]
+    fake_model = tmp_path / "model_ok" / _runner.RUN_PREFIXES["v5-seed-04"]
 
     def fake_ok(member_id, report_dir, model_dir, device=None):
         _runner._SCIENTIFIC_INVOCATIONS += 1
@@ -470,8 +470,8 @@ def test_report_device_propagates_from_runtime_identity(tmp_path: Path, monkeypa
         }
 
     monkeypatch.setattr(_runner, "_run_scientific_training", fake_ok)
-    with patch.object(_runner, "derive_report_dir", lambda p: fake_report if p == _runner.RUN_PREFIXES["v5-seed-05"] else _runner.derive_report_dir(p)), \
-         patch.object(_runner, "derive_model_dir", lambda p: fake_model if p == _runner.RUN_PREFIXES["v5-seed-05"] else _runner.derive_model_dir(p)):
+    with patch.object(_runner, "derive_report_dir", lambda p: fake_report if p == _runner.RUN_PREFIXES["v5-seed-04"] else _runner.derive_report_dir(p)), \
+         patch.object(_runner, "derive_model_dir", lambda p: fake_model if p == _runner.RUN_PREFIXES["v5-seed-04"] else _runner.derive_model_dir(p)):
         data = json.loads(auth.read_text(encoding="utf-8"))
         blob = subprocess.run(["git", "hash-object", str(auth)], capture_output=True, text=True, check=True).stdout.strip()
         rb = data.get("runner_git_blob", "")
@@ -540,7 +540,7 @@ def test_report_device_propagates_from_runtime_identity(tmp_path: Path, monkeypa
                      "runtime_identity_sha256": "a" * 64,
                  },
              ):
-            rc = _runner.main(["--member-id", "v5-seed-05", "--authorization", str(auth), "--execute"])
+            rc = _runner.main(["--member-id", "v5-seed-04", "--authorization", str(auth), "--execute"])
             assert rc == 0, f"expected success, got {rc}"
             started = json.loads((fake_report / "execution_started.json").read_text())
             assert "requested_device" in started
