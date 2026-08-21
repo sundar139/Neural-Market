@@ -94,10 +94,10 @@ def _cleanup_auth(auth_path: Path):
         pass
 
 
-# 1. allowed member dry-run
+# 1. allowed member dry-run — v5-seed-05 is the only primary without a replicate dir
 def test_allowed_member_dry_run():
     _reset_invocations()
-    rc = _runner.main(["--member-id", "v5-seed-02"])
+    rc = _runner.main(["--member-id", "v5-seed-05"])
     assert rc == 0
     _reset_invocations()
 
@@ -495,7 +495,7 @@ def test_mocked_success_exactly_once(tmp_path: Path, monkeypatch: pytest.MonkeyP
     # Mock _run_scientific_training to succeed without touching disk/model
     call_count = {"n": 0}
 
-    def fake_run(member_id, report_dir, model_dir):
+    def fake_run(member_id, report_dir, model_dir, *args, **kwargs):
         call_count["n"] += 1
         _runner._SCIENTIFIC_INVOCATIONS += 1
         return {
@@ -546,7 +546,7 @@ def test_mocked_failure_exactly_once(tmp_path: Path, monkeypatch: pytest.MonkeyP
     if not _runner.EXEC_CONTRACT_PATH.exists():
         pytest.skip("contract v2 not yet created")
 
-    def fake_run_fail(member_id, report_dir, model_dir):
+    def fake_run_fail(member_id, report_dir, model_dir, *args, **kwargs):
         raise RuntimeError("synthetic training failure for test")
 
     monkeypatch.setattr(_runner, "_run_scientific_training", fake_run_fail)
@@ -710,7 +710,7 @@ def test_success_all_five_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     if not _runner.EXEC_CONTRACT_PATH.exists():
         pytest.skip("contract v2 not yet created")
 
-    def fake_ok(member_id, report_dir, model_dir):
+    def fake_ok(member_id, report_dir, model_dir, *args, **kwargs):
         _runner._SCIENTIFIC_INVOCATIONS += 1
         return {
             "config_hash": _runner.EXPECTED_CONFIG_HASHES[member_id],
@@ -751,7 +751,7 @@ def test_success_manifest_hashes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     if not _runner.EXEC_CONTRACT_PATH.exists():
         pytest.skip("contract v2 not yet created")
 
-    def fake_ok(member_id, report_dir, model_dir):
+    def fake_ok(member_id, report_dir, model_dir, *args, **kwargs):
         _runner._SCIENTIFIC_INVOCATIONS += 1
         return {
             "config_hash": _runner.EXPECTED_CONFIG_HASHES[member_id],

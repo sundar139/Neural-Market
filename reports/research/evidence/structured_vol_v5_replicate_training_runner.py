@@ -331,10 +331,9 @@ def check_authorization(member_id: str, auth_path: Path | None) -> dict[str, Any
             raise RuntimeError(f"expected_resolved_device must be cpu or cuda, got {data['expected_resolved_device']!r}")
         if req_dev != exp_res:
             raise RuntimeError(f"requested_device {req_dev!r} != expected_resolved_device {exp_res!r}")
-        rt_hash = str(data["expected_runtime_identity_sha256"]).strip().lower()
+        rt_hash = str(data["expected_runtime_identity_sha256"]).strip()
         if not _HEX64_RE.match(rt_hash):
             raise RuntimeError("expected_runtime_identity_sha256 must be 64 lowercase hex")
-        # Normalise for downstream comparison
         data["requested_device"] = req_dev
         data["expected_resolved_device"] = exp_res
         data["expected_runtime_identity_sha256"] = rt_hash
@@ -612,7 +611,9 @@ def _run_scientific_training(
     training_end_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     gate_spec = load_gate_spec_v2(str(gate_yaml))
-    gate_diagnostics, gate_passed = evaluate_gate_v2(model, split, normalizer, training_returns_tensor, spec, gate_spec)
+    gate_diagnostics, gate_passed = evaluate_gate_v2(
+        model, split, normalizer, training_returns_tensor, spec, gate_spec, device=device
+    )
 
     # Persist selected checkpoint + curve into model_dir/report_dir
     model_dir.mkdir(parents=True, exist_ok=True)
@@ -744,7 +745,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         auth_data = check_authorization(member_id, auth_path)
     except RuntimeError as e:
-        print(f"REFUSED: authorization: ***", file=sys.stderr)
+        print(f"REFUSED: authorization: {e}", file=sys.stderr)
         return 2
 
     # Prospective v2 pre-marker device/runtime enforcement (ordering is load-bearing)
@@ -754,7 +755,7 @@ def main(argv: list[str] | None = None) -> int:
     if is_v2:
         requested_device = str(auth_data["requested_device"]).strip().lower()
         expected_resolved = str(auth_data["expected_resolved_device"]).strip().lower()
-        expected_rt_sha = str(auth_data["expected_runtime_identity_sha256"]).strip().lower()
+        expected_rt_sha = str(auth_data["expected_runtime_identity_sha256"]).strip()
     else:
         requested_device = "cpu"
         expected_resolved = "cpu"
@@ -785,26 +786,27 @@ def main(argv: list[str] | None = None) -> int:
     try:
         observed_rt = build_runtime_identity(requested_device=requested_device, resolved_device=resolved_str)
         observed_sha = str(observed_rt.get("runtime_identity_sha256", ""))
-        observed_resolved = str(observed_rt.get("resolved_device", "")).strip().lower()
     except Exception as e:
         print(f"REFUSED: runtime identity preflight: {e}", file=sys.stderr)
         return 2
 
     # 5. Enforce v2 binding before any irreversible publication
     if is_v2:
+        observed_resolved = str(observed_rt.get("resolved_device", "")).strip().lower()
         if observed_resolved != expected_resolved:
             print(
                 f"REFUSED: resolved device mismatch: observed {observed_resolved!r} != expected {expected_resolved!r}",
                 file=sys.stderr,
             )
             return 2
-        if observed_sha.lower() != expected_rt_sha.lower():
+        if observed_sha != expected_rt_sha:
             print("REFUSED: runtime identity mismatch", file=sys.stderr)
             return 2
     else:
         # v1 is CPU-only: if observed resolved is cuda, something is wrong — but v1
         # without requested CUDA should have resolved to cpu. Guard anyway.
-        if observed_resolved == "cuda" and requested_device == "cpu":
+        observed_resolved_v1 = str(observed_rt.get("resolved_device", "")).strip().lower()
+        if observed_resolved_v1 == "cuda" and requested_device == "cpu":
             # This cannot happen if resolve_device was given 'cpu', but guard for
             # any future path that might mis-resolve. Fail closed.
             print("REFUSED: v1 authorization cannot resolve to cuda", file=sys.stderr)

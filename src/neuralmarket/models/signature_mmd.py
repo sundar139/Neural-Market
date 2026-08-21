@@ -80,14 +80,9 @@ class SignatureStandardizer:
     def standardize(self, features: Tensor) -> Tensor:
         """Standardize individual signature vectors with fitted parameters.
 
-        Args:
-            features: ``(batch, dim)`` signature feature vectors.
-
-        Returns:
-            Standardized vectors of the same shape.
-
-        Raises:
-            ValueError: If the width mismatches or any input is non-finite.
+        The standardizer's means/stds live on the device they were fitted on
+        (historically cpu). When features are on another device (e.g. cuda),
+        we co-locate the parameters to that device for the arithmetic.
         """
         features = torch.as_tensor(features)
         if features.ndim != 2 or features.shape[1] != self.means.shape[0]:
@@ -97,7 +92,9 @@ class SignatureStandardizer:
             )
         if not torch.isfinite(features).all():
             raise ValueError("standardizer input must be finite")
-        return (features - self.means) / self.stds
+        means = self.means.to(device=features.device, dtype=features.dtype)
+        stds = self.stds.to(device=features.device, dtype=features.dtype)
+        return (features - means) / stds
 
     def standardization_hash(self) -> str:
         """Deterministic hash of the fitted standardization parameters."""

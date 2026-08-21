@@ -258,23 +258,16 @@ def evaluate_gate_v2(
     gate_spec: GateSpecV2 | None = None,
     selection_returns_real: np.ndarray | None = None,
     sel_ctx_tensor: torch.Tensor | None = None,
+    *,
+    device: torch.device | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Evaluate the v2 internal gate on selection data.
 
-    Uses bootstrap-based terminal reference and multi-lag ACF.
-
-    Args:
-        model: Best-epoch internal model.
-        split: Internal fit/selection split.
-        normalizer: Training-fitted context normalizer.
-        training_returns: Training returns tensor.
-        spec: Window geometry.
-        gate_spec: Frozen gate specification.
-        selection_returns_real: Optional pre-computed selection real returns.
-        sel_ctx_tensor: Optional pre-computed selection context tensor.
-
-    Returns:
-        (diagnostics, passed) tuple.
+    Device: the resolved cuda device from the governed runner is threaded
+    through here so all model/computed tensors live on cuda. Bootstrap/
+    numpy reporting work is intentionally copied to cpu after generation.
+    Historical callers that omit ``device`` fall back to the model's
+    parameter device (or cpu if uninitialised).
     """
     from neuralmarket.research.neural_sde_trainer_v2 import (
         _window_tensors,
@@ -285,17 +278,31 @@ def evaluate_gate_v2(
 
     spec = WindowSpec() if spec is None else spec
     gate_spec = GateSpecV2() if gate_spec is None else gate_spec
+    # Resolve gate device: explicit > model params > sel_ctx > cpu
+    if device is None:
+        try:
+            device = next(model.parameters()).device
+        except StopIteration:
+            device = sel_ctx_tensor.device if sel_ctx_tensor is not None else torch.device("cpu")
+    # Ensure model is on the resolved device (idempotent)
+    try:
+        model.to(device=device)  # type: ignore[call-arg]
+    except Exception:
+        pass
     cumret_scale = fit_cumret_scale(training_returns.detach().cpu().numpy(), spec.horizon)
 
-    # Get selection real returns and context
+    # Get selection real returns and context — materialise on the gate device
     if selection_returns_real is None or sel_ctx_tensor is None:
         sel_ctx, sel_targets, _ = _window_tensors(
             split.selection_windows, normalizer, cumret_scale, spec
         )
-        selection_returns_real = sel_targets.cpu().numpy()
+        sel_ctx = sel_ctx.to(device=device)
+        sel_targets = sel_targets.to(device=device)
+        selection_returns_real = sel_targets.detach().cpu().numpy()
         sel_ctx_tensor = sel_ctx
     else:
-        sel_ctx = sel_ctx_tensor
+        sel_ctx = sel_ctx_tensor.to(device=device)
+        sel_ctx_tensor = sel_ctx
 
     n_sel = selection_returns_real.shape[0]
     n_gen = gate_spec.generated_path_count
@@ -307,11 +314,15 @@ def evaluate_gate_v2(
     # starting at the first selection target index.
     selection_daily_returns = selection_returns_series(training_returns, split)
 
-    # Generate model paths
-    gate_gen = torch.Generator().manual_seed(gate_spec.gate_seed)
+    # Generate model paths — device-aware generators and noise
+    from neuralmarket.core.trainer_device import make_generator as _gate_make_gen
+
+    gate_gen = _gate_make_gen(device, gate_spec.gate_seed)
     model.eval()
     with torch.no_grad():
-        noise = torch.randn(n_gen, spec.horizon, model.config.brownian_dim, generator=gate_gen)
+        noise = torch.randn(
+            n_gen, spec.horizon, model.config.brownian_dim, generator=gate_gen, device=device
+        )
         # Use first n_gen contexts (cycled if needed)
         gen_ctx = (
             sel_ctx_tensor[:n_gen]
@@ -382,7 +393,7 @@ def evaluate_gate_v2(
     uniqueness = len(fingerprints) / min(gen_returns.shape[0], 2048)
 
     # --- Drift/diffusion ratio ---
-    drift_gen = torch.Generator().manual_seed(gate_spec.drift_diffusion_seed)
+    drift_gen = _gate_make_gen(device, gate_spec.drift_diffusion_seed)
     drift_rms, diff_rms = _drift_diffusion_rms(model, sel_ctx, spec, 64, drift_gen)
     dd_ratio = drift_rms / diff_rms if diff_rms > 0.0 else float("inf")
 

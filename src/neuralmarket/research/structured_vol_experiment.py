@@ -206,7 +206,7 @@ def run_v5_experiment(
         split.fit_windows, normalizer, cumret_scale, spec, config.objective
     )
 
-    # Initialize structured volatility model (device explicit; default cpu for frozen lineage)
+    # Initialize structured volatility model (device explicit)
     requested = getattr(config, "device", "cpu")
     from neuralmarket.core.device import configure_device_determinism, resolve_device
 
@@ -217,7 +217,7 @@ def run_v5_experiment(
     set_deterministic_seeds(config.training.model_init_seed)
     model = StructuredVolatilityNeuralSde(config.sde).to(device=device, dtype=dtype)
     n_params = count_parameters(model)
-    training_returns_tensor = torch.tensor(training_returns, dtype=dtype)
+    training_returns_tensor = torch.tensor(training_returns, dtype=dtype, device=device)
 
     # Train using v3 trainer (same API)
     outcome = train_internal_v3(
@@ -229,6 +229,7 @@ def run_v5_experiment(
         statistics,
         spec,
         config.objective,
+        device=device,
     )
 
     # Gate v2 evaluation (frozen gate specification)
@@ -246,6 +247,7 @@ def run_v5_experiment(
         training_returns_tensor,
         spec,
         gate_spec,
+        device=device,
     )
 
     checkpoint_dir = output_root / config.version / config_hash[:16]
@@ -292,6 +294,7 @@ def run_v5_experiment(
             statistics,
             spec,
             config.objective,
+            device=device,
         )
         # Overwrite checkpoint with refitted model
         torch.save(
@@ -326,7 +329,9 @@ def run_v5_experiment(
         initial_price = float(training_series.prices[-1])
 
         n_paths = config.n_eval_paths
-        ctx_tensor = torch.tensor([[float(v) for v in eval_context]] * n_paths, dtype=torch.float32)
+        ctx_tensor = torch.tensor(
+            [[float(v) for v in eval_context]] * n_paths, dtype=torch.float32, device=device
+        )
         generated = simulate_structured(final_model, ctx_tensor, seed=config.eval_seed)
         increments = generated.detach().cpu().numpy()
 
