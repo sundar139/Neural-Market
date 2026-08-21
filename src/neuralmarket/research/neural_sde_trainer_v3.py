@@ -4,11 +4,15 @@ v3 replaces v2's cumulative-path-only signature with a lead-lag
 representation that makes local variation and quadratic-variation
 information visible to the truncated signature.  The RBF-MMD framework,
 variance calibration, and architecture are preserved exactly from v2.
-
 The internal gate is strengthened: it now requires bounded variance ratio,
 bounded terminal dispersion, path uniqueness, return-ACF agreement, and a
 drift-vs-diffusion RMS ratio (all computed from training/internal data
 only).
+
+Device handling: the governed runner threads a single resolved
+torch.device through the training stack. Every generator and storage-
+creating factory uses that device explicitly — no .cuda() scatter and no
+silent CPU fallback. CPU behaviour is unchanged.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ import numpy as np
 import torch
 from torch import Tensor, nn
 
+from neuralmarket.core.trainer_device import make_generator
 from neuralmarket.data.manifests import canonical_dumps
 from neuralmarket.data.research.sde_windows import (
     FeatureNormalizer,
@@ -48,6 +53,16 @@ from neuralmarket.research.neural_sde_trainer_v2 import (
     _as_window,
     _window_tensors,
 )
+
+# Re-export for external callers that import from trainer_v3
+__all__ = [
+    "V3ObjectiveConfig",
+    "V3Statistics",
+    "build_v3_statistics",
+    "train_internal_v3",
+    "refit_final_v3",
+    "evaluate_internal_gate_v3",
+]
 
 
 @dataclass(frozen=True)
@@ -173,7 +188,12 @@ def _evaluate_selection_v3(
 ) -> tuple[Tensor, Tensor]:
     """Selection RBF-MMD + per-path variance with lead-lag representation."""
     noise = torch.randn(
-        sel_ctx.shape[0], spec.horizon, model.config.brownian_dim, generator=generator
+        sel_ctx.shape[0],
+        spec.horizon,
+        model.config.brownian_dim,
+        dtype=sel_ctx.dtype,
+        device=sel_ctx.device,
+        generator=generator,
     )
     with torch.no_grad():
         generated = model(sel_ctx, noise)
@@ -198,25 +218,46 @@ def train_internal_v3(
     statistics: V3Statistics,
     spec: WindowSpec | None = None,
     objective: V3ObjectiveConfig | None = None,
+    *,
+    device: torch.device | None = None,
 ) -> TrainingOutcomeV2:
-    """Train v3 with lead-lag RBF signature MMD on the fit subset."""
+    """Train v3 with lead-lag RBF signature MMD on the fit subset.
+
+    Args:
+        device: Resolved device. Defaults to the model's parameter device
+            (or CPU if uninitialised) for backwards-compatible CPU tests.
+    """
     spec = WindowSpec() if spec is None else spec
     objective = V3ObjectiveConfig() if objective is None else objective
     standardizer = statistics.standardizer
     bandwidth_sq = statistics.bandwidth_sq
     cumret_scale = fit_cumret_scale(training_returns.detach().cpu().numpy(), spec.horizon)
 
+    # Resolve device once — single source of truth
+    if device is None:
+        try:
+            device = next(model.parameters()).device
+        except StopIteration:
+            device = torch.device("cpu")
+
+    # Move window tensors to the resolved device explicitly
     fit_ctx, fit_targets, _ = _window_tensors(split.fit_windows, normalizer, cumret_scale, spec)
     sel_ctx, sel_targets, _ = _window_tensors(
         split.selection_windows, normalizer, cumret_scale, spec
     )
+    fit_ctx = fit_ctx.to(device=device)
+    fit_targets = fit_targets.to(device=device)
+    sel_ctx = sel_ctx.to(device=device)
+    sel_targets = sel_targets.to(device=device)
 
     model.train()
+    # Ensure model is on the resolved device
+    model.to(device=device)
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
     )
-    noise_gen = torch.Generator().manual_seed(config.data_seed)
-    order_gen = torch.Generator().manual_seed(config.data_seed)
+    noise_gen = make_generator(device, config.data_seed)
+    order_gen = make_generator(device, config.data_seed)
 
     def selection_scores() -> tuple[float, float]:
         rbf, total = _evaluate_selection_v3(
@@ -248,7 +289,7 @@ def train_internal_v3(
     n_batches = max(1, (n_fit + config.batch_size - 1) // config.batch_size)
 
     for epoch in range(1, config.max_epochs + 1):
-        order = torch.randperm(n_fit, generator=order_gen)
+        order = torch.randperm(n_fit, generator=order_gen, device=device)
         epoch_rbf = 0.0
         epoch_total = 0.0
         for start in range(0, n_fit, config.batch_size):
@@ -259,6 +300,8 @@ def train_internal_v3(
                 batch_ctx.shape[0],
                 spec.horizon,
                 model.config.brownian_dim,
+                dtype=batch_ctx.dtype,
+                device=device,
                 generator=noise_gen,
             )
             generated = model(batch_ctx, noise)
@@ -326,7 +369,11 @@ def train_internal_v3(
 
     state = model.state_dict()
     for name, values in best_params.items():
-        state[name].copy_(torch.tensor(values, dtype=state[name].dtype).reshape(state[name].shape))
+        state[name].copy_(
+            torch.tensor(values, dtype=state[name].dtype, device=device).reshape(
+                state[name].shape
+            )
+        )
     model.load_state_dict(state)
 
     return TrainingOutcomeV2(
@@ -351,6 +398,8 @@ def refit_final_v3(
     statistics: V3Statistics,
     spec: WindowSpec | None = None,
     objective: V3ObjectiveConfig | None = None,
+    *,
+    device: torch.device | None = None,
 ) -> None:
     """Refit v3 on ALL eligible training windows for exactly N epochs."""
     spec = WindowSpec() if spec is None else spec
@@ -359,17 +408,26 @@ def refit_final_v3(
     bandwidth_sq = statistics.bandwidth_sq
     cumret_scale = fit_cumret_scale(training_returns.detach().cpu().numpy(), spec.horizon)
 
+    if device is None:
+        try:
+            device = next(model.parameters()).device
+        except StopIteration:
+            device = torch.device("cpu")
+
     ctx, targets, _ = _window_tensors(windows, normalizer, cumret_scale, spec)
+    ctx = ctx.to(device=device)
+    targets = targets.to(device=device)
+    model.to(device=device)
     model.train()
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
     )
-    noise_gen = torch.Generator().manual_seed(config.data_seed)
-    order_gen = torch.Generator().manual_seed(config.data_seed)
+    noise_gen = make_generator(device, config.data_seed)
+    order_gen = make_generator(device, config.data_seed)
     n = ctx.shape[0]
 
     for _ in range(epochs):
-        order = torch.randperm(n, generator=order_gen)
+        order = torch.randperm(n, generator=order_gen, device=device)
         for start in range(0, n, config.batch_size):
             idx = order[start : start + config.batch_size]
             batch_ctx = ctx[idx]
@@ -378,6 +436,8 @@ def refit_final_v3(
                 batch_ctx.shape[0],
                 spec.horizon,
                 model.config.brownian_dim,
+                dtype=batch_ctx.dtype,
+                device=device,
                 generator=noise_gen,
             )
             generated = model(batch_ctx, noise)
@@ -456,7 +516,14 @@ def _drift_diffusion_rms(
     diff_sq_sum = 0.0
     count = 0
 
-    noise = torch.randn(n_ctx, spec.horizon, model.config.brownian_dim, generator=generator)
+    noise = torch.randn(
+        n_ctx,
+        spec.horizon,
+        model.config.brownian_dim,
+        generator=generator,
+        device=ctx.device,
+        dtype=ctx.dtype,
+    )
 
     with torch.no_grad():
         for k in range(spec.horizon):
@@ -506,8 +573,14 @@ def evaluate_internal_gate_v3(
     sel_ctx, sel_targets, _ = _window_tensors(
         split.selection_windows, normalizer, cumret_scale, spec
     )
-
-    gate_gen = torch.Generator().manual_seed(objective.internal_gate_seed)
+    # Gate generators on the model's device (preserve determinism on CUDA)
+    try:
+        gate_device = next(model.parameters()).device
+    except StopIteration:
+        gate_device = sel_ctx.device
+    sel_ctx = sel_ctx.to(device=gate_device)
+    sel_targets = sel_targets.to(device=gate_device)
+    gate_gen = make_generator(gate_device, objective.internal_gate_seed)
     model.eval()
     with torch.no_grad():
         noise = torch.randn(
@@ -515,6 +588,8 @@ def evaluate_internal_gate_v3(
             spec.horizon,
             model.config.brownian_dim,
             generator=gate_gen,
+            device=sel_ctx.device,
+            dtype=sel_ctx.dtype,
         )
         generated = model(sel_ctx, noise)
 
@@ -545,7 +620,7 @@ def evaluate_internal_gate_v3(
     real_acf1 = _return_acf1(real_flat)
     acf1_diff = abs(gen_acf1 - real_acf1)
 
-    drift_gen = torch.Generator().manual_seed(objective.internal_gate_seed + 1)
+    drift_gen = make_generator(gate_device, objective.internal_gate_seed + 1)
     drift_rms, diff_rms = _drift_diffusion_rms(model, sel_ctx, spec, 64, drift_gen)
     dd_ratio = drift_rms / diff_rms if diff_rms > 0.0 else float("inf")
 

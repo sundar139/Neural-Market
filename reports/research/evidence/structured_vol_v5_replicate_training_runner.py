@@ -237,7 +237,7 @@ def check_no_overwrite(member_id: str) -> tuple[Path, Path]:
     return report_dir, model_dir
 
 
-REQUIRED_AUTH_FIELDS: list[str] = [
+REQUIRED_AUTH_FIELDS_V1: list[str] = [
     "schema_version",
     "authorization_task_id",
     "member_id",
@@ -259,8 +259,22 @@ REQUIRED_AUTH_FIELDS: list[str] = [
     "reserve",
     "max_training_invocations",
 ]
+REQUIRED_AUTH_FIELDS_V2: list[str] = REQUIRED_AUTH_FIELDS_V1 + [
+    "requested_device",
+    "expected_resolved_device",
+    "expected_runtime_identity_sha256",
+]
+# Backwards compat alias for existing tests that import REQUIRED_AUTH_FIELDS
+REQUIRED_AUTH_FIELDS: list[str] = REQUIRED_AUTH_FIELDS_V1
+ALLOWED_AUTH_SCHEMAS = {
+    "structured-vol-v5-primary-training-authorization-v1",
+    "structured-vol-v5-primary-training-authorization-v2",
+}
 EXPECTED_SCHEMA_VERSION = "structured-vol-v5-primary-training-authorization-v1"
+EXPECTED_SCHEMA_VERSION_V2 = "structured-vol-v5-primary-training-authorization-v2"
 _AUTH_TASK_RE = re.compile(r"^NM-R4-[A-Z0-9][A-Z0-9_\-]*-\d+$")
+_HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
+_RUNTIME_SCHEMA_V1 = "runtime-identity-v1"
 
 
 def check_authorization(member_id: str, auth_path: Path | None) -> dict[str, Any]:
@@ -294,11 +308,40 @@ def check_authorization(member_id: str, auth_path: Path | None) -> dict[str, Any
     if work_blob != head_blob:
         raise RuntimeError(f"authorization worktree blob != HEAD blob: {auth_path}")
     data: dict[str, Any] = json.loads(auth_path.read_text(encoding="utf-8"))
-    for f in REQUIRED_AUTH_FIELDS:
+    schema = str(data.get("schema_version", ""))
+    if schema not in ALLOWED_AUTH_SCHEMAS:
+        raise RuntimeError(f"authorization schema_version must be one of {sorted(ALLOWED_AUTH_SCHEMAS)!r}, got {schema!r}")
+    is_v2 = schema == EXPECTED_SCHEMA_VERSION_V2
+    required = REQUIRED_AUTH_FIELDS_V2 if is_v2 else REQUIRED_AUTH_FIELDS_V1
+    for f in required:
         if f not in data:
             raise RuntimeError(f"authorization missing required field: {f}")
-    if data["schema_version"] != EXPECTED_SCHEMA_VERSION:
-        raise RuntimeError(f"authorization schema_version must be {EXPECTED_SCHEMA_VERSION!r}")
+    # v1 must not carry v2 device/runtime fields (fail closed — no accidental CUDA opt-in)
+    if not is_v2:
+        for extra in ("requested_device", "expected_resolved_device", "expected_runtime_identity_sha256"):
+            if extra in data:
+                raise RuntimeError(f"v1 authorization must not contain {extra}")
+    else:
+        # v2 device/runtime validation
+        req_dev = str(data["requested_device"]).strip().lower()
+        exp_res = str(data["expected_resolved_device"]).strip().lower()
+        if req_dev not in ("cpu", "cuda"):
+            raise RuntimeError(f"requested_device must be cpu or cuda, got {data['requested_device']!r}")
+        if exp_res not in ("cpu", "cuda"):
+            raise RuntimeError(f"expected_resolved_device must be cpu or cuda, got {data['expected_resolved_device']!r}")
+        if req_dev != exp_res:
+            raise RuntimeError(f"requested_device {req_dev!r} != expected_resolved_device {exp_res!r}")
+        rt_hash = str(data["expected_runtime_identity_sha256"]).strip().lower()
+        if not _HEX64_RE.match(rt_hash):
+            raise RuntimeError("expected_runtime_identity_sha256 must be 64 lowercase hex")
+        # Normalise for downstream comparison
+        data["requested_device"] = req_dev
+        data["expected_resolved_device"] = exp_res
+        data["expected_runtime_identity_sha256"] = rt_hash
+        # Optional provenance field, if present must equal runtime-identity-v1
+        if "expected_runtime_identity_schema" in data:
+            if str(data["expected_runtime_identity_schema"]) != _RUNTIME_SCHEMA_V1:
+                raise RuntimeError("expected_runtime_identity_schema must be runtime-identity-v1")
     task_id = data["authorization_task_id"]
     if not isinstance(task_id, str) or not task_id.strip() or not _AUTH_TASK_RE.match(task_id.strip()):
         raise RuntimeError("authorization_task_id must be nonempty and match NM-R4-*-NNN pattern")
@@ -408,9 +451,19 @@ def _exclusive_create_execution_started(
     prefix: str,
     auth_data: dict[str, Any],
     auth_path: Path,
+    *,
+    requested_device: str = "cpu",
+    resolved_device: str = "cpu",
+    runtime_identity: dict[str, Any] | None = None,
 ) -> Path:
     # Build complete payload in memory first (complete-or-absent semantics)
     ec_blob = _git_blob(EXEC_CONTRACT_PATH)
+    # Normalise device fields for evidence
+    req_dev = str(requested_device).strip().lower() if requested_device else "cpu"
+    res_dev = str(resolved_device).strip().lower() if resolved_device else req_dev
+    rt_payload = runtime_identity if runtime_identity is not None else {}
+    rt_sha = str(rt_payload.get("runtime_identity_sha256", "")) if rt_payload else ""
+    rt_schema = str(rt_payload.get("schema_version", _RUNTIME_SCHEMA_V1)) if rt_payload else _RUNTIME_SCHEMA_V1
     payload: dict[str, Any] = {
         "schema_version": "1.0",
         "member_id": member_id,
@@ -428,6 +481,12 @@ def _exclusive_create_execution_started(
         "execution_recipe_head": str(auth_data["execution_recipe_head"]),
         "authorization_path": auth_path.relative_to(REPO).as_posix() if auth_path.is_absolute() else auth_path.as_posix(),
         "authorization_git_blob": _git_blob(auth_path),
+        "authorization_schema_version": str(auth_data.get("schema_version", "")),
+        "requested_device": req_dev,
+        "resolved_device": res_dev,
+        "runtime_identity_schema": rt_schema,
+        "runtime_identity_sha256": rt_sha,
+        "runtime_identity": rt_payload if rt_payload else None,
         "start_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "attempt_number": 1,
         "training_invocations_before_start": _SCIENTIFIC_INVOCATIONS,
@@ -465,7 +524,13 @@ def _exclusive_create_execution_started(
     return p
 
 
-def _run_scientific_training(member_id: str, report_dir: Path, model_dir: Path) -> dict[str, Any]:
+def _run_scientific_training(
+    member_id: str,
+    report_dir: Path,
+    model_dir: Path,
+    *,
+    device: torch.device | None = None,
+) -> dict[str, Any]:
     """Single reachable scientific training orchestration (thin glue over existing helpers).
 
     Calls the accepted training-only flow: training series -> windows/normalizer ->
@@ -523,16 +588,27 @@ def _run_scientific_training(member_id: str, report_dir: Path, model_dir: Path) 
     sel_count = split.n_selection
     statistics = build_v3_statistics(split.fit_windows, normalizer, cumret_scale, spec, eff.objective)
 
-    device = torch.device("cpu")
+    # Device is threaded from the runner — single resolved device, no scatter
+    if device is None:
+        device = torch.device("cpu")
     dtype = torch.float32
     configure_determinism(True)
+    # Reuse device helper determinism as well (idempotent)
+    try:
+        from neuralmarket.core.device import configure_device_determinism as _cfg_dev_det
+
+        _cfg_dev_det(device, enabled=True)
+    except Exception:
+        pass
     set_deterministic_seeds(int(eff.training.model_init_seed))
     model = StructuredVolatilityNeuralSde(eff.sde).to(device=device, dtype=dtype)
     _ = count_parameters(model)
-    training_returns_tensor = torch.tensor(training_returns, dtype=dtype)
+    training_returns_tensor = torch.tensor(training_returns, dtype=dtype, device=device)
     training_start_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
-    outcome = train_internal_v3(model, eff.training, split, normalizer, training_returns_tensor, statistics, spec, eff.objective)
+    outcome = train_internal_v3(
+        model, eff.training, split, normalizer, training_returns_tensor, statistics, spec, eff.objective, device=device
+    )
     training_end_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
     gate_spec = load_gate_spec_v2(str(gate_yaml))
@@ -560,7 +636,18 @@ def _run_scientific_training(member_id: str, report_dir: Path, model_dir: Path) 
     if gate_passed:
         set_deterministic_seeds(int(eff.training.model_init_seed))
         final_model = StructuredVolatilityNeuralSde(eff.sde).to(device=device, dtype=dtype)
-        refit_final_v3(final_model, eff.training, windows, normalizer, training_returns_tensor, outcome.best_epoch, statistics, spec, eff.objective)
+        refit_final_v3(
+            final_model,
+            eff.training,
+            windows,
+            normalizer,
+            training_returns_tensor,
+            outcome.best_epoch,
+            statistics,
+            spec,
+            eff.objective,
+            device=device,
+        )
         final_path = model_dir / "checkpoint_final.pt"
         torch.save(
             {"model_state": {k: v.cpu() for k, v in final_model.state_dict().items()}, "sde_config": asdict(eff.sde)}, final_path
@@ -652,17 +739,89 @@ def main(argv: list[str] | None = None) -> int:
         print(f"family {EXPECTED_FAMILY_HASH} eval {EXPECTED_EVAL_SEED} gate {FIXED_GATE_SEEDS}")
         return 0
 
-    # Execute requires authorization — enforce all 19 fields
+    # Execute requires authorization — enforce all fields (v1: 20, v2: 23)
     auth_path = Path(args.authorization) if args.authorization else None
     try:
         auth_data = check_authorization(member_id, auth_path)
     except RuntimeError as e:
-        print(f"REFUSED: authorization: {e}", file=sys.stderr)
+        print(f"REFUSED: authorization: ***", file=sys.stderr)
         return 2
 
-    # Exclusive create execution_started (irreversible start)
+    # Prospective v2 pre-marker device/runtime enforcement (ordering is load-bearing)
+    # 1. Read requested_device (v1 defaults to cpu, never CUDA)
+    auth_schema = str(auth_data.get("schema_version", ""))
+    is_v2 = auth_schema == EXPECTED_SCHEMA_VERSION_V2
+    if is_v2:
+        requested_device = str(auth_data["requested_device"]).strip().lower()
+        expected_resolved = str(auth_data["expected_resolved_device"]).strip().lower()
+        expected_rt_sha = str(auth_data["expected_runtime_identity_sha256"]).strip().lower()
+    else:
+        requested_device = "cpu"
+        expected_resolved = "cpu"
+        expected_rt_sha = ""
+
+    # 2. Resolve device (fail closed, no CPU fallback)
     try:
-        execution_started_path = _exclusive_create_execution_started(report_dir, member_id, prefix, auth_data, auth_path)  # type: ignore[arg-type]
+        sys.path.insert(0, str(REPO / "src"))
+        from neuralmarket.core.device import configure_device_determinism, resolve_device
+        from neuralmarket.core.runtime_identity import build_runtime_identity
+
+        resolved = resolve_device(requested_device)
+        resolved_str = str(resolved)
+        # Normalise torch.device str: 'cuda' may resolve to 'cuda' (not 'cuda:0')
+        # Keep as returned by resolve_device.
+    except (RuntimeError, ValueError) as e:
+        print(f"REFUSED: device preflight: {e}", file=sys.stderr)
+        return 2
+
+    # 3. Configure determinism for the resolved device
+    try:
+        configure_device_determinism(resolved, enabled=True)
+    except Exception as e:
+        print(f"REFUSED: determinism preflight: {e}", file=sys.stderr)
+        return 2
+
+    # 4. Build observed runtime identity at the single normative capture point
+    try:
+        observed_rt = build_runtime_identity(requested_device=requested_device, resolved_device=resolved_str)
+        observed_sha = str(observed_rt.get("runtime_identity_sha256", ""))
+        observed_resolved = str(observed_rt.get("resolved_device", "")).strip().lower()
+    except Exception as e:
+        print(f"REFUSED: runtime identity preflight: {e}", file=sys.stderr)
+        return 2
+
+    # 5. Enforce v2 binding before any irreversible publication
+    if is_v2:
+        if observed_resolved != expected_resolved:
+            print(
+                f"REFUSED: resolved device mismatch: observed {observed_resolved!r} != expected {expected_resolved!r}",
+                file=sys.stderr,
+            )
+            return 2
+        if observed_sha.lower() != expected_rt_sha.lower():
+            print("REFUSED: runtime identity mismatch", file=sys.stderr)
+            return 2
+    else:
+        # v1 is CPU-only: if observed resolved is cuda, something is wrong — but v1
+        # without requested CUDA should have resolved to cpu. Guard anyway.
+        if observed_resolved == "cuda" and requested_device == "cpu":
+            # This cannot happen if resolve_device was given 'cpu', but guard for
+            # any future path that might mis-resolve. Fail closed.
+            print("REFUSED: v1 authorization cannot resolve to cuda", file=sys.stderr)
+            return 2
+
+    # Exclusive create execution_started (irreversible start) — only after every check
+    try:
+        execution_started_path = _exclusive_create_execution_started(
+            report_dir,
+            member_id,
+            prefix,
+            auth_data,
+            auth_path,  # type: ignore[arg-type]
+            requested_device=requested_device,
+            resolved_device=resolved_str,
+            runtime_identity=observed_rt,
+        )
     except RuntimeError as e:
         print(f"REFUSED: {e}", file=sys.stderr)
         return 2
@@ -711,6 +870,12 @@ def main(argv: list[str] | None = None) -> int:
             "schedule_git_blob": FROZEN_SCHEDULE_BLOB,
             "authorization_path": auth_path.relative_to(REPO).as_posix() if auth_path and auth_path.is_absolute() else (str(auth_path) if auth_path else None),
             "authorization_git_blob": _git_blob(auth_path) if auth_path and auth_path.exists() else None,
+            "authorization_schema_version": str(auth_data.get("schema_version", "")),
+            "requested_device": str(observed_rt.get("requested_device", requested_device)) if "observed_rt" in locals() else requested_device,
+            "resolved_device": str(observed_rt.get("resolved_device", resolved_str)) if "observed_rt" in locals() else resolved_str,
+            "runtime_identity_schema": str(observed_rt.get("schema_version", _RUNTIME_SCHEMA_V1)) if "observed_rt" in locals() and observed_rt else _RUNTIME_SCHEMA_V1,
+            "runtime_identity_sha256": str(observed_rt.get("runtime_identity_sha256", "")) if "observed_rt" in locals() and observed_rt else "",
+            "runtime_identity": observed_rt if "observed_rt" in locals() else None,
             "execution_started_path": str(execution_started_path),
             "start_utc": start_utc,
             "end_utc": end_utc,
@@ -760,11 +925,17 @@ def main(argv: list[str] | None = None) -> int:
                         "runner_git_blob": _git_blob(HARNESS_PATH),
                         "execution_contract_git_blob": _git_blob(EXEC_CONTRACT_PATH),
                         "authorization_git_blob": _git_blob(auth_path) if auth_path and auth_path.exists() else None,
+                        "authorization_schema_version": str(auth_data.get("schema_version", "")),
+                        "requested_device": str(observed_rt.get("requested_device", requested_device)) if "observed_rt" in locals() else requested_device,
+                        "resolved_device": str(observed_rt.get("resolved_device", resolved_str)) if "observed_rt" in locals() else resolved_str,
+                        "runtime_identity_schema": str(observed_rt.get("schema_version", _RUNTIME_SCHEMA_V1)) if "observed_rt" in locals() and observed_rt else _RUNTIME_SCHEMA_V1,
+                        "runtime_identity_sha256": str(observed_rt.get("runtime_identity_sha256", "")) if "observed_rt" in locals() and observed_rt else "",
+                        "runtime_identity": observed_rt if "observed_rt" in locals() else None,
                         "execution_recipe_head": str(auth_data["execution_recipe_head"]),
                         "python_version": sys.version,
                         "pytorch_version": __import__("torch").__version__,
-                        "device": "cpu",
-                        "determinism": {"torch_deterministic": True, "cudnn_benchmark": False},
+                        "device": str(observed_rt.get("resolved_device", resolved_str)) if "observed_rt" in locals() else resolved_str,
+                        "determinism": {"torch_deterministic": True, "cudnn_benchmark": False, "cudnn_deterministic": True},
                         "effective_config": {
                             "version": eff2.version,
                             "sde": asdict(eff2.sde),
@@ -822,7 +993,7 @@ def main(argv: list[str] | None = None) -> int:
 
     pending_exc: BaseException | None = None
     try:
-        training_result = _run_scientific_training(member_id, report_dir, model_dir)
+        training_result = _run_scientific_training(member_id, report_dir, model_dir, device=resolved)
         # Gate-v2 failure is terminal FAILED (not COMPLETED) — exit 3
         gate_passed = bool(training_result.get("gate_passed", True)) if training_result else True
         if not gate_passed:
