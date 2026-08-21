@@ -3,7 +3,8 @@
 Fail-closed: allowlist is exactly v5-seed-02..05, member #1 and reserves are
 refused, namespaces are hash-derived, overwrite and retry are refused,
 execution_started is exclusive-create, and --execute requires a tracked/
-committed authorization artifact binding runner + contract v5 identities.
+committed v2 authorization binding the current runner/contract identities to
+CUDA runtime identity. v1 artifacts remain inspection-only historical evidence.
 Exactly one scientific training invocation is reachable and only after the
 irreversible start. Terminal evidence is always persisted. No scientific
 model/trainer logic is duplicated beyond orchestration glue.
@@ -22,7 +23,10 @@ import sys
 import traceback
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import torch
 
 REPO = Path(__file__).resolve().parents[3]
 
@@ -277,7 +281,8 @@ _HEX64_RE = re.compile(r"^[0-9a-f]{64}$")
 _RUNTIME_SCHEMA_V1 = "runtime-identity-v1"
 
 
-def check_authorization(member_id: str, auth_path: Path | None) -> dict[str, Any]:
+def inspect_authorization(member_id: str, auth_path: Path | None) -> dict[str, Any]:
+    """Parse and verify historical or prospective identity fields read-only."""
     if auth_path is None:
         raise RuntimeError("authorization artifact required for --execute; none provided")
     if not auth_path.exists():
@@ -367,30 +372,30 @@ def check_authorization(member_id: str, auth_path: Path | None) -> dict[str, Any
     # Blob checks
     if data["schedule_git_blob"] != FROZEN_SCHEDULE_BLOB:
         raise RuntimeError("authorization schedule_git_blob mismatch")
-    # Runner blob must match current tracked runner blob
-    current_runner_blob = _git_blob(HARNESS_PATH)
-    if data["runner_git_blob"] != current_runner_blob:
-        raise RuntimeError(f"authorization runner_git_blob mismatch: auth {data['runner_git_blob']} vs current {current_runner_blob}")
-    head_runner_blob = _git_head_blob(HARNESS_PATH)
-    if not head_runner_blob:
-        raise RuntimeError("runner has no HEAD blob (not committed)")
-    if current_runner_blob != head_runner_blob:
-        raise RuntimeError("runner blob mismatch: working vs HEAD (commit first)")
-    # Contract v5 blob must match current tracked contract v5 (unconditional)
-    if not EXEC_CONTRACT_PATH.exists():
-        raise RuntimeError(f"current execution contract missing: {EXEC_CONTRACT_PATH}")
-    if not _is_tracked(EXEC_CONTRACT_PATH):
-        raise RuntimeError(f"current execution contract not tracked: {EXEC_CONTRACT_PATH}")
-    head_contract_blob = _git_head_blob(EXEC_CONTRACT_PATH)
-    if not head_contract_blob:
-        raise RuntimeError(f"current execution contract not committed: {EXEC_CONTRACT_PATH}")
-    if not _is_clean(EXEC_CONTRACT_PATH):
-        raise RuntimeError(f"current execution contract not clean: {EXEC_CONTRACT_PATH}")
-    current_contract_blob = _git_blob(EXEC_CONTRACT_PATH)
-    if current_contract_blob != head_contract_blob:
-        raise RuntimeError(f"current execution contract worktree != HEAD: {EXEC_CONTRACT_PATH}")
-    if data["execution_contract_git_blob"] != current_contract_blob:
-        raise RuntimeError("authorization execution_contract_git_blob mismatch")
+    if is_v2:
+        # Prospective authorization binds the current runner and contract blobs.
+        current_runner_blob = _git_blob(HARNESS_PATH)
+        if data["runner_git_blob"] != current_runner_blob:
+            raise RuntimeError(f"authorization runner_git_blob mismatch: auth {data['runner_git_blob']} vs current {current_runner_blob}")
+        head_runner_blob = _git_head_blob(HARNESS_PATH)
+        if not head_runner_blob:
+            raise RuntimeError("runner has no HEAD blob (not committed)")
+        if current_runner_blob != head_runner_blob:
+            raise RuntimeError("runner blob mismatch: working vs HEAD (commit first)")
+        if not EXEC_CONTRACT_PATH.exists():
+            raise RuntimeError(f"current execution contract missing: {EXEC_CONTRACT_PATH}")
+        if not _is_tracked(EXEC_CONTRACT_PATH):
+            raise RuntimeError(f"current execution contract not tracked: {EXEC_CONTRACT_PATH}")
+        head_contract_blob = _git_head_blob(EXEC_CONTRACT_PATH)
+        if not head_contract_blob:
+            raise RuntimeError(f"current execution contract not committed: {EXEC_CONTRACT_PATH}")
+        if not _is_clean(EXEC_CONTRACT_PATH):
+            raise RuntimeError(f"current execution contract not clean: {EXEC_CONTRACT_PATH}")
+        current_contract_blob = _git_blob(EXEC_CONTRACT_PATH)
+        if current_contract_blob != head_contract_blob:
+            raise RuntimeError(f"current execution contract worktree != HEAD: {EXEC_CONTRACT_PATH}")
+        if data["execution_contract_git_blob"] != current_contract_blob:
+            raise RuntimeError("authorization execution_contract_git_blob mismatch")
     # Schedule SHA check (allow local_worktree_sha256 alias)
     sched_sha_key = "schedule_sha256" if "schedule_sha256" in data else "local_worktree_sha256" if "local_worktree_sha256" in data else None
     if sched_sha_key is None:
@@ -429,6 +434,32 @@ def check_authorization(member_id: str, auth_path: Path | None) -> dict[str, Any
     if data["max_training_invocations"] != 1:
         raise RuntimeError("authorization max_training_invocations must be 1")
     return data
+
+
+def authorize_execution(auth_data: dict[str, Any]) -> dict[str, Any]:
+    """Separate prospective execution authorization from historical inspection."""
+    schema = str(auth_data.get("schema_version", ""))
+    if schema != EXPECTED_SCHEMA_VERSION_V2:
+        raise RuntimeError(
+            "authorization schema v1 is historical-only; new scientific execution "
+            "requires schema v2 with CUDA runtime binding"
+        )
+    requested = str(auth_data.get("requested_device", "")).strip().lower()
+    expected = str(auth_data.get("expected_resolved_device", "")).strip().lower()
+    if requested != "cuda" or expected != "cuda":
+        raise RuntimeError(
+            "new scientific execution requires requested_device=cuda and "
+            "expected_resolved_device=cuda"
+        )
+    runtime_sha = str(auth_data.get("expected_runtime_identity_sha256", ""))
+    if not _HEX64_RE.fullmatch(runtime_sha):
+        raise RuntimeError("new scientific execution requires a bound runtime identity SHA")
+    return auth_data
+
+
+def check_authorization(member_id: str, auth_path: Path | None) -> dict[str, Any]:
+    """Validate an authorization for new execution; v1 remains inspection-only."""
+    return authorize_execution(inspect_authorization(member_id, auth_path))
 
 
 def _runner_self_check() -> None:
@@ -528,7 +559,7 @@ def _run_scientific_training(
     report_dir: Path,
     model_dir: Path,
     *,
-    device: torch.device | None = None,
+    device: torch.device,
 ) -> dict[str, Any]:
     """Single reachable scientific training orchestration (thin glue over existing helpers).
 
@@ -537,6 +568,8 @@ def _run_scientific_training(
     Must be called exactly once per process and only after execution_started.
     """
     global _SCIENTIFIC_INVOCATIONS
+    if device.type != "cuda":
+        raise RuntimeError("scientific training requires CUDA")
     if _SCIENTIFIC_INVOCATIONS >= 1:
         raise RuntimeError("scientific_training_invocations exceeded 1")
     _SCIENTIFIC_INVOCATIONS += 1
@@ -587,9 +620,7 @@ def _run_scientific_training(
     sel_count = split.n_selection
     statistics = build_v3_statistics(split.fit_windows, normalizer, cumret_scale, spec, eff.objective)
 
-    # Device is threaded from the runner — single resolved device, no scatter
-    if device is None:
-        device = torch.device("cpu")
+    # Device is threaded from the runner — single resolved CUDA device, no scatter.
     dtype = torch.float32
     configure_determinism(True)
     # Reuse device helper determinism as well (idempotent)
@@ -748,18 +779,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"REFUSED: authorization: {e}", file=sys.stderr)
         return 2
 
-    # Prospective v2 pre-marker device/runtime enforcement (ordering is load-bearing)
-    # 1. Read requested_device (v1 defaults to cpu, never CUDA)
-    auth_schema = str(auth_data.get("schema_version", ""))
-    is_v2 = auth_schema == EXPECTED_SCHEMA_VERSION_V2
-    if is_v2:
-        requested_device = str(auth_data["requested_device"]).strip().lower()
-        expected_resolved = str(auth_data["expected_resolved_device"]).strip().lower()
-        expected_rt_sha = str(auth_data["expected_runtime_identity_sha256"]).strip()
-    else:
-        requested_device = "cpu"
-        expected_resolved = "cpu"
-        expected_rt_sha = ""
+    # Prospective v2 CUDA runtime enforcement (ordering is load-bearing).
+    requested_device = str(auth_data["requested_device"]).strip().lower()
+    expected_resolved = str(auth_data["expected_resolved_device"]).strip().lower()
+    expected_rt_sha = str(auth_data["expected_runtime_identity_sha256"]).strip()
 
     # 2. Resolve device (fail closed, no CPU fallback)
     try:
@@ -790,27 +813,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"REFUSED: runtime identity preflight: {e}", file=sys.stderr)
         return 2
 
-    # 5. Enforce v2 binding before any irreversible publication
-    if is_v2:
-        observed_resolved = str(observed_rt.get("resolved_device", "")).strip().lower()
-        if observed_resolved != expected_resolved:
-            print(
-                f"REFUSED: resolved device mismatch: observed {observed_resolved!r} != expected {expected_resolved!r}",
-                file=sys.stderr,
-            )
-            return 2
-        if observed_sha != expected_rt_sha:
-            print("REFUSED: runtime identity mismatch", file=sys.stderr)
-            return 2
-    else:
-        # v1 is CPU-only: if observed resolved is cuda, something is wrong — but v1
-        # without requested CUDA should have resolved to cpu. Guard anyway.
-        observed_resolved_v1 = str(observed_rt.get("resolved_device", "")).strip().lower()
-        if observed_resolved_v1 == "cuda" and requested_device == "cpu":
-            # This cannot happen if resolve_device was given 'cpu', but guard for
-            # any future path that might mis-resolve. Fail closed.
-            print("REFUSED: v1 authorization cannot resolve to cuda", file=sys.stderr)
-            return 2
+    # 5. Enforce the runtime binding before any irreversible publication.
+    observed_resolved = str(observed_rt.get("resolved_device", "")).strip().lower()
+    if observed_resolved != expected_resolved:
+        print(
+            f"REFUSED: resolved device mismatch: observed {observed_resolved!r} != expected {expected_resolved!r}",
+            file=sys.stderr,
+        )
+        return 2
+    if observed_sha != expected_rt_sha:
+        print("REFUSED: runtime identity mismatch", file=sys.stderr)
+        return 2
 
     # Exclusive create execution_started (irreversible start) — only after every check
     try:

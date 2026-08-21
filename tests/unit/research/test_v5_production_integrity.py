@@ -438,6 +438,8 @@ class TestValidationFirewall:
             processed_root=tmp_path,
             output_root=tmp_path,
             report_path=tmp_path / "report.json",
+            device="cpu",
+            execution_mode="historical_test",
         )
 
         assert result["gate_passed"] is False
@@ -520,6 +522,8 @@ class TestValidationFirewall:
             processed_root=tmp_path,
             output_root=tmp_path,
             report_path=tmp_path / "report.json",
+            device="cpu",
+            execution_mode="historical_test",
         )
 
         assert result["status"] == "STRUCTURED-VOLATILITY-NEURAL-SDE-V5 READY"
@@ -776,6 +780,8 @@ def _run_mocked_v5(
     *,
     source_identity: dict | None = None,
     gate_passed: bool = False,
+    device: str = "cpu",
+    execution_mode: str = "historical_test",
 ) -> dict:
     """Run run_v5_experiment with heavy pieces mocked; returns the report dict.
 
@@ -840,7 +846,60 @@ def _run_mocked_v5(
         processed_root=run_dir,
         output_root=run_dir,
         report_path=run_dir / "report.json",
+        device=device,
+        execution_mode=execution_mode,
     )
+
+
+def test_run_v5_experiment_requires_explicit_device(tmp_path: Path) -> None:
+    paths = {
+        "config_path": tmp_path / "config.yaml",
+        "inventory_path": tmp_path / "inventory.json",
+        "benchmark_path": tmp_path / "benchmark.json",
+        "suite_path": tmp_path / "suite.json",
+        "v1_artifact_path": tmp_path / "v1.json",
+        "v2_artifact_path": tmp_path / "v2.json",
+        "raw_root": tmp_path,
+        "processed_root": tmp_path,
+        "output_root": tmp_path,
+        "report_path": tmp_path / "report.json",
+    }
+    with pytest.raises(TypeError, match="device"):
+        svx.run_v5_experiment(**paths)
+
+
+def test_run_v5_experiment_rejects_cpu_for_current_science(tmp_path: Path) -> None:
+    paths = {
+        "config_path": tmp_path / "config.yaml",
+        "inventory_path": tmp_path / "inventory.json",
+        "benchmark_path": tmp_path / "benchmark.json",
+        "suite_path": tmp_path / "suite.json",
+        "v1_artifact_path": tmp_path / "v1.json",
+        "v2_artifact_path": tmp_path / "v2.json",
+        "raw_root": tmp_path,
+        "processed_root": tmp_path,
+        "output_root": tmp_path,
+        "report_path": tmp_path / "report.json",
+        "device": "cpu",
+    }
+    with pytest.raises(RuntimeError, match="current scientific execution requires CUDA"):
+        svx.run_v5_experiment(**paths)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
+def test_run_v5_experiment_cuda_current_smoke(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA unavailable")
+    result = _run_mocked_v5(
+        monkeypatch,
+        tmp_path,
+        device="cuda",
+        execution_mode="current",
+    )
+    assert result["provenance"]["requested_device"] == "cuda"
+    assert result["provenance"]["resolved_device"] == "cuda"
 
 
 class TestSourceIdentityProvenance:

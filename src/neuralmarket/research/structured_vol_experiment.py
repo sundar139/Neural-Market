@@ -169,8 +169,25 @@ def run_v5_experiment(
     processed_root: Path,
     output_root: Path,
     report_path: Path,
+    device: str | torch.device,
+    execution_mode: Literal["current", "historical_test"] = "current",
 ) -> dict[str, Any]:
-    """Run the v5 structured volatility experiment."""
+    """Run v5 with an explicit device and fail-closed current-science policy.
+
+    ``historical_test`` is reserved for synthetic or historical CPU fixtures;
+    current scientific execution accepts only CUDA.
+    """
+    if execution_mode not in {"current", "historical_test"}:
+        raise ValueError("execution_mode must be 'current' or 'historical_test'")
+    from neuralmarket.core.device import configure_device_determinism, resolve_device
+
+    requested_device = str(device).strip().lower()
+    if requested_device.startswith("cuda:") and requested_device[5:].isdigit():
+        requested_device = "cuda"
+    resolved_device = resolve_device(requested_device)
+    if execution_mode == "current" and resolved_device.type != "cuda":
+        raise RuntimeError("current scientific execution requires CUDA")
+
     start = datetime.now(UTC)
     source_identity = repository_source_identity()
     config = load_v5_config(config_path)
@@ -206,11 +223,8 @@ def run_v5_experiment(
         split.fit_windows, normalizer, cumret_scale, spec, config.objective
     )
 
-    # Initialize structured volatility model (device explicit)
-    requested = getattr(config, "device", "cpu")
-    from neuralmarket.core.device import configure_device_determinism, resolve_device
-
-    device = resolve_device(str(requested))
+    # Initialize structured volatility model on the already-resolved device.
+    device = resolved_device
     dtype = torch.float32
     configure_determinism(True)
     configure_device_determinism(device, enabled=True)
@@ -398,6 +412,8 @@ def run_v5_experiment(
         "provenance": {
             "evaluation_utc_iso": start.isoformat(),
             "status": status,
+            "requested_device": requested_device,
+            "resolved_device": str(device),
             "note": "Structured volatility hypothesis test",
             "git_commit": source_identity["git_commit"],
             "git_dirty": source_identity["git_dirty"],

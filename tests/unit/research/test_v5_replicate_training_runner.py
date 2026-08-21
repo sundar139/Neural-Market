@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import torch
 
 REPO = Path(__file__).resolve().parents[3]
 RUNNER_PATH = REPO / "reports/research/evidence/structured_vol_v5_replicate_training_runner.py"
@@ -44,13 +45,8 @@ def _make_auth(tmp_path: Path, member_id: str = "v5-seed-02", **overrides) -> Pa
             break
     else:
         v2_blob = __import__("subprocess").run(["git", "hash-object", str(REPO / "reports/research/structured_vol_v5_training_execution_contract_v1.json")], capture_output=True, text=True, check=True).stdout.strip()
-    if False:
-        v2_blob = subprocess.run(
-            ["git", "hash-object", str(v2_path)], capture_output=True, text=True, check=True
-        ).stdout.strip()
-
     base = {
-        "schema_version": "structured-vol-v5-primary-training-authorization-v1",
+        "schema_version": "structured-vol-v5-primary-training-authorization-v2",
         "authorization_task_id": "NM-R4-TEST-AUTH-001",
         "member_id": member_id,
         "replicate_seed": {"v5-seed-02": 9281, "v5-seed-03": 10281, "v5-seed-04": 11281, "v5-seed-05": 12281}[member_id],
@@ -74,6 +70,9 @@ def _make_auth(tmp_path: Path, member_id: str = "v5-seed-02", **overrides) -> Pa
         "final_test_authorized": False,
         "reserve": False,
         "max_training_invocations": 1,
+        "requested_device": "cuda",
+        "expected_resolved_device": "cuda",
+        "expected_runtime_identity_sha256": "a" * 64,
     }
     base.update(overrides)
     auth_path.write_text(json.dumps(base, indent=2) + "\n", encoding="utf-8")
@@ -295,7 +294,18 @@ def _main_with_mocked_auth(member_id, auth_path, extra_monkeypatches=None):
         if isinstance(cmd, list) and 'merge-base' in str(cmd): return type('R', (), {'returncode':0,'stdout':'','stderr':''})()
         return _orig(cmd, *a, **kw)
     with patch.object(_runner, '_is_tracked', return_value=True), patch.object(_runner, '_git_head_blob', side_effect=_mh), patch.object(_runner, '_git_blob', side_effect=_mb), patch.object(_runner, '_is_ancestor', return_value=True):
-        with patch('subprocess.run', side_effect=_mr):
+        with patch('subprocess.run', side_effect=_mr), \
+             patch('neuralmarket.core.device.resolve_device', return_value=torch.device('cuda')), \
+             patch('neuralmarket.core.device.configure_device_determinism'), \
+             patch(
+                 'neuralmarket.core.runtime_identity.build_runtime_identity',
+                 return_value={
+                     'schema_version': 'runtime-identity-v1',
+                     'requested_device': 'cuda',
+                     'resolved_device': 'cuda',
+                     'runtime_identity_sha256': data['expected_runtime_identity_sha256'],
+                 },
+             ):
             return _runner.main(["--member-id", member_id, "--authorization", str(auth_path), "--execute"])
 
 
@@ -813,7 +823,7 @@ def test_no_reserve_fallback(tmp_path: Path):
 def test_no_retry_same_process(monkeypatch: pytest.MonkeyPatch):
     _runner._SCIENTIFIC_INVOCATIONS = 1
     with pytest.raises(RuntimeError, match="exceeded 1"):
-        _runner._run_scientific_training("v5-seed-02", Path("/tmp/a"), Path("/tmp/b"))
+        _runner._run_scientific_training("v5-seed-02", Path("/tmp/a"), Path("/tmp/b"), device=torch.device("cuda"))
     _runner._SCIENTIFIC_INVOCATIONS = 0
 
 

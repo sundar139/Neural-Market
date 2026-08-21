@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import torch
 
 REPO = Path(__file__).resolve().parents[3]
 RUNNER_PATH = REPO / "reports/research/evidence/structured_vol_v5_replicate_training_runner.py"
@@ -96,7 +97,13 @@ def _cleanup(p: Path) -> None:
         pass
 
 
-def _check_with_mocked_git(auth_path: Path, member_id: str, should_raise: bool = True, match: str | None = None):
+def _check_with_mocked_git(
+    auth_path: Path,
+    member_id: str,
+    should_raise: bool = True,
+    match: str | None = None,
+    checker=None,
+):
     """Run check_authorization with mocked git to isolate parsing logic."""
     data = json.loads(auth_path.read_text(encoding="utf-8"))
     blob = subprocess.run(["git", "hash-object", str(auth_path)], capture_output=True, text=True, check=True).stdout.strip()
@@ -151,9 +158,9 @@ def _check_with_mocked_git(auth_path: Path, member_id: str, should_raise: bool =
          patch("subprocess.run", side_effect=_mr):
         if should_raise:
             with pytest.raises(RuntimeError, match=match or ""):
-                _runner.check_authorization(member_id, auth_path)
+                (checker or _runner.check_authorization)(member_id, auth_path)
         else:
-            return _runner.check_authorization(member_id, auth_path)
+            return (checker or _runner.check_authorization)(member_id, auth_path)
 
 
 # --- Authorization v1/v2 parsing ---
@@ -162,10 +169,70 @@ def test_v1_remains_cpu_only(tmp_path: Path):
     _reset()
     auth = _make_v1_auth("v5-seed-02")
     try:
-        data = _check_with_mocked_git(auth, "v5-seed-02", should_raise=False)
+        data = _check_with_mocked_git(
+            auth,
+            "v5-seed-02",
+            should_raise=False,
+            checker=_runner.inspect_authorization,
+        )
         assert data["schema_version"] == "structured-vol-v5-primary-training-authorization-v1"
     finally:
         _cleanup(auth)
+
+
+def test_v1_current_identity_inspects_but_cannot_authorize_execution(tmp_path: Path):
+    auth = _make_v1_auth("v5-seed-02")
+    try:
+        data = _check_with_mocked_git(
+            auth,
+            "v5-seed-02",
+            should_raise=False,
+            checker=_runner.inspect_authorization,
+        )
+        with pytest.raises(RuntimeError, match="schema v1 is historical-only"):
+            _runner.authorize_execution(data)
+    finally:
+        _cleanup(auth)
+
+
+def test_v1_execute_refuses_before_marker_and_science(tmp_path: Path, monkeypatch):
+    _reset()
+    auth = _make_v1_auth("v5-seed-02")
+    fake_report = tmp_path / "report" / _runner.RUN_PREFIXES["v5-seed-02"]
+    fake_model = tmp_path / "model" / _runner.RUN_PREFIXES["v5-seed-02"]
+    monkeypatch.setattr(
+        _runner,
+        "_run_scientific_training",
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("should not train")),
+    )
+    try:
+        rc = _main_with_mocked_v2(auth, "v5-seed-02", fake_report, fake_model, monkeypatch)
+        assert rc == 2
+        assert not (fake_report / "execution_started.json").exists()
+        assert _runner._SCIENTIFIC_INVOCATIONS == 0
+    finally:
+        _cleanup(auth)
+        _reset()
+
+
+def test_v2_cpu_execute_refuses_before_marker_and_science(tmp_path: Path, monkeypatch):
+    _reset()
+    auth = _make_v2_auth("v5-seed-02", "cpu", "cpu", "a" * 64)
+    fake_report = tmp_path / "report_cpu" / _runner.RUN_PREFIXES["v5-seed-02"]
+    fake_model = tmp_path / "model_cpu" / _runner.RUN_PREFIXES["v5-seed-02"]
+    monkeypatch.setattr(
+        _runner,
+        "_run_scientific_training",
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("should not train")),
+    )
+    try:
+        rc = _main_with_mocked_v2(auth, "v5-seed-02", fake_report, fake_model, monkeypatch)
+        assert rc == 2
+        assert not (fake_report / "execution_started.json").exists()
+        assert _runner._SCIENTIFIC_INVOCATIONS == 0
+    finally:
+        _cleanup(auth)
+        _reset()
 
 
 def test_v1_cannot_request_cuda(tmp_path: Path):
@@ -375,9 +442,9 @@ def test_runner_report_device_not_hardcoded_cpu(tmp_path: Path):
 
 
 def test_report_device_propagates_from_runtime_identity(tmp_path: Path, monkeypatch):
-    """Integration: successful v1 run should write requested/resolved + runtime identity."""
+    """Integration: a v2 CUDA run writes requested/resolved + runtime identity."""
     _reset()
-    auth = _make_v1_auth("v5-seed-05")
+    auth = _make_v2_auth("v5-seed-05", "cuda", "cuda", "a" * 64)
     fake_report = tmp_path / "report_ok" / _runner.RUN_PREFIXES["v5-seed-05"]
     fake_model = tmp_path / "model_ok" / _runner.RUN_PREFIXES["v5-seed-05"]
 
@@ -458,7 +525,18 @@ def test_report_device_propagates_from_runtime_identity(tmp_path: Path, monkeypa
              patch.object(_runner, "_is_clean", return_value=True), \
              patch.object(_runner, "_git_head_blob", side_effect=_mh), \
              patch.object(_runner, "_git_blob", side_effect=_mb), \
-             patch.object(_runner, "_is_ancestor", return_value=True):
+             patch.object(_runner, "_is_ancestor", return_value=True), \
+             patch("neuralmarket.core.device.resolve_device", return_value=torch.device("cuda")), \
+             patch("neuralmarket.core.device.configure_device_determinism"), \
+             patch(
+                 "neuralmarket.core.runtime_identity.build_runtime_identity",
+                 return_value={
+                     "schema_version": "runtime-identity-v1",
+                     "requested_device": "cuda",
+                     "resolved_device": "cuda",
+                     "runtime_identity_sha256": "a" * 64,
+                 },
+             ):
             rc = _runner.main(["--member-id", "v5-seed-05", "--authorization", str(auth), "--execute"])
             assert rc == 0, f"expected success, got {rc}"
             started = json.loads((fake_report / "execution_started.json").read_text())
@@ -470,9 +548,9 @@ def test_report_device_propagates_from_runtime_identity(tmp_path: Path, monkeypa
             assert "requested_device" in manifest
             assert "resolved_device" in manifest
             report = json.loads((fake_report / "training_report.json").read_text())
-            # device field must exist and be resolved (cpu on this env)
+            # device field must exist and be resolved to CUDA
             assert "device" in report
-            assert report["device"] in ("cpu", "cuda")
+            assert report["device"] == "cuda"
             assert "runtime_identity_sha256" in report
 
     _cleanup(auth)
