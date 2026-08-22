@@ -172,8 +172,8 @@ def cv_value(mean: float, sd: float | None) -> tuple[float | None, str | None]:
         return None, "mean ~0 — CV undefined"
     return sd / mean, None
 
-def compute_full_and_lomo(members: dict) -> tuple[dict, dict]:
-    order_ids = ["v5-seed-01", "v5-seed-02", "v5-seed-04", "v5-seed-05"]
+def compute_full_and_lomo(members: dict, order_ids: list[str] | None = None) -> tuple[dict, dict]:
+    order_ids = order_ids or ["v5-seed-01", "v5-seed-02", "v5-seed-04", "v5-seed-05"]
     full = {}
     lomo = {}
     for scalar in SCALAR_ORDER:
