@@ -176,10 +176,12 @@ def _cleanup_auth(auth_path: Path):
         auth_path.parent.rmdir()
 
 
-# 1. allowed member dry-run — reserve-j01 is the only reserve without a replicate dir (all primaries now exist)
-def test_allowed_member_dry_run():
+# 1. allowed member dry-run — isolate the overwrite check from real execution artifacts
+def test_allowed_member_dry_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     _reset_invocations()
-    # Use reserve-j01 as the dry-run eligible member post-081 (j01 has no report/model dir)
+    prefix = _runner.RUN_PREFIXES["reserve-j01"]
+    monkeypatch.setattr(_runner, "derive_report_dir", lambda _prefix: tmp_path / "report" / prefix)
+    monkeypatch.setattr(_runner, "derive_model_dir", lambda _prefix: tmp_path / "model" / prefix)
     rc = _runner.main(["--member-id", "reserve-j01"])
     assert rc == 0
     _reset_invocations()
@@ -1000,12 +1002,14 @@ def test_positive_mocked_j01_traverses_to_pre_scientific_boundary(tmp_path: Path
     monkeypatch.setattr(_runner, "_run_scientific_training", fake_sci)
     monkeypatch.setattr(_runner, "derive_report_dir", lambda p: fake_report if p == prefix else _runner.derive_report_dir(p))
     monkeypatch.setattr(_runner, "derive_model_dir", lambda p: fake_model if p == prefix else _runner.derive_model_dir(p))
+    production_marker = REPO / "reports/research/structured_vol_v5_replicates" / prefix / "execution_started.json"
+    production_marker_existed = production_marker.exists()
     try:
         rc = _main_with_mocked_auth("reserve-j01", auth)
         assert rc == 0
         assert marker_calls["n"] == 1
         assert sci_calls["n"] == 1
-        assert not (REPO / "reports/research/structured_vol_v5_replicates" / prefix / "execution_started.json").exists()
+        assert production_marker.exists() == production_marker_existed
     finally:
         _cleanup_auth(auth)
         _reset_invocations()
