@@ -1,10 +1,10 @@
 """Targeted tests for the per-member v5 replicate training runner (no training)."""
 from __future__ import annotations
 
-import hashlib
+import importlib.util
 import json
 import subprocess
-import sys
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from unittest.mock import patch
 
@@ -13,8 +13,8 @@ import torch
 
 REPO = Path(__file__).resolve().parents[3]
 RUNNER_PATH = REPO / "reports/research/evidence/structured_vol_v5_replicate_training_runner.py"
-
-import importlib.util
+AUTH_FIXTURE_ROOT = REPO / "tests/.pytest_cache/v5_replicate_auth"
+RECIPE_BASE = "5e28384be24c898b7a3b1182ad6d944307398db0"
 
 spec = importlib.util.spec_from_file_location("v5_runner", str(RUNNER_PATH))
 assert spec and spec.loader
@@ -26,12 +26,96 @@ spec.loader.exec_module(_runner)  # type: ignore[union-attr]
 EXPECTED_RUNTIME_SHA_VALID = "b" * 64
 EXPECTED_RUNTIME_SHA_MISMATCH = "c" * 64
 
-def _independent_contract_blob():
-    """Compute real committed execution-contract blob from repo bytes."""
+
+def _independent_blob(path: Path) -> str:
     return subprocess.run(
-        ["git", "hash-object", str(REPO / "reports/research/structured_vol_v5_training_execution_contract_v5.json")],
-        capture_output=True, text=True, check=True,
+        ["git", "hash-object", str(path)],
+        cwd=str(REPO),
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout.strip()
+
+
+def _independent_contract_blob():
+    """Compute the real runner-referenced contract blob from repository bytes."""
+    return _independent_blob(_runner.EXEC_CONTRACT_PATH)
+
+
+def _recipe_blob(commit: str, path: Path) -> str:
+    rel = path.relative_to(REPO).as_posix()
+    return subprocess.run(
+        ["git", "rev-parse", f"{commit}:{rel}"],
+        cwd=str(REPO),
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+
+
+def _select_recipe_head() -> str:
+    """Select the newest local commit after the frozen j01 recipe base."""
+    commits = subprocess.run(
+        ["git", "rev-list", "--ancestry-path", "--reverse", f"{RECIPE_BASE}..HEAD"],
+        cwd=str(REPO),
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+    expected = {
+        RUNNER_PATH: _independent_blob(RUNNER_PATH),
+        _runner.EXEC_CONTRACT_PATH: _independent_contract_blob(),
+        _runner.FROZEN_SCHEDULE_PATH: _runner.FROZEN_SCHEDULE_BLOB,
+    }
+    for commit in reversed(commits):
+        if all(_recipe_blob(commit, path) == blob for path, blob in expected.items()):
+            return commit
+    raise AssertionError(
+        "no local recipe commit contains the frozen runner, contract, and schedule"
+    )
+
+
+EXPECTED_RUNNER_BLOB = _independent_blob(RUNNER_PATH)
+EXPECTED_CONTRACT_BLOB = _independent_contract_blob()
+EXPECTED_RECIPE_HEAD = _select_recipe_head()
+
+
+def _same_auth_path(path: Path, auth_path: Path) -> bool:
+    return Path(path).resolve() == auth_path.resolve()
+
+
+@contextmanager
+def _synthetic_auth_provenance(auth_path: Path):
+    """Patch only the ignored synthetic auth path; all production paths use real Git."""
+    real_is_tracked = _runner._is_tracked
+    real_is_clean = _runner._is_clean
+    real_git_head_blob = _runner._git_head_blob
+    real_git_blob = _runner._git_blob
+    real_is_ancestor = _runner._is_ancestor
+
+    def is_tracked(path):
+        return True if _same_auth_path(path, auth_path) else real_is_tracked(path)
+
+    def is_clean(path):
+        return True if _same_auth_path(path, auth_path) else real_is_clean(path)
+
+    def git_head_blob(path):
+        if _same_auth_path(path, auth_path):
+            return real_git_blob(auth_path)
+        return real_git_head_blob(path)
+
+    def git_blob(path):
+        return real_git_blob(path)
+
+    def is_ancestor(ancestor, head=None):
+        return ancestor == EXPECTED_RECIPE_HEAD and real_is_ancestor(ancestor, head)
+
+    with patch.object(_runner, "_is_tracked", side_effect=is_tracked), \
+         patch.object(_runner, "_is_clean", side_effect=is_clean), \
+         patch.object(_runner, "_git_head_blob", side_effect=git_head_blob), \
+         patch.object(_runner, "_git_blob", side_effect=git_blob), \
+         patch.object(_runner, "_is_ancestor", side_effect=is_ancestor):
+        yield
 
 def _reset_invocations():
     _runner._SCIENTIFIC_INVOCATIONS = 0
@@ -41,41 +125,34 @@ def _reset_invocations():
 
 
 def _make_auth(tmp_path: Path, member_id: str = "v5-seed-02", **overrides) -> Path:
-    """Create a tracked, clean authorization JSON for member_id in REPO (not tmp)."""
-    # Place auth inside REPO so it can be tracked
-    auth_dir = REPO / "reports/research/structured_vol_v5_replicates" / "_test_auth"
+    """Create an ignored synthetic authorization under the repository test cache."""
+    auth_dir = AUTH_FIXTURE_ROOT
     auth_dir.mkdir(parents=True, exist_ok=True)
     auth_path = auth_dir / f"auth_{member_id}.json"
-    # Contract v2 blob: use v2 if tracked, else use hash of on-disk v2 (pre-commit phase)
-    from pathlib import Path as _P
-
-    for cand in ["reports/research/structured_vol_v5_training_execution_contract_v5.json", "reports/research/structured_vol_v5_training_execution_contract_v2.json"]:
-        cp = REPO / cand
-        if cp.exists():
-            v2_blob = __import__("subprocess").run(["git", "hash-object", str(cp)], capture_output=True, text=True, check=True).stdout.strip()
-            break
-    else:
-        v2_blob = __import__("subprocess").run(["git", "hash-object", str(REPO / "reports/research/structured_vol_v5_training_execution_contract_v1.json")], capture_output=True, text=True, check=True).stdout.strip()
+    seed_map = {
+        "v5-seed-02": (9281, 9282),
+        "v5-seed-03": (10281, 10282),
+        "v5-seed-04": (11281, 11282),
+        "v5-seed-05": (12281, 12282),
+        "reserve-j01": (13281, 13282),
+    }
+    replicate_seed, data_seed = seed_map[member_id]
     base = {
         "schema_version": "structured-vol-v5-primary-training-authorization-v2",
         "authorization_task_id": "NM-R4-TEST-AUTH-001",
         "member_id": member_id,
-        "replicate_seed": {"v5-seed-02": 9281, "v5-seed-03": 10281, "v5-seed-04": 11281, "v5-seed-05": 12281}[member_id],
-        "model_init_seed": {"v5-seed-02": 9281, "v5-seed-03": 10281, "v5-seed-04": 11281, "v5-seed-05": 12281}[member_id],
-        "data_seed": {"v5-seed-02": 9282, "v5-seed-03": 10282, "v5-seed-04": 11282, "v5-seed-05": 12282}[member_id],
+        "replicate_seed": replicate_seed,
+        "model_init_seed": replicate_seed,
+        "data_seed": data_seed,
         "eval_seed": 8283,
         "full_config_hash": _runner.EXPECTED_CONFIG_HASHES[member_id],
         "run_prefix": _runner.RUN_PREFIXES[member_id],
         "family_methodology_identity": _runner.EXPECTED_FAMILY_HASH,
         "schedule_git_blob": _runner.FROZEN_SCHEDULE_BLOB,
         "schedule_sha256": _runner.FROZEN_SCHEDULE_SHA,
-        "execution_contract_git_blob": v2_blob,
-        "runner_git_blob": subprocess.run(
-            ["git", "hash-object", str(RUNNER_PATH)], capture_output=True, text=True, check=True
-        ).stdout.strip(),
-        "execution_recipe_head": subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=str(REPO), capture_output=True, text=True, check=True
-        ).stdout.strip(),
+        "execution_contract_git_blob": EXPECTED_CONTRACT_BLOB,
+        "runner_git_blob": EXPECTED_RUNNER_BLOB,
+        "execution_recipe_head": EXPECTED_RECIPE_HEAD,
         "training_authorized": True,
         "validation_authorized": False,
         "final_test_authorized": False,
@@ -87,21 +164,16 @@ def _make_auth(tmp_path: Path, member_id: str = "v5-seed-02", **overrides) -> Pa
     }
     base.update(overrides)
     auth_path.write_text(json.dumps(base, indent=2) + "\n", encoding="utf-8")
-    subprocess.run(["git", "add", str(auth_path)], cwd=str(REPO), capture_output=True, check=False)
+
     return auth_path
 
 
 def _cleanup_auth(auth_path: Path):
-    subprocess.run(["git", "reset", "HEAD", "--", str(auth_path)], cwd=str(REPO), capture_output=True, check=False)
-    try:
+
+    with suppress(FileNotFoundError):
         auth_path.unlink()
-    except FileNotFoundError:
-        pass
-    # Remove empty parent
-    try:
+    with suppress(OSError):
         auth_path.parent.rmdir()
-    except OSError:
-        pass
 
 
 # 1. allowed member dry-run — reserve-j01 is the only reserve without a replicate dir (all primaries now exist)
@@ -204,9 +276,15 @@ def test_untracked_auth_refused(tmp_path: Path):
 def test_dirty_auth_refused(tmp_path: Path):
     auth = _make_auth(tmp_path, "v5-seed-02")
     auth.write_text(auth.read_text(encoding="utf-8") + "\n# dirty\n", encoding="utf-8")
+    real_git_head_blob = _runner._git_head_blob
     try:
-        with pytest.raises(RuntimeError, match="not committed|not clean|unstaged"):
-            _runner.check_authorization("v5-seed-02", auth)
+        with _synthetic_auth_provenance(auth), patch.object(
+            _runner,
+            "_git_head_blob",
+            side_effect=lambda path: "0" * 40 if _same_auth_path(path, auth) else real_git_head_blob(path),
+        ):
+            with pytest.raises(RuntimeError, match="worktree blob != HEAD blob"):
+                _runner.check_authorization("v5-seed-02", auth)
     finally:
         _cleanup_auth(auth)
 
@@ -217,150 +295,44 @@ def test_incomplete_auth_refused(tmp_path: Path):
     data = json.loads(auth.read_text(encoding="utf-8"))
     del data["schedule_git_blob"]
     auth.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    subprocess.run(["git", "add", str(auth)], cwd=str(REPO), capture_output=True, check=False)
+
     try:
         _check_with_mock(auth, "v5-seed-02", "missing required field")
     finally:
         _cleanup_auth(auth)
 
 
-def _check_with_mock(auth_path, member_id, expected_match):
-    import subprocess as _sp
-    from unittest.mock import patch
-    data = __import__('json').loads(auth_path.read_text(encoding='utf-8'))
-    rb = data.get('runner_git_blob', 'x')
-    cb = data.get('execution_contract_git_blob', 'x')
-    sb = data.get('schedule_git_blob', 'x')
-    # For stale head 0*40, ancestor check should fail
-    is_stale = data.get('execution_recipe_head') == '0' * 40
-    blob = _sp.run(['git', 'hash-object', str(auth_path)], capture_output=True, text=True, check=True).stdout.strip()
-    def _mb(path):
-        s = str(path)
-        if s == str(auth_path): return blob
-        if 'replicate_training_runner' in s:
-            import subprocess as _sp2
-            return _sp2.run(['git', 'hash-object', str(__import__('pathlib').Path('reports/research/evidence/structured_vol_v5_replicate_training_runner.py'))], capture_output=True, text=True, check=True).stdout.strip()
-        if 'training_execution_contract' in s:
-            import subprocess as _sp2b
-            # Return correct contract blob to trigger mismatch when data has wrong
-            return _sp2b.run(['git', 'hash-object', 'reports/research/structured_vol_v5_training_execution_contract_v2.json'], capture_output=True, text=True, check=True).stdout.strip()
-        if 'seed_schedule' in s: return sb
-        return blob
-    def _mh(path):
-        s = str(path)
-        if 'replicate_training_runner' in s:
-            import subprocess as _sp3
-            try: return _sp3.run(['git', 'hash-object', 'reports/research/evidence/structured_vol_v5_replicate_training_runner.py'], capture_output=True, text=True, check=True).stdout.strip()
-            except: return rb
-        if 'training_execution_contract' in s: return cb
-        if 'seed_schedule' in s: return sb
-        return blob
-    with patch.object(_runner, '_is_tracked', return_value=True), patch.object(_runner, '_is_clean', return_value=True), patch.object(_runner, '_git_head_blob', side_effect=_mh), patch.object(_runner, '_git_blob', side_effect=_mb), patch.object(_runner, '_is_ancestor', return_value=False if is_stale else True):
-        _orig = _sp.run
-        def _mr(cmd, *a, **kw):
-            if isinstance(cmd, list) and 'rev-parse' in str(cmd):
-                ac = str(cmd[-1]) if cmd else ''
-                if 'replicate_training_runner' in ac: return type('R', (), {'returncode':0,'stdout':rb+chr(10),'stderr':''})()
-                if 'training_execution_contract' in ac: return type('R', (), {'returncode':0,'stdout':cb+chr(10),'stderr':''})()
-                if 'seed_schedule' in ac: return type('R', (), {'returncode':0,'stdout':sb+chr(10),'stderr':''})()
-            if isinstance(cmd, list) and 'diff' in str(cmd): return type('R', (), {'returncode':0,'stdout':'','stderr':''})()
-            if isinstance(cmd, list) and 'merge-base' in str(cmd): return type('R', (), {'returncode':0,'stdout':'','stderr':''})()
-            return _orig(cmd, *a, **kw)
-        with patch('subprocess.run', side_effect=_mr):
-            with __import__('pytest').raises(RuntimeError, match=expected_match):
-                _runner.check_authorization(member_id, auth_path)
+def _check_with_mock(auth_path: Path, member_id: str, expected_match: str) -> str:
+    with _synthetic_auth_provenance(auth_path), pytest.raises(
+        RuntimeError, match=expected_match
+    ) as exc_info:
+        _runner.check_authorization(member_id, auth_path)
+    return str(exc_info.value)
 
 
-def _main_with_mocked_auth(member_id, auth_path, extra_monkeypatches=None):
-    """Run main with mocked committed git boundary for auth."""
-    import subprocess as _sp
-    from unittest.mock import patch
-    data = __import__('json').loads(auth_path.read_text(encoding='utf-8'))
-    rb = data.get('runner_git_blob', 'x')
-    cb = data.get('execution_contract_git_blob', 'x')
-    sb = data.get('schedule_git_blob', 'x')
-    blob = _sp.run(['git', 'hash-object', str(auth_path)], capture_output=True, text=True, check=True).stdout.strip()
-    def _mb(path):
-        s = str(path)
-        if s == str(auth_path): return blob
-        if 'replicate_training_runner' in s:
-            import subprocess as _sp2
-            try: return _sp2.run(['git', 'hash-object', 'reports/research/evidence/structured_vol_v5_replicate_training_runner.py'], capture_output=True, text=True, check=True).stdout.strip()
-            except: return rb
-        if 'training_execution_contract' in s: return cb
-        if 'seed_schedule' in s: return sb
-        return blob
-    def _mh(path):
-        s = str(path)
-        if 'replicate_training_runner' in s:
-            import subprocess as _sp3
-            try: return _sp3.run(['git', 'hash-object', 'reports/research/evidence/structured_vol_v5_replicate_training_runner.py'], capture_output=True, text=True, check=True).stdout.strip()
-            except: return rb
-        if 'training_execution_contract' in s: return cb
-        if 'seed_schedule' in s: return sb
-        return blob
-    _orig = _sp.run
-    def _mr(cmd, *a, **kw):
-        if isinstance(cmd, list) and 'rev-parse' in str(cmd):
-            ac = str(cmd[-1]) if cmd else ''
-            if 'replicate_training_runner' in ac: return type('R', (), {'returncode':0,'stdout':rb+chr(10),'stderr':''})()
-            if 'training_execution_contract' in ac: return type('R', (), {'returncode':0,'stdout':cb+chr(10),'stderr':''})()
-            if 'seed_schedule' in ac: return type('R', (), {'returncode':0,'stdout':sb+chr(10),'stderr':''})()
-        if isinstance(cmd, list) and 'diff' in str(cmd): return type('R', (), {'returncode':0,'stdout':'','stderr':''})()
-        if isinstance(cmd, list) and 'merge-base' in str(cmd): return type('R', (), {'returncode':0,'stdout':'','stderr':''})()
-        return _orig(cmd, *a, **kw)
-    with patch.object(_runner, '_is_tracked', return_value=True), patch.object(_runner, '_git_head_blob', side_effect=_mh), patch.object(_runner, '_git_blob', side_effect=_mb), patch.object(_runner, '_is_ancestor', return_value=True):
-        with patch('subprocess.run', side_effect=_mr), \
-             patch('neuralmarket.core.device.resolve_device', return_value=torch.device('cuda')), \
-             patch('neuralmarket.core.device.configure_device_determinism'), \
-             patch(
-                 'neuralmarket.core.runtime_identity.build_runtime_identity',
-                 return_value={
-                     'schema_version': 'runtime-identity-v1',
-                     'requested_device': 'cuda',
-                     'resolved_device': 'cuda',
-                     'runtime_identity_sha256': EXPECTED_RUNTIME_SHA_VALID,
-                 },
-             ):
-            return _runner.main(["--member-id", member_id, "--authorization", str(auth_path), "--execute"])
 
+def _main_with_mocked_auth(
+    member_id: str,
+    auth_path: Path,
+    runtime_sha: str = EXPECTED_RUNTIME_SHA_VALID,
+):
+    """Run the real main/auth path with provenance patched only for synthetic auth."""
+    with _synthetic_auth_provenance(auth_path), \
+         patch("neuralmarket.core.device.resolve_device", return_value=torch.device("cuda")), \
+         patch("neuralmarket.core.device.configure_device_determinism"), \
+         patch(
+             "neuralmarket.core.runtime_identity.build_runtime_identity",
+             return_value={
+                 "schema_version": "runtime-identity-v1",
+                 "requested_device": "cuda",
+                 "resolved_device": "cuda",
+                 "runtime_identity_sha256": runtime_sha,
+             },
+         ):
+        return _runner.main(
+            ["--member-id", member_id, "--authorization", str(auth_path), "--execute"]
+        )
 
-def _check_with_mock(auth_path, member_id, expected_match):
-    import subprocess as _sp
-    from unittest.mock import patch
-    data = __import__('json').loads(auth_path.read_text(encoding='utf-8'))
-    rb = data.get('runner_git_blob', 'x')
-    cb = data.get('execution_contract_git_blob', 'x')
-    sb = data.get('schedule_git_blob', 'x')
-    is_stale = data.get('execution_recipe_head') == '0' * 40
-    blob = _sp.run(['git', 'hash-object', str(auth_path)], capture_output=True, text=True, check=True).stdout.strip()
-    def _mb(path):
-        s = str(path)
-        if s == str(auth_path): return blob
-        if 'replicate_training_runner' in s: return rb
-        if 'training_execution_contract' in s: return cb
-        if 'seed_schedule' in s: return sb
-        return blob
-    def _mh(path):
-        s = str(path)
-        if 'replicate_training_runner' in s: return rb
-        if 'training_execution_contract' in s: return cb
-        if 'seed_schedule' in s: return sb
-        return blob
-    with patch.object(_runner, '_is_tracked', return_value=True), patch.object(_runner, '_is_clean', return_value=True), patch.object(_runner, '_git_head_blob', side_effect=_mh), patch.object(_runner, '_git_blob', side_effect=_mb), patch.object(_runner, '_is_ancestor', return_value=False if is_stale else True):
-        _orig = _sp.run
-        def _mr(cmd, *a, **kw):
-            if isinstance(cmd, list) and 'rev-parse' in str(cmd):
-                ac = str(cmd[-1]) if cmd else ''
-                if 'replicate_training_runner' in ac: return type('R', (), {'returncode':0,'stdout':rb+chr(10),'stderr':''})()
-                if 'training_execution_contract' in ac: return type('R', (), {'returncode':0,'stdout':cb+chr(10),'stderr':''})()
-                if 'seed_schedule' in ac: return type('R', (), {'returncode':0,'stdout':sb+chr(10),'stderr':''})()
-            if isinstance(cmd, list) and 'diff' in str(cmd): return type('R', (), {'returncode':0,'stdout':'','stderr':''})()
-            if isinstance(cmd, list) and 'merge-base' in str(cmd): return type('R', (), {'returncode':0,'stdout':'','stderr':''})()
-            return _orig(cmd, *a, **kw)
-        with patch('subprocess.run', side_effect=_mr):
-            with __import__('pytest').raises(RuntimeError, match=expected_match):
-                _runner.check_authorization(member_id, auth_path)
 
 # 13. hostile validation_authorized=true refused
 def test_hostile_validation_true_refused(tmp_path: Path):
@@ -408,18 +380,11 @@ def test_wrong_seed_tuple_refused(tmp_path: Path):
 
 
 # 18. wrong runner blob refused
+
 def test_wrong_runner_blob_refused(tmp_path: Path):
     auth = _make_auth(tmp_path, "v5-seed-02", runner_git_blob="deadbeef" * 5)
     try:
-        _runner.check_authorization("v5-seed-02", auth)
-        assert False, "should have raised"
-    except RuntimeError as e:
-        if "runner_git_blob mismatch" in str(e):
-            pass  # expected
-        elif "not committed" in str(e):
-            __import__('pytest').skip("requires committed auth")
-        else:
-            raise
+        _check_with_mock(auth, "v5-seed-02", "runner_git_blob mismatch")
     finally:
         _cleanup_auth(auth)
 
@@ -428,18 +393,9 @@ def test_wrong_runner_blob_refused(tmp_path: Path):
 def test_wrong_contract_blob_refused(tmp_path: Path):
     auth = _make_auth(tmp_path, "v5-seed-02", execution_contract_git_blob="deadbeef" * 5)
     try:
-        _runner.check_authorization("v5-seed-02", auth)
-        assert False, "should have raised"
-    except RuntimeError as e:
-        if "execution_contract_git_blob mismatch" in str(e):
-            pass
-        elif "not committed" in str(e):
-            __import__('pytest').skip("requires committed auth")
-        else:
-            raise
+        _check_with_mock(auth, "v5-seed-02", "execution_contract_git_blob mismatch")
     finally:
         _cleanup_auth(auth)
-
 
 # 20. stale/wrong recipe HEAD refused
 def test_stale_recipe_head_refused(tmp_path: Path):
@@ -447,7 +403,7 @@ def test_stale_recipe_head_refused(tmp_path: Path):
     data = json.loads(auth.read_text(encoding="utf-8"))
     data["execution_recipe_head"] = "0" * 40
     auth.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    subprocess.run(["git", "add", str(auth)], cwd=str(REPO), capture_output=True, check=False)
+
     try:
         _check_with_mock(auth, "v5-seed-02", "execution_recipe_head invalid|not ancestor")
     finally:
@@ -910,55 +866,8 @@ def test_j01_eligibility_not_generic_reserve():
 
 
 def _make_auth_for_member(tmp_path: Path, member_id: str, **overrides) -> Path:
-    """Helper for reserve-j01 authorization tests — mirrors _make_auth but adds j01 to known seed map."""
-    auth_dir = REPO / "reports/research/structured_vol_v5_replicates" / "_test_auth"
-    auth_dir.mkdir(parents=True, exist_ok=True)
-    auth_path = auth_dir / f"auth_{member_id}.json"
-    for cand in ["reports/research/structured_vol_v5_training_execution_contract_v5.json", "reports/research/structured_vol_v5_training_execution_contract_v2.json"]:
-        cp = REPO / cand
-        if cp.exists():
-            v2_blob = subprocess.run(["git", "hash-object", str(cp)], capture_output=True, text=True, check=True).stdout.strip()
-            break
-    else:
-        v2_blob = subprocess.run(["git", "hash-object", str(REPO / "reports/research/structured_vol_v5_training_execution_contract_v1.json")], capture_output=True, text=True, check=True).stdout.strip()
-    seed_map = {
-        "v5-seed-02": (9281, 9282),
-        "v5-seed-03": (10281, 10282),
-        "v5-seed-04": (11281, 11282),
-        "v5-seed-05": (12281, 12282),
-        "reserve-j01": (13281, 13282),
-    }
-    replicate_seed, model_init_seed = seed_map[member_id][0], seed_map[member_id][0]
-    data_seed = seed_map[member_id][1]
-    base = {
-        "schema_version": "structured-vol-v5-primary-training-authorization-v2",
-        "authorization_task_id": "NM-R4-TEST-AUTH-001",
-        "member_id": member_id,
-        "replicate_seed": replicate_seed,
-        "model_init_seed": model_init_seed,
-        "data_seed": data_seed,
-        "eval_seed": 8283,
-        "full_config_hash": _runner.EXPECTED_CONFIG_HASHES[member_id],
-        "run_prefix": _runner.RUN_PREFIXES[member_id],
-        "family_methodology_identity": _runner.EXPECTED_FAMILY_HASH,
-        "schedule_git_blob": _runner.FROZEN_SCHEDULE_BLOB,
-        "schedule_sha256": _runner.FROZEN_SCHEDULE_SHA,
-        "execution_contract_git_blob": v2_blob,
-        "runner_git_blob": subprocess.run(["git", "hash-object", str(RUNNER_PATH)], capture_output=True, text=True, check=True).stdout.strip(),
-        "execution_recipe_head": subprocess.run(["git", "rev-parse", "HEAD"], cwd=str(REPO), capture_output=True, text=True, check=True).stdout.strip(),
-        "training_authorized": True,
-        "validation_authorized": False,
-        "final_test_authorized": False,
-        "reserve": False,
-        "max_training_invocations": 1,
-        "requested_device": "cuda",
-        "expected_resolved_device": "cuda",
-        "expected_runtime_identity_sha256": EXPECTED_RUNTIME_SHA_VALID,
-    }
-    base.update(overrides)
-    auth_path.write_text(json.dumps(base, indent=2) + "\n", encoding="utf-8")
-    subprocess.run(["git", "add", str(auth_path)], cwd=str(REPO), capture_output=True, check=False)
-    return auth_path
+    """Create a reserve-j01 synthetic authorization in the ignored test cache."""
+    return _make_auth(tmp_path, member_id, **overrides)
 
 
 def test_j01_without_authorization_fail_closed(tmp_path: Path):
@@ -974,7 +883,7 @@ def test_j01_wrong_member_rejected(tmp_path: Path):
     data = json.loads(auth.read_text(encoding="utf-8"))
     data["member_id"] = "v5-seed-02"
     auth.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-    subprocess.run(["git", "add", str(auth)], cwd=str(REPO), capture_output=True, check=False)
+
     try:
         _check_with_mock(auth, "reserve-j01", "member_id mismatch")
     finally:
@@ -1036,23 +945,33 @@ def test_reserve_j01_runner_eligible_via_eligible_constant():
 
 
 def test_positive_mocked_j01_traverses_to_pre_scientific_boundary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    """Positive synthetic reserve-j01 auth traverses eligibility->config->family->auth-v2->CUDA/runtime to pre-scientific boundary."""
+    """Positive reserve-j01 auth traverses independent identity checks to the boundary."""
     _reset_invocations()
-    if not _runner.EXEC_CONTRACT_PATH.exists():
-        pytest.skip("contract v2 not yet created")
     auth = _make_auth_for_member(tmp_path, "reserve-j01")
+    auth_data = json.loads(auth.read_text(encoding="utf-8"))
+    independent_contract = _independent_contract_blob()
+    assert auth_data["runner_git_blob"] == EXPECTED_RUNNER_BLOB == "a79a79f477429d66cc7fc0c75db7c751726ee577"
+    assert auth_data["execution_contract_git_blob"] == independent_contract
+    assert auth_data["execution_recipe_head"] == EXPECTED_RECIPE_HEAD
+    assert _recipe_blob(EXPECTED_RECIPE_HEAD, RUNNER_PATH) == EXPECTED_RUNNER_BLOB
+    assert _recipe_blob(EXPECTED_RECIPE_HEAD, _runner.EXEC_CONTRACT_PATH) == independent_contract
+    assert _recipe_blob(EXPECTED_RECIPE_HEAD, _runner.FROZEN_SCHEDULE_PATH) == _runner.FROZEN_SCHEDULE_BLOB
+    assert auth_data["expected_runtime_identity_sha256"] == EXPECTED_RUNTIME_SHA_VALID
+
     prefix = _runner.RUN_PREFIXES["reserve-j01"]
     fake_report = tmp_path / "report" / prefix
     fake_model = tmp_path / "model" / prefix
     marker_calls = {"n": 0}
-    def fake_marker(report_dir, member_id, prefix_arg, auth_data, auth_path, **kw):
+
+    def fake_marker(report_dir, member_id, prefix_arg, authorization, auth_path, **kw):
         marker_calls["n"] += 1
         assert member_id == "reserve-j01"
         assert prefix_arg == prefix
-        assert auth_data["member_id"] == "reserve-j01"
-        assert auth_data["full_config_hash"] == _runner.EXPECTED_CONFIG_HASHES["reserve-j01"]
+        assert authorization["execution_contract_git_blob"] == independent_contract
         return fake_report / "execution_started.json"
+
     sci_calls = {"n": 0}
+
     def fake_sci(member_id, report_dir, model_dir, *args, **kwargs):
         sci_calls["n"] += 1
         _runner._SCIENTIFIC_INVOCATIONS += 1
@@ -1076,14 +995,14 @@ def test_positive_mocked_j01_traverses_to_pre_scientific_boundary(tmp_path: Path
             "training_start_utc": "2026-08-22T00:00:00+00:00",
             "training_end_utc": "2026-08-22T01:00:00+00:00",
         }
+
     monkeypatch.setattr(_runner, "_exclusive_create_execution_started", fake_marker)
     monkeypatch.setattr(_runner, "_run_scientific_training", fake_sci)
     monkeypatch.setattr(_runner, "derive_report_dir", lambda p: fake_report if p == prefix else _runner.derive_report_dir(p))
     monkeypatch.setattr(_runner, "derive_model_dir", lambda p: fake_model if p == prefix else _runner.derive_model_dir(p))
-    assert _runner.EXPECTED_RESERVE_J01_TUPLE == ("reserve-j01", 13281, 13282, 8283)
     try:
         rc = _main_with_mocked_auth("reserve-j01", auth)
-        assert rc == 0, f"positive j01 auth should traverse to COMPLETED, got rc={rc}"
+        assert rc == 0
         assert marker_calls["n"] == 1
         assert sci_calls["n"] == 1
         assert not (REPO / "reports/research/structured_vol_v5_replicates" / prefix / "execution_started.json").exists()
@@ -1092,164 +1011,90 @@ def test_positive_mocked_j01_traverses_to_pre_scientific_boundary(tmp_path: Path
         _reset_invocations()
 
 
-def test_reserve_j01_runner_eligible_via_eligible_constant():
-    """EXPECTED_RESERVE_J01_TUPLE constant covered without modifying runner."""
-    assert _runner.EXPECTED_RESERVE_J01_TUPLE == ("reserve-j01", 13281, 13282, 8283)
-
-
-def test_positive_mocked_j01_traverses_to_pre_scientific_boundary(tmp_path, monkeypatch):
-    """Positive synthetic j01 auth traverses all layers to pre-scientific boundary with mocked marker/training."""
+def test_j01_runtime_identity_mismatch_refused_before_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Runtime observed-vs-expected mismatch refuses before marker and science."""
     _reset_invocations()
-    if not _runner.EXEC_CONTRACT_PATH.exists():
-        pytest.skip("contract v5 not yet created")
     auth = _make_auth_for_member(tmp_path, "reserve-j01")
     prefix = _runner.RUN_PREFIXES["reserve-j01"]
     fake_report = tmp_path / "report" / prefix
     fake_model = tmp_path / "model" / prefix
     marker_calls = {"n": 0}
-    def fake_marker(rd, mid, pfx, ad, ap, **kw):
-        marker_calls["n"] += 1
-        assert mid == "reserve-j01"
-        assert ad["full_config_hash"] == _runner.EXPECTED_CONFIG_HASHES["reserve-j01"]
-        return fake_report / "execution_started.json"
     sci_calls = {"n": 0}
-    def fake_sci(mid, rd, md, *a, **kw):
-        sci_calls["n"] += 1
-        _runner._SCIENTIFIC_INVOCATIONS += 1
-        return {"config_hash": _runner.EXPECTED_CONFIG_HASHES[mid], "run_prefix": _runner.RUN_PREFIXES[mid],
-                "checkpoint_path": str(md / "checkpoint.pt"), "checkpoint_sha256": "a"*64,
-                "curve_path": str(md / "training_curve.json"), "curve_sha256": "b"*64,
-                "final_checkpoint_path": None, "final_checkpoint_sha256": None,
-                "gate_diagnostics": {"variance_ratio": 1.0}, "gate_passed": True,
-                "best_epoch": 10, "initial_internal_rbf": 1.0, "best_internal_rbf": 0.5,
-                "training_series_sha256": "4863b2cc63a09ffb03bbe455c7859c46b521b6f7bef8212e0e3876ac8488669c",
-                "fit_window_count": 672, "selection_window_count": 107,
-                "training_start_utc": "2026-08-22T00:00:00+00:00", "training_end_utc": "2026-08-22T01:00:00+00:00"}
-    monkeypatch.setattr(_runner, "_exclusive_create_execution_started", fake_marker)
-    monkeypatch.setattr(_runner, "_run_scientific_training", fake_sci)
+
+    monkeypatch.setattr(_runner, "_exclusive_create_execution_started", lambda *a, **k: marker_calls.__setitem__("n", marker_calls["n"] + 1))
+    monkeypatch.setattr(_runner, "_run_scientific_training", lambda *a, **k: sci_calls.__setitem__("n", sci_calls["n"] + 1))
     monkeypatch.setattr(_runner, "derive_report_dir", lambda p: fake_report if p == prefix else _runner.derive_report_dir(p))
     monkeypatch.setattr(_runner, "derive_model_dir", lambda p: fake_model if p == prefix else _runner.derive_model_dir(p))
-    assert _runner.EXPECTED_RESERVE_J01_TUPLE == ("reserve-j01", 13281, 13282, 8283)
+    try:
+        rc = _main_with_mocked_auth("reserve-j01", auth, EXPECTED_RUNTIME_SHA_MISMATCH)
+        assert rc == 2
+        assert marker_calls["n"] == 0
+        assert sci_calls["n"] == 0
+    finally:
+        _cleanup_auth(auth)
+        _reset_invocations()
+
+
+def test_j01_wrong_runner_blob_rejected_before_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Wrong runner blob refuses before marker and science against the frozen runner blob."""
+    auth = _make_auth_for_member(tmp_path, "reserve-j01", runner_git_blob="e" * 64)
+    prefix = _runner.RUN_PREFIXES["reserve-j01"]
+    marker_calls = {"n": 0}
+    sci_calls = {"n": 0}
+    monkeypatch.setattr(_runner, "_exclusive_create_execution_started", lambda *a, **k: marker_calls.__setitem__("n", marker_calls["n"] + 1))
+    monkeypatch.setattr(_runner, "_run_scientific_training", lambda *a, **k: sci_calls.__setitem__("n", sci_calls["n"] + 1))
+    monkeypatch.setattr(_runner, "derive_report_dir", lambda p: tmp_path / "report" / prefix)
+    monkeypatch.setattr(_runner, "derive_model_dir", lambda p: tmp_path / "model" / prefix)
     try:
         rc = _main_with_mocked_auth("reserve-j01", auth)
-        assert rc == 0, f"positive j01 should traverse to COMPLETED rc=0, got {rc}"
-        assert marker_calls["n"] == 1
-        assert sci_calls["n"] == 1
-        assert not (REPO / "reports/research/structured_vol_v5_replicates" / prefix / "execution_started.json").exists()
+        assert rc == 2
+        assert marker_calls["n"] == 0
+        assert sci_calls["n"] == 0
     finally:
         _cleanup_auth(auth)
         _reset_invocations()
 
 
-def test_j01_runtime_identity_mismatch_refused_before_marker(tmp_path, monkeypatch):
-    """Runtime observed-vs-expected mismatch refuses before marker and science (non-tautological)."""
-    _reset_invocations()
-    if not _runner.EXEC_CONTRACT_PATH.exists():
-        pytest.skip("contract v5 not yet created")
-    auth = _make_auth_for_member(tmp_path, "reserve-j01")  # expected = EXPECTED_RUNTIME_SHA_VALID
+def test_j01_wrong_contract_blob_rejected_before_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Wrong contract blob refuses before marker and science against the real contract blob."""
+    real_contract = _independent_contract_blob()
+    wrong_contract = "d" * 64
+    assert wrong_contract != real_contract
+    auth = _make_auth_for_member(tmp_path, "reserve-j01", execution_contract_git_blob=wrong_contract)
     prefix = _runner.RUN_PREFIXES["reserve-j01"]
-    fake_report = tmp_path / "report" / prefix
-    fake_model = tmp_path / "model" / prefix
     marker_calls = {"n": 0}
     sci_calls = {"n": 0}
-    def fm(*a, **kw):
-        marker_calls["n"] += 1; return fake_report / "x.json"
-    def fs(*a, **kw):
-        sci_calls["n"] += 1; return {}
-    monkeypatch.setattr(_runner, "_exclusive_create_execution_started", fm)
-    monkeypatch.setattr(_runner, "_run_scientific_training", fs)
-    monkeypatch.setattr(_runner, "derive_report_dir", lambda p: fake_report if p == prefix else _runner.derive_report_dir(p))
-    monkeypatch.setattr(_runner, "derive_model_dir", lambda p: fake_model if p == prefix else _runner.derive_model_dir(p))
-    import subprocess as _sp
-    data = json.loads(auth.read_text(encoding="utf-8"))
-    rb = data.get("runner_git_blob", "x"); cb = data.get("execution_contract_git_blob", "x"); sb = data.get("schedule_git_blob", "x")
-    blob = _sp.run(["git", "hash-object", str(auth)], capture_output=True, text=True, check=True).stdout.strip()
-    def mb(p):
-        s = str(p)
-        if s == str(auth): return blob
-        if "replicate_training_runner" in s: return rb
-        if "training_execution_contract" in s: return cb
-        if "seed_schedule" in s: return sb
-        return blob
-    def mh(p):
-        s = str(p)
-        if "replicate_training_runner" in s: return rb
-        if "training_execution_contract" in s: return cb
-        if "seed_schedule" in s: return sb
-        return blob
-    from unittest.mock import patch as _up
-    with patch.object(_runner, "_is_tracked", return_value=True), \
-         patch.object(_runner, "_git_head_blob", side_effect=mh), \
-         patch.object(_runner, "_git_blob", side_effect=mb), \
-         patch.object(_runner, "_is_ancestor", return_value=True), \
-         patch("subprocess.run", side_effect=lambda cmd, *a, **kw: (
-             type('R', (), {'returncode': 0, 'stdout': EXPECTED_RUNTIME_SHA_MISMATCH + '\n', 'stderr': ''})()
-             if isinstance(cmd, list) and 'rev-parse' in str(cmd) and 'replicate' not in str(cmd) and 'contract' not in str(cmd) and 'schedule' not in str(cmd)
-             else type('R', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()
-             if isinstance(cmd, list) and ('diff' in str(cmd) or 'merge-base' in str(cmd))
-             else _sp.run(cmd, *a, **kw)
-         )), \
-         patch('neuralmarket.core.device.resolve_device', return_value=torch.device("cuda")), \
-         patch('neuralmarket.core.device.configure_device_determinism'), \
-         patch('neuralmarket.core.runtime_identity.build_runtime_identity',
-               return_value={'schema_version': 'runtime-identity-v1', 'requested_device': 'cuda',
-                             'resolved_device': 'cuda', 'runtime_identity_sha256': EXPECTED_RUNTIME_SHA_MISMATCH}):
-        rc = _runner.main(["--member-id", "reserve-j01", "--authorization", str(auth), "--execute"])
-    assert rc == 2, f"expected refusal on runtime mismatch, got rc={rc}"
-    assert marker_calls["n"] == 0, "marker must NOT be created on runtime mismatch"
-    assert sci_calls["n"] == 0, "science must NOT be reached on runtime mismatch"
-    _cleanup_auth(auth)
-    _reset_invocations()
-
-
-def test_j01_wrong_contract_blob_rejected_before_marker(tmp_path, monkeypatch):
-    """Wrong execution_contract_git_blob rejected before marker using independently computed real blob."""
-    real_cb = _independent_contract_blob()
-    wrong_cb = "d" * 64
-    assert wrong_cb != real_cb
-    auth = _make_auth_for_member(tmp_path, "reserve-j01", execution_contract_git_blob=wrong_cb)
+    monkeypatch.setattr(_runner, "_exclusive_create_execution_started", lambda *a, **k: marker_calls.__setitem__("n", marker_calls["n"] + 1))
+    monkeypatch.setattr(_runner, "_run_scientific_training", lambda *a, **k: sci_calls.__setitem__("n", sci_calls["n"] + 1))
+    monkeypatch.setattr(_runner, "derive_report_dir", lambda p: tmp_path / "report" / prefix)
+    monkeypatch.setattr(_runner, "derive_model_dir", lambda p: tmp_path / "model" / prefix)
     try:
-        # _check_with_mock patches all git boundaries; mock returns independent real contract blob
-        import subprocess as _sp
-        data = json.loads(auth.read_text(encoding="utf-8"))
-        rb = data.get("runner_git_blob", "x"); sb = data.get("schedule_git_blob", "x")
-        real_contract = _independent_contract_blob()  # INDEPENDENT of auth under test
-        blob = _sp.run(["git", "hash-object", str(auth)], capture_output=True, text=True, check=True).stdout.strip()
-        def mb(p):
-            s = str(p)
-            if s == str(auth): return blob
-            if "replicate_training_runner" in s: return rb
-            if "training_execution_contract" in s: return real_contract  # independent
-            if "seed_schedule" in s: return sb
-            return blob
-        def mh(p):
-            s = str(p)
-            if "replicate_training_runner" in s: return rb
-            if "training_execution_contract" in s: return real_contract  # independent
-            if "seed_schedule" in s: return sb
-            return blob
-        from unittest.mock import patch as _up
-        _orig = _sp.run
-        def mr(cmd, *a, **kw):
-            if isinstance(cmd, list) and ("diff" in str(cmd) or "merge-base" in str(cmd)):
-                return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
-            return _orig(cmd, *a, **kw)
-        with patch.object(_runner, "_is_tracked", return_value=True),              patch.object(_runner, "_is_clean", return_value=True),              patch.object(_runner, "_git_head_blob", side_effect=mh),              patch.object(_runner, "_git_blob", side_effect=mb),              patch.object(_runner, "_is_ancestor", return_value=True),              patch("subprocess.run", side_effect=mr):
-            with pytest.raises(RuntimeError, match="execution_contract_git_blob mismatch"):
-                _runner.check_authorization("reserve-j01", auth)
+        rc = _main_with_mocked_auth("reserve-j01", auth)
+        assert rc == 2
+        assert marker_calls["n"] == 0
+        assert sci_calls["n"] == 0
     finally:
         _cleanup_auth(auth)
         _reset_invocations()
 
 
-def test_j01_stale_recipe_rejected_before_marker(tmp_path, monkeypatch):
-    """Stale recipe head rejected before marker."""
-    auth = _make_auth_for_member(tmp_path, "reserve-j01")
-    data = json.loads(auth.read_text(encoding="utf-8"))
-    data["execution_recipe_head"] = "0" * 40
-    auth.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+def test_j01_stale_recipe_rejected_before_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Stale recipe ancestry refuses before marker and science without unrelated errors."""
+    auth = _make_auth_for_member(tmp_path, "reserve-j01", execution_recipe_head="0" * 40)
+    prefix = _runner.RUN_PREFIXES["reserve-j01"]
+    marker_calls = {"n": 0}
+    sci_calls = {"n": 0}
+    monkeypatch.setattr(_runner, "_exclusive_create_execution_started", lambda *a, **k: marker_calls.__setitem__("n", marker_calls["n"] + 1))
+    monkeypatch.setattr(_runner, "_run_scientific_training", lambda *a, **k: sci_calls.__setitem__("n", sci_calls["n"] + 1))
+    monkeypatch.setattr(_runner, "derive_report_dir", lambda p: tmp_path / "report" / prefix)
+    monkeypatch.setattr(_runner, "derive_model_dir", lambda p: tmp_path / "model" / prefix)
     try:
-        _check_with_mock(auth, "reserve-j01", "execution_recipe_head invalid|not ancestor|not committed")
+        message = _check_with_mock(auth, "reserve-j01", "execution_recipe_head invalid|not ancestor")
+        assert "not committed" not in message
+        rc = _main_with_mocked_auth("reserve-j01", auth)
+        assert rc == 2
+        assert marker_calls["n"] == 0
+        assert sci_calls["n"] == 0
     finally:
         _cleanup_auth(auth)
         _reset_invocations()
