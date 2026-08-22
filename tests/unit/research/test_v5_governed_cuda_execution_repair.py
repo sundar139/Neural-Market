@@ -667,15 +667,47 @@ def test_cuda_smoke_device_plumbing():
             assert torch.isfinite(p.grad).all()
 
 
-def test_no_seed05_gpu_authorization_created():
-    """Task must not create a seed-05 GPU authorization."""
-    for p in (REPO / "reports/research/authorizations/structured_vol_v5_primary_training").glob("*.json"):
-        if "seed-05" in p.name.lower() or "seed_05" in p.name.lower():
-            data = json.loads(p.read_text(encoding="utf-8"))
-            # Must remain v1; must not have been rewritten to cuda
-            assert data.get("schema_version") == "structured-vol-v5-primary-training-authorization-v1", f"{p} was rewritten to v2"
-            assert "requested_device" not in data
-            assert "expected_runtime_identity_sha256" not in data
+def test_seed05_gpu_authorization_matches_governed_v2_state():
+    """Historical v1 and the governed v2 seed-05 authorizations coexist safely."""
+    auth_dir = REPO / "reports/research/authorizations/structured_vol_v5_primary_training"
+    assert {p.name for p in auth_dir.glob("v5-seed-05*.json")} == {
+        "v5-seed-05.json",
+        "v5-seed-05-v2.json",
+    }
+
+    historical = json.loads((auth_dir / "v5-seed-05.json").read_text(encoding="utf-8"))
+    assert historical["schema_version"] == "structured-vol-v5-primary-training-authorization-v1"
+    assert "requested_device" not in historical
+    assert "expected_runtime_identity_sha256" not in historical
+
+    governed = json.loads((auth_dir / "v5-seed-05-v2.json").read_text(encoding="utf-8"))
+    assert governed["schema_version"] == "structured-vol-v5-primary-training-authorization-v2"
+    assert governed["authorization_task_id"] == "NM-R4-V5-SEED-05-AUTHORIZATION-FREEZE-065"
+    assert governed["member_id"] == "v5-seed-05"
+    assert (
+        governed["replicate_seed"],
+        governed["model_init_seed"],
+        governed["data_seed"],
+        governed["eval_seed"],
+    ) == (12281, 12281, 12282, 8283)
+    assert governed["full_config_hash"] == _runner.EXPECTED_CONFIG_HASHES["v5-seed-05"]
+    assert governed["run_prefix"] == _runner.RUN_PREFIXES["v5-seed-05"]
+    assert governed["family_methodology_identity"] == _runner.EXPECTED_FAMILY_HASH
+    assert governed["schedule_git_blob"] == _runner.FROZEN_SCHEDULE_BLOB
+    assert governed["schedule_sha256"] == _runner.FROZEN_SCHEDULE_SHA
+    assert governed["runner_git_blob"] == "05b704b254387d8f5ffdf1d847dd4289303b565c"
+    assert governed["execution_contract_git_blob"] == "84a59c4d966b349be705a8a29fad07f81282ebdc"
+    assert governed["execution_recipe_head"] == "6a6b9f894e36a09eb7f8e43be78e869a6f35d10a"
+    assert governed["requested_device"] == "cuda"
+    assert governed["expected_resolved_device"] == "cuda"
+    assert governed["expected_runtime_identity_sha256"] == (
+        "17e3bb52d5893c4e09ecb759a925004f2e75a37d7d4faf4ece7de41f81870ada"
+    )
+    assert governed["training_authorized"] is True
+    assert governed["max_training_invocations"] == 1
+    assert governed["validation_authorized"] is False
+    assert governed["final_test_authorized"] is False
+
     # Also check no GPU auth file was created at repo root or nearby
     for pat in ["**/*gpu*auth*.json", "**/*seed-05*gpu*.json"]:
         for p in REPO.glob(pat):
