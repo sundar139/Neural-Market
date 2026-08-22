@@ -1,0 +1,589 @@
+{
+  "schema_version": "structured-vol-v5-wgan-comparator-preregistration-v1",
+  "task": {
+    "task_id": "NM-R4-V5-WGAN-COMPARATOR-PREREGISTRATION-103",
+    "risk": "R4",
+    "branch": "main",
+    "starting_head": "42cfe4412880c044d721635ef6ab7e4d65d17c73",
+    "prerequisite_audit": "NM-R4-V5-N4-IMPLEMENTATION-PROVENANCE-AUDIT-102",
+    "prerequisite_verdict": "VALIDATED WITH NON-BLOCKING FINDINGS",
+    "status": "PREREGISTRATION_ONLY",
+    "governance": ["DISCOVER", "DECIDE", "FREEZE", "VERIFY", "REPORT"]
+  },
+  "frozen_neural_sde_state": {
+    "reserve_j01": "GATE_PASS_VALID",
+    "completed_model_n": 5,
+    "gate_pass_count": 5,
+    "n4_historical_result": "IMMUTABLE",
+    "n5_family_analysis": "VALIDATED",
+    "h2": "UNRESOLVED_PENDING_WGAN_COMPARATOR",
+    "final_test": "SEALED",
+    "n5_artifact": {
+      "path": "reports/research/structured_vol_v5_n5_family_analysis_v1.json",
+      "sha256": "84e53a3e77e6eea12a1449aa08763766c6106d7fe16eb36d1285f0bd71bdf564",
+      "git_blob": "7c10e622db3415cae53fb9547d6ebef15decbb76"
+    }
+  },
+  "h2": {
+    "exact_statement": "The signature-score training objective is more stable across seeds and epochs than adversarial (WGAN) training.",
+    "hypothesis_status_vocabulary": ["H2_SUPPORTED", "H2_NOT_SUPPORTED", "H2_UNRESOLVED"],
+    "source_records": [
+      {
+        "path": "reports/protocol/research_protocol_v1.md",
+        "sections": ["Research question", "Core scope", "Hypotheses", "Experimental governance", "Failure criteria"],
+        "basis": "Exact H2 wording, WGAN neural-CDE comparator family, five independent seeds, failed-seed reporting, comparable compute/search, chronological data rules, and predeclared failure criteria."
+      },
+      {
+        "path": "reports/protocol/research_protocol_amendment_020.md",
+        "sections": ["§2.1", "§2.4", "§2.5", "§4.4", "§8"],
+        "basis": "Reconciles H2 as a signature-score objective versus adversarial WGAN training claim; confirms five-seed requirement and WGAN as a P1 comparator required before an H2 claim."
+      },
+      {
+        "path": "reports/protocol/research_protocol_amendment_055.md",
+        "sections": ["§7", "§8", "§9"],
+        "basis": "Frozen completed-member status semantics, five-member family conventions, six ACF lags, no causal backend attribution, and H2 unresolved pending WGAN."
+      },
+      {
+        "path": "reports/protocol/research_protocol_amendment_057.md",
+        "sections": ["§2", "§3", "§7", "§9"],
+        "basis": "Validated five-member Neural-SDE family, exact 13 historical scalars, no significance/composite/rank rule, and sealed final-test status."
+      },
+      {
+        "path": "reports/protocol/research_protocol_amendment_058.md",
+        "sections": ["§1", "§6", "§8"],
+        "basis": "Current validated Neural-SDE state, N5 identity, and explicit prohibition on WGAN execution in the preceding provenance task."
+      },
+      {
+        "path": "reports/protocol/research_protocol_amendment_037.md",
+        "section": "§2",
+        "basis": "Confirms WGAN/neural-CDE has no current PyTorch implementation and is NOT_CURRENTLY_EXECUTABLE; future CUDA-only scientific execution policy applies."
+      }
+    ],
+    "contract_reconciliation": [
+      {
+        "item": "WGAN comparator family",
+        "classification": "ALREADY_FROZEN",
+        "existing_basis": "Primary comparison is signature-score neural SDE versus WGAN neural-CDE neural SDE.",
+        "freeze_here": "Retain the WGAN neural-CDE comparator family without substitution."
+      },
+      {
+        "item": "Architecture class",
+        "classification": "ALREADY_FROZEN",
+        "existing_basis": "The original contract names an adversarial WGAN neural-CDE family.",
+        "freeze_here": "Use a conditional Neural-CDE generator and a conditional path critic; concrete widths and controls were previously underspecified."
+      },
+      {
+        "item": "Conditioning variables",
+        "classification": "IMPLIED_BY_EXISTING_CONTRACT",
+        "existing_basis": "The validated comparator is conditional and the current v5 model uses four past-only context features.",
+        "freeze_here": "Use the same four normalized past-only context features; exact transfer to WGAN was previously underspecified."
+      },
+      {
+        "item": "Input/output/path representation",
+        "classification": "IMPLIED_BY_EXISTING_CONTRACT",
+        "existing_basis": "The current frozen scientific regime uses daily log-return paths and 63-session generated paths.",
+        "freeze_here": "Use raw daily log-return increments as the output and a training-derived scaled cumulative-return control for path encoding; exact WGAN representation was previously underspecified."
+      },
+      {
+        "item": "Training objective",
+        "classification": "ALREADY_FROZEN",
+        "existing_basis": "H2 explicitly requires adversarial WGAN training.",
+        "freeze_here": "Operationalize it as WGAN-GP; penalty coefficient and loss conventions were previously underspecified."
+      },
+      {
+        "item": "Sequence/path horizon",
+        "classification": "IMPLIED_BY_EXISTING_CONTRACT",
+        "existing_basis": "The frozen v5 window and Gate regime use 63 sessions and dt=1/252.",
+        "freeze_here": "Use context lookback 22, output horizon 63, and dt=1/252."
+      },
+      {
+        "item": "Training and selection data/splits",
+        "classification": "ALREADY_FROZEN",
+        "existing_basis": "Chronological split manifest, purge/embargo, training-only normalizers, and internal fit/selection split are frozen.",
+        "freeze_here": "Use the exact manifest and training-only internal selection regime; no official validation or final-test access."
+      },
+      {
+        "item": "Independent seed count",
+        "classification": "ALREADY_FROZEN",
+        "existing_basis": "All neural comparisons require at least five independent seeds and failed seeds must be reported.",
+        "freeze_here": "Use exactly five primary WGAN members plus a deterministic non-automatic reserve order."
+      },
+      {
+        "item": "Compute/search comparability",
+        "classification": "ALREADY_FROZEN",
+        "existing_basis": "Protocol v1 requires comparable compute and hyperparameter-search budgets.",
+        "freeze_here": "Use a singleton WGAN configuration, the same five-member seed count, batch size, fit regime, and 400-generator-epoch update-equivalent budget; disclose the unavoidable 5:1 critic-update cost difference."
+      },
+      {
+        "item": "Evaluation metrics",
+        "classification": "IMPLIED_BY_EXISTING_CONTRACT",
+        "existing_basis": "H2 names stability across seeds and epochs, while v2 Gate and N5 records freeze architecture-neutral path diagnostics.",
+        "freeze_here": "Use predeclared training-stability metrics plus the supported architecture-neutral path diagnostics; exclude objective-specific and drift/diffusion-specific quantities from direct comparison."
+      },
+      {
+        "item": "H2 operational decision rule",
+        "classification": "PREVIOUSLY_UNDERSPECIFIED",
+        "existing_basis": "The exact hypothesis is frozen, but no committed operational supported/not-supported rule exists.",
+        "freeze_here": "Use the descriptive, no-significance, no-composite, dominance rule in this artifact."
+      }
+    ],
+    "conflicts": [],
+    "conflict_verdict": "NO_MATERIAL_H2_CONTRACT_CONFLICT"
+  },
+  "wgan_model_contract": {
+    "model_family": "WGAN neural-CDE neural-SDE comparator, operationalized as a conditional WGAN-GP with a Neural-CDE generator and a conditional path critic",
+    "generator": {
+      "type": "conditional_neural_cde",
+      "hidden_state_dim": 64,
+      "initial_state": "Two-hidden-layer MLP with 64 SiLU units per hidden layer mapping [four normalized context features, 32-dimensional static latent] to the 64-dimensional CDE hidden state.",
+      "vector_field": "Two-hidden-layer MLP with 64 SiLU units per hidden layer mapping the hidden state to a 64 x 3 control-vector field; no recurrent cell, attention, convolution, or adaptive solver.",
+      "control_channels": ["normalized_time", "cumulative_noise_1", "cumulative_noise_2"],
+      "control_increment": "At each of 63 intervals, delta_control = [dt, sqrt(dt) * epsilon_1, sqrt(dt) * epsilon_2], with epsilon channels sampled standard normal and piecewise-linear control between grid points.",
+      "integration": "Fixed explicit Euler controlled differential update over 63 intervals; dt=1/252; no adaptive step size and no hidden-state clamp.",
+      "readout": "Two-hidden-layer MLP with 64 SiLU units per hidden layer mapping [hidden state, unchanged normalized context] to one unconstrained daily log-return increment.",
+      "output": "A 63-element daily log-return increment path; cumulative sums are derived only for path diagnostics and critic control."
+    },
+    "critic": {
+      "type": "conditional_neural_cde_path_critic",
+      "input_control_channels": ["normalized_time", "training-fit-scaled_cumulative_return", "four_broadcast_normalized_context_features"],
+      "control_dimension": 6,
+      "initial_state": "Two-hidden-layer MLP with 64 SiLU units per hidden layer mapping the four normalized context features to a 64-dimensional hidden state.",
+      "vector_field": "Two-hidden-layer MLP with 64 SiLU units per hidden layer mapping the hidden state to a 64 x 6 control-vector field.",
+      "integration": "The same fixed explicit Euler controlled differential grid of 63 intervals and dt=1/252.",
+      "readout": "One linear scalar output from the terminal hidden state; no sigmoid, softmax, or probability calibration.",
+      "real_fake_input": "The critic receives either the real target daily log-return path or the generated daily log-return path, paired with the same context representation."
+    },
+    "conditioning": {
+      "feature_names": ["prev_daily_return", "prev_5d_cumulative_return", "prev_22d_cumulative_return", "prev_22d_realized_volatility"],
+      "source": "The strictly preceding 22 daily log returns only; target and future returns are excluded.",
+      "normalization": "Per-feature z-score normalizer fitted on training-derived windows only; the frozen normalizer is reused for fit, internal selection, and internal Gate evaluation."
+    },
+    "path_representation": {
+      "source_returns": "Daily log returns from the frozen SPY training series.",
+      "target": "63 raw daily log-return increments.",
+      "critic_path_channel": "Cumulative target/generated log return divided by the training-fit cumulative-return scale, with time and broadcast context.",
+      "price_level": "Not generated and not used as a learned output.",
+      "dt": 0.003968253968253968,
+      "horizon": 63,
+      "context_lookback": 22
+    },
+    "latent_noise": {
+      "static_dimension": 32,
+      "static_distribution": "independent standard normal vector per generated path",
+      "temporal_dimension": 2,
+      "temporal_distribution": "independent standard normal increments per interval, scaled by sqrt(dt) in the CDE control",
+      "training_seed_source": "data_seed for training noise and shuffled-window order",
+      "evaluation_seed_source": "common fixed eval_seed=8283 for post-training generation; it is not an independent training replicate"
+    },
+    "activation_functions": {
+      "hidden": "SiLU",
+      "generator_output": "identity",
+      "critic_output": "identity"
+    },
+    "normalization_policy": {
+      "input_context": "training-only per-feature z-score",
+      "path_scale": "training-only cumulative-return scale equal to training daily-return standard deviation times sqrt(horizon)",
+      "network_normalization": "no batch normalization, layer normalization, spectral normalization, or other learned normalization",
+      "output": "raw daily log returns; no post-hoc output rescaling"
+    },
+    "critic_generator_update_ratio": "5:1",
+    "adversarial_objective": {
+      "name": "WGAN-GP",
+      "critic": "maximize mean(D(real)) - mean(D(fake)) - lambda_gp * gradient_penalty",
+      "generator": "minimize -mean(D(fake))",
+      "gradient_penalty": "For uniformly interpolated real/fake paths, penalize (L2 norm of critic gradient with respect to the full path input minus 1)^2; context is held fixed for the interpolation.",
+      "lambda_gp": 10.0,
+      "weight_clipping": false
+    },
+    "optimizer": {
+      "family": "Adam",
+      "learning_rate": 0.0001,
+      "betas": [0.0, 0.9],
+      "eps": 1e-08,
+      "weight_decay": 0.0,
+      "gradient_clipping": "none; gradient penalty is the preregistered Lipschitz enforcement"
+    },
+    "batch_size": 64,
+    "early_stopping": {
+      "enabled": true,
+      "check_frequency": "after each generator epoch",
+      "metric": "internal_selection_terminal_wasserstein_normalized",
+      "direction": "lower_is_better",
+      "patience_generator_epochs": 40,
+      "min_delta": 0.0,
+      "selection_data": "internal selection tail of the training split only"
+    },
+    "maximum_training": {
+      "generator_epochs": 400,
+      "critic_updates_per_generator_batch": 5,
+      "generator_updates_per_generator_epoch": "one update per fit-window batch",
+      "selection_paths": 1024,
+      "real_reference_paths": 1024,
+      "no_wall_clock_cap": "The frozen v1 protocol defines no wall-clock/GPU-time cap; deterministic update/example counts are the proxy."
+    },
+    "checkpoint_selection": {
+      "metric": "internal_selection_terminal_wasserstein_normalized",
+      "definition": "The existing Gate-v2 normalized one-dimensional Wasserstein discrepancy between generated terminal returns and the 1024-path circular moving-block-bootstrap reference from the internal selection tail, normalized by the real bootstrap terminal standard deviation.",
+      "tie_break": "earliest generator epoch; if still identical, lexicographically smallest member/config identity",
+      "refit": "After selection, refit the selected contract on all eligible training windows for exactly the selected best_generator_epoch, without any new metric, validation observation, or hyperparameter choice.",
+      "checkpoint_required": true
+    },
+    "weight_initialization": "PyTorch Linear default reset_parameters semantics for every Linear layer; no post-initialization re-seeding or result-dependent initialization.",
+    "determinism": {
+      "cuda_only": true,
+      "python_numpy_torch_seeds": "Bound to the frozen member seed tuple.",
+      "torch_deterministic_algorithms": true,
+      "cudnn_benchmark": false,
+      "cudnn_deterministic": true,
+      "non_deterministic_kernel": "fail closed",
+      "cpu_fallback": false
+    },
+    "contract_verdict": "MINIMUM_EXECUTABLE RESEARCH-GRADE CONTRACT FROZEN BEFORE WGAN RESULTS"
+  },
+  "data_split_contract": {
+    "underlying": "SPY",
+    "split_manifest": {
+      "path": "data/manifests/split_manifest_v1.json",
+      "manifest_sha256": "a8cefa01fc15e531eea9de22749f0f3b4d1d3a5a6e4818cdc9e6d8cfc37f0ff1",
+      "manifest_git_blob": "9eac7f850461d075dc7d05b1198511c7670eed1a",
+      "manifest_hash_field": "877caee3f7bb471a491c299a8673fdf1b386b12b9ba7f4d17bd52d2954bdcabe",
+      "calendar": "XNYS / America-New_York / calendar library 4.13.2",
+      "lookback_sessions": 60,
+      "maximum_maturity_sessions": 30,
+      "purge_sessions": 90,
+      "embargo_sessions": 10
+    },
+    "training_split": {
+      "start": "2018-05-01",
+      "end": "2021-12-31",
+      "sessions": 926,
+      "identity_hash": "3702ef77224472ffb7cc951b66f7cc44d4e85407132ccb5a38939d6ebc7f8605"
+    },
+    "selection_split": {
+      "source": "training split only",
+      "fit_fraction": 0.8,
+      "construction": "Chronologically first floor(0.8 * eligible_windows) fit windows, then the remaining tail windows whose target intervals begin after the final fit target interval; intervening windows are an embargo gap.",
+      "context_lookback": 22,
+      "horizon": 63,
+      "target_overlap": "prohibited between fit and selection subsets",
+      "normalizer_fit": "fit subset only",
+      "cumulative_return_scale_fit": "fit subset/training returns only"
+    },
+    "internal_evaluation_gate": {
+      "config_path": "configs/research/neural_sde_internal_gate_v2.yaml",
+      "config_sha256": "8e70ad15e30927456058d293a766523ba16bbbfce00bb64366bc83151f2d5625",
+      "config_git_blob": "d9705ef9a11da3e21760015bb2a27fa408018bb5",
+      "bootstrap_method": "circular moving-block bootstrap",
+      "block_length": 22,
+      "real_bootstrap_paths": 1024,
+      "generated_paths": 1024,
+      "bootstrap_seed": 8801,
+      "generated_path_seed": 7777,
+      "acf_lags": [1, 2, 3, 5, 10, 20],
+      "wgan_gate_adaptation": "Use only architecture-neutral path criteria: finite output, variance ratio [0.50, 2.00], terminal dispersion ratio [0.50, 2.00], path uniqueness >= 0.99, and return ACF(1) absolute difference <= 0.25. Do not fabricate a WGAN drift/diffusion decomposition."
+    },
+    "official_validation": {
+      "start": "2022-05-26",
+      "end": "2023-06-30",
+      "sessions": 275,
+      "identity_hash": "a028fb18020317b54df1d07de02bed5205737ebd7d5047d8a839677a12ce7c7a",
+      "access": "prohibited in Task 103 and not used for WGAN search, checkpoint selection, or H2 decision"
+    },
+    "final_test": {
+      "start": "2023-11-22",
+      "end": "2025-12-31",
+      "sessions": 528,
+      "identity_hash": "8c8011ebbb2583dc7b4e2342c0efc65b60caf4c5206b00e2ea8a72d61c0a2be3",
+      "status": "SEALED",
+      "access": "prohibited"
+    },
+    "external_validation": {
+      "status": "CLOSED",
+      "access": "prohibited",
+      "new_construction": false
+    },
+    "data_verdict": "SAME_NON_FINAL_TRAINING_AND_INTERNAL_SELECTION_REGIME; VALIDATION AND FINAL TEST SEALED"
+  },
+  "compute_and_search_contract": {
+    "search_space": {
+      "configuration_count": 1,
+      "mode": "singleton_non_adaptive_contract",
+      "configurations": [
+        {
+          "config_id": "wgan-gp-default-v1",
+          "generator_hidden_state_dim": 64,
+          "critic_hidden_state_dim": 64,
+          "latent_dim": 32,
+          "learning_rate": 0.0001,
+          "gradient_penalty_coefficient": 10.0,
+          "critic_generator_update_ratio": "5:1",
+          "batch_size": 64,
+          "max_generator_epochs": 400,
+          "patience_generator_epochs": 40,
+          "optimizer": "Adam betas=(0.0,0.9), eps=1e-8, weight_decay=0",
+          "activation": "SiLU",
+          "normalization": "training-only input normalization; no network normalization"
+        }
+      ],
+      "selection": "No hyperparameter selection occurs because the preregistered space is a singleton."
+    },
+    "search_seed_schedule": {
+      "search_runs": 0,
+      "search_seeds": [],
+      "derivation": "No exploratory or adaptive search phase; the singleton contract is executed directly on the five primary seed tuples.",
+      "post_result_additions": false
+    },
+    "training_budget": {
+      "primary_configurations": 1,
+      "primary_members": 5,
+      "primary_training_invocations": 5,
+      "reserve_invocations": 0,
+      "max_generator_epochs_per_member": 400,
+      "fit_batch_size": 64,
+      "critic_updates_per_generator_update": 5,
+      "selection_patience": 40,
+      "training_window_regime": "same fit windows as the validated Neural-SDE contract"
+    },
+    "selection_metric": {
+      "name": "internal_selection_terminal_wasserstein_normalized",
+      "direction": "lower_is_better",
+      "data": "internal selection tail from training split",
+      "metric_identity": "existing Gate-v2 normalized terminal Wasserstein diagnostic; no new metric",
+      "tie_break": "earliest generator epoch, then lexicographically smallest identity"
+    },
+    "parity_rule": {
+      "neural_sde_reference": {
+        "configuration_count": 1,
+        "batch_size": 64,
+        "max_epochs": 400,
+        "patience": 40,
+        "fit_fraction": 0.8,
+        "primary_seed_count": 5
+      },
+      "wgan_match": "One fixed WGAN configuration, batch 64, 400 generator-epoch maximum, patience 40, same fit/selection windows, same five-member requirement, and the same established seed schedule shape.",
+      "compute_proxy": "Equal generator update-equivalents and training examples per epoch are the primary parity proxy. WGAN critic updates are separately counted at 5 per generator update.",
+      "limitation": "Exact FLOP and wall-clock parity is not possible because the WGAN has five critic updates and a different path-network cost; no result may change the ratio, budget, or singleton configuration after execution begins.",
+      "wall_clock_budget": "not defined by the frozen protocol and therefore not used as a selection or stopping rule"
+    },
+    "adaptive_search": false,
+    "future_search_additions": false,
+    "fairness_verdict": "FINITE, NON_ADAPTIVE, PRE-RESULT BUDGET FROZEN; COMPUTE LIMITATION DISCLOSED"
+  },
+  "seed_schedule": {
+    "derivation_basis": {
+      "path": "reports/research/structured_vol_v5_seed_schedule_v1.json",
+      "sha256": "8c471c3311b05e647b543e46e310a8f1b1055ec00d4690f726dcd6d775f06fd0",
+      "git_blob": "558d08bfee98dbd0c170d65e6a9b1737700c9e98",
+      "formula": "replicate_seed(k) = 8281 + 1000 * (k - 1); model_init_seed = replicate_seed; data_seed = replicate_seed + 1; eval_seed = 8283",
+      "evaluation_policy": "COMMON_FIXED_POST_TRAINING"
+    },
+    "primary_count": 5,
+    "primary_members": [
+      {"member_id": "wgan-seed-01", "role": "PRIMARY", "replicate_seed": 8281, "model_init_seed": 8281, "data_seed": 8282, "eval_seed": 8283, "status": "SCHEDULED_NOT_RUN"},
+      {"member_id": "wgan-seed-02", "role": "PRIMARY", "replicate_seed": 9281, "model_init_seed": 9281, "data_seed": 9282, "eval_seed": 8283, "status": "SCHEDULED_NOT_RUN"},
+      {"member_id": "wgan-seed-03", "role": "PRIMARY", "replicate_seed": 10281, "model_init_seed": 10281, "data_seed": 10282, "eval_seed": 8283, "status": "SCHEDULED_NOT_RUN"},
+      {"member_id": "wgan-seed-04", "role": "PRIMARY", "replicate_seed": 11281, "model_init_seed": 11281, "data_seed": 11282, "eval_seed": 8283, "status": "SCHEDULED_NOT_RUN"},
+      {"member_id": "wgan-seed-05", "role": "PRIMARY", "replicate_seed": 12281, "model_init_seed": 12281, "data_seed": 12282, "eval_seed": 8283, "status": "SCHEDULED_NOT_RUN"}
+    ],
+    "reserve_count": 3,
+    "reserve_order": [
+      {"member_id": "reserve-wgan-j01", "role": "RESERVE", "order": 1, "replicate_seed": 13281, "model_init_seed": 13281, "data_seed": 13282, "eval_seed": 8283, "status": "FROZEN_NOT_AUTHORIZED"},
+      {"member_id": "reserve-wgan-j02", "role": "RESERVE", "order": 2, "replicate_seed": 14281, "model_init_seed": 14281, "data_seed": 14282, "eval_seed": 8283, "status": "FROZEN_NOT_AUTHORIZED"},
+      {"member_id": "reserve-wgan-j03", "role": "RESERVE", "order": 3, "replicate_seed": 15281, "model_init_seed": 15281, "data_seed": 15282, "eval_seed": 8283, "status": "FROZEN_NOT_AUTHORIZED"}
+    ],
+    "independence": "The five primary model_init_seed/data_seed pairs are distinct and independently initialize and shuffle training; common eval_seed is post-training only and does not count as a replicate dimension.",
+    "seed_03_note": "wgan-seed-03 is a new WGAN primary member and is not the historically governance-invalid Neural-SDE seed-03 record.",
+    "reserve_policy": {
+      "automatic_execution": false,
+      "performance_selection": false,
+      "promotion": "Only a later separately governed decision may consider the next reserve when a primary execution slot lacks a valid completed member; reserve execution never silently relabels or erases a primary record.",
+      "chain": "j01 then j02 then j03 only as separately authorized and only as needed; no automatic chain."
+    },
+    "seed_verdict": "FIVE PRIMARY WGAN IDENTITIES AND THREE DETERMINISTIC RESERVES FROZEN BEFORE RESULTS"
+  },
+  "outcome_semantics": {
+    "GATE_PASS_VALID": {
+      "definition": "Governance-valid WGAN execution with a finite completed model, valid checkpoint, complete architecture-neutral comparator Gate, and all comparator Gate criteria passing.",
+      "completed_model_member": true,
+      "numerically_included": true
+    },
+    "GATE_FAIL_VALID": {
+      "definition": "Governance-valid WGAN execution with a finite completed model and valid checkpoint, but one or more predeclared architecture-neutral comparator Gate criteria fail.",
+      "completed_model_member": true,
+      "numerically_included": true,
+      "poor_performance_discarded": false
+    },
+    "VALID_EXECUTION_NO_GATE_RESULT": {
+      "definition": "Governance-valid execution without a valid comparator Gate result.",
+      "completed_model_member": false,
+      "numerically_included": false
+    },
+    "GOVERNANCE_INVALID": {
+      "definition": "Execution invalid because a frozen governance or protocol requirement failed.",
+      "completed_model_member": false,
+      "numerically_included": false,
+      "failure_history_retained": true
+    },
+    "valid_poor_model_discarded": false,
+    "automatic_replacement": false,
+    "automatic_reserve_execution": false,
+    "failure_accounting": "Every attempted primary remains in the roster with its exact seed tuple and outcome; no silent discard, rerun, retune, or result-contingent status change.",
+    "verdict": "STATUS SEMANTICS FROZEN AND PERFORMANCE-INDEPENDENT"
+  },
+  "metrics": {
+    "cross_family_primary": [
+      {"name": "valid_completed_member_fraction", "direction": "higher_is_better", "meaning": "Valid completed primary members divided by five."},
+      {"name": "nonfinite_or_missing_checkpoint_rate", "direction": "lower_is_better", "meaning": "Fraction of primary attempts with nonfinite training/selection values or no valid checkpoint."},
+      {"name": "normalized_best_checkpoint_epoch_sd", "direction": "lower_is_better", "meaning": "Sample SD across the five members of best_generator_epoch / max_generator_epochs."},
+      {"name": "checkpoint_selection_metric_sd", "direction": "lower_is_better", "meaning": "Sample SD across the five members of the common internal-selection terminal Wasserstein metric at the selected checkpoint."}
+    ],
+    "cross_family_secondary": [
+      {"name": "variance_ratio", "direction": "closer_to_1", "status": "report_and_gate_diagnostic"},
+      {"name": "terminal_dispersion_ratio", "direction": "closer_to_1", "status": "report_and_gate_diagnostic"},
+      {"name": "path_uniqueness_fraction", "direction": "higher_is_better", "status": "report_and_gate_diagnostic"},
+      {"name": "return_acf1_abs_diff", "direction": "lower_is_better", "status": "report_and_gate_diagnostic"},
+      {"name": "terminal_wasserstein_normalized", "direction": "lower_is_better", "status": "report_only"},
+      {"name": "acf_rmse", "direction": "lower_is_better", "status": "report_only"},
+      {"name": "acf_max_error", "direction": "lower_is_better", "status": "report_only"}
+    ],
+    "wgan_specific_diagnostics": [
+      "critic_loss",
+      "generator_loss",
+      "gradient_penalty",
+      "finite_critic_generator_penalty_status",
+      "mode_collapse_indicator",
+      "training_completion",
+      "checkpoint_selection_stability",
+      "critic_generator_update_counts"
+    ],
+    "excluded_from_direct_cross_family_comparison": [
+      {"name": "initial_selection_total_loss", "reason": "The signature-score total loss has no same scientific definition for WGAN-GP."},
+      {"name": "best_selection_total_loss", "reason": "The signature-score total loss has no same scientific definition for WGAN-GP."},
+      {"name": "selection_loss_improvement_absolute", "reason": "Objective-specific and not comparable across adversarial and non-adversarial training."},
+      {"name": "initial_internal_rbf", "reason": "Signature-MMD-specific diagnostic."},
+      {"name": "best_internal_rbf", "reason": "Signature-MMD-specific diagnostic."},
+      {"name": "drift_diffusion_rms_ratio", "reason": "The validated Neural-SDE implementation exposes drift and diffusion contributions; a Neural-CDE WGAN generator does not have the same decomposition. Historical Neural-SDE values remain in the N5 record but are not directly compared to WGAN."},
+      {"name": "critic_loss", "reason": "WGAN-specific adversarial diagnostic."},
+      {"name": "generator_loss", "reason": "WGAN-specific adversarial diagnostic."}
+    ],
+    "acf_lags": [1, 2, 3, 5, 10, 20],
+    "post_hoc_metrics": false,
+    "metric_missingness": "No imputation. A missing/nonfinite primary metric makes the H2 decision unresolved and is reported as a failure/missingness event.",
+    "metric_verdict": "COMMON PATH METRICS ARE COMPARABLE; OBJECTIVE AND DRIFT/DIFFUSION METRICS ARE EXCLUDED"
+  },
+  "h2_decision_rule": {
+    "status_vocabulary": {
+      "H2_SUPPORTED": "The preregistered descriptive dominance rule supports the original direction.",
+      "H2_NOT_SUPPORTED": "The preregistered rule is evaluable but the signature-score family does not dominate the WGAN family.",
+      "H2_UNRESOLVED": "The rule cannot be evaluated because a required family is underfilled, a required metric is missing/nonfinite, or governance validity is incomplete."
+    },
+    "primary_rule": {
+      "family_a": "Validated five-member Neural-SDE family from Amendment 057: seed-01, seed-02, seed-04, seed-05, reserve-j01.",
+      "family_b": "Five WGAN primary members wgan-seed-01 through wgan-seed-05; only GATE_PASS_VALID and GATE_FAIL_VALID count as valid completed members.",
+      "aggregation": "For each family and each metric, use the five valid completed member values in fixed roster order; report arithmetic mean, sample SD ddof=1, median, minimum, maximum, and no weights.",
+      "comparison": "Compare the Neural-SDE and WGAN family values only on the four preregistered cross-family primary metrics, using each metric's frozen direction. Do not form a composite score, rank, post-hoc subset, or weighted aggregate.",
+      "supported": "H2_SUPPORTED iff both families have exactly five valid completed members, every primary metric is finite for both families, the Neural-SDE family is no worse than WGAN on every primary metric, and Neural-SDE is strictly better on at least one primary metric.",
+      "not_supported": "H2_NOT_SUPPORTED iff both families have five valid completed members and complete primary metrics, but the supported condition is false, including any WGAN strict improvement or any mixed/incomparable primary direction.",
+      "unresolved": "H2_UNRESOLVED iff either family has fewer than five valid completed members, any primary metric is missing/nonfinite, or a governance-invalid/missing Gate prevents the required family summary. A comparator failure is not converted into H2 support by default."
+    },
+    "secondary_evidence": "Architecture-neutral path-quality diagnostics are reported with direction and uncertainty summaries but cannot change H2 status.",
+    "missingness": "No imputation, replacement, or result-contingent reserve execution.",
+    "failure_handling": "Valid poor WGAN models remain included; invalid executions remain in failure accounting but do not count as completed members.",
+    "significance": "No statistical significance test, p-value, confidence interval, Holm procedure, or inferential threshold is introduced for this n=5 descriptive H2 stability comparison. The original paired/dependence-aware rule remains applicable to the separately governed hedging endpoint; H2 limitations are reported explicitly.",
+    "causal_backend": "No CPU/CUDA causal attribution.",
+    "seed_only_attribution": "No claim that any observed difference is seed-only.",
+    "frozen_before_result": true,
+    "decision_verdict": "DESCRIPTIVE EFFECT-DIRECTION RULE FROZEN; NO POST-HOC COMPOSITE OR SIGNIFICANCE TEST"
+  },
+  "cuda_authorization_policy": {
+    "requested_device": "cuda",
+    "expected_resolved_device": "cuda",
+    "cpu_fallback": "prohibited",
+    "future_runtime_identity": "Capture the production CUDA runtime identity at each future authorization/execution; do not reuse an old Neural-SDE runtime hash if WGAN implementation/runtime inputs differ.",
+    "future_authorization_bindings": [
+      "member_id",
+      "replicate_seed/model_init_seed/data_seed/eval_seed tuple",
+      "effective singleton config hash",
+      "comparator methodology identity",
+      "seed-schedule identity",
+      "implementation Git blob",
+      "execution-contract identity",
+      "execution recipe head",
+      "requested_device=cuda",
+      "expected_resolved_device=cuda",
+      "captured production runtime identity",
+      "one-invocation maximum",
+      "training_authorized=true",
+      "validation_authorized=false",
+      "final_test_authorized=false"
+    ],
+    "future_execution": {
+      "background_from_outset": true,
+      "max_scientific_cli_invocations": 1,
+      "relaunch": false,
+      "overwrite": false,
+      "rerun": false,
+      "automatic_reserve_chain": false,
+      "durable_prelaunch_evidence": true,
+      "durable_post_execution_evidence": true,
+      "future_implementation_authorization_audit_execution_separation": true
+    },
+    "task_103_authorization_created": false,
+    "validation": false,
+    "final_test": false,
+    "verdict": "CUDA-ONLY FUTURE EXECUTION POLICY FROZEN; NO AUTHORIZATION CREATED"
+  },
+  "push_provenance": {
+    "timestamp": "2026-08-22 16:42:45 -0400",
+    "local_remote_tracking_transition": {
+      "from": "6e4789c1...",
+      "to": "42cfe4412880c044d721635ef6ab7e4d65d17c73"
+    },
+    "reflog_label": "update by push",
+    "remote_set_head_timestamp": "2026-08-22 16:42:46 -0400",
+    "fetch_head": "updated to 42cfe4412880c044d721635ef6ab7e4d65d17c73",
+    "scope": "Tasks 093-101 / nine commits carried in the observed push",
+    "initiating_process": "OBSERVED_PUSH_PROCESS_UNATTRIBUTED",
+    "attribution": "No attribution to Hermes, Claude, IDE, or user without evidence.",
+    "scientific_effect": 0,
+    "n4_n5_result_effect": 0,
+    "amendment_059_disclosure_required": true
+  },
+  "stale_docstring": {
+    "file": "reports/research/evidence/structured_vol_v5_runtime_sensitivity_analysis.py",
+    "historical_wording": "stdlib only + numpy if available otherwise pure python",
+    "numpy_import": false,
+    "numpy_execution_branch": false,
+    "actual_implementation": "Python standard-library statistics/json/hashlib/math/subprocess/path handling only; no NumPy import or NumPy branch.",
+    "classification": "STALE_DOCSTRING_DOCUMENTATION_ONLY",
+    "source_changed": false,
+    "runtime_scientific_effect": "NONE",
+    "amendment_059_record_required": true
+  },
+  "execution_firewalls": {
+    "wgan_implementations_created": 0,
+    "source_changes": 0,
+    "test_changes": 0,
+    "training": 0,
+    "simulation": 0,
+    "gate": 0,
+    "authorization": 0,
+    "validation": 0,
+    "external": 0,
+    "final": 0,
+    "n4_n5_recomputation": 0,
+    "j02_decision": 0,
+    "j03_decision": 0,
+    "provider_scientific_network": 0,
+    "git_remote_network": 0,
+    "push": 0,
+    "final_test": "SEALED"
+  },
+  "artifact_identity": {
+    "self_authentication": false,
+    "own_future_sha256_embedded": false,
+    "own_future_git_blob_embedded": false,
+    "identity_recorded_after_commit": true
+  },
+  "preregistration_verdict": "WGAN_COMPARATOR_PREREGISTERED_PENDING_INDEPENDENT_AUDIT"
+}
