@@ -22,6 +22,17 @@ _runner = importlib.util.module_from_spec(spec)  # type: ignore[attr-defined]
 spec.loader.exec_module(_runner)  # type: ignore[union-attr]
 
 
+# Independent identity values for non-tautological runtime/contract testing.
+EXPECTED_RUNTIME_SHA_VALID = "b" * 64
+EXPECTED_RUNTIME_SHA_MISMATCH = "c" * 64
+
+def _independent_contract_blob():
+    """Compute real committed execution-contract blob from repo bytes."""
+    return subprocess.run(
+        ["git", "hash-object", str(REPO / "reports/research/structured_vol_v5_training_execution_contract_v5.json")],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
 def _reset_invocations():
     _runner._SCIENTIFIC_INVOCATIONS = 0
     # also reset _INVOCATIONS if old version had it; new runner uses _SCIENTIFIC_INVOCATIONS
@@ -72,7 +83,7 @@ def _make_auth(tmp_path: Path, member_id: str = "v5-seed-02", **overrides) -> Pa
         "max_training_invocations": 1,
         "requested_device": "cuda",
         "expected_resolved_device": "cuda",
-        "expected_runtime_identity_sha256": "a" * 64,
+        "expected_runtime_identity_sha256": EXPECTED_RUNTIME_SHA_VALID,
     }
     base.update(overrides)
     auth_path.write_text(json.dumps(base, indent=2) + "\n", encoding="utf-8")
@@ -308,7 +319,7 @@ def _main_with_mocked_auth(member_id, auth_path, extra_monkeypatches=None):
                      'schema_version': 'runtime-identity-v1',
                      'requested_device': 'cuda',
                      'resolved_device': 'cuda',
-                     'runtime_identity_sha256': data['expected_runtime_identity_sha256'],
+                     'runtime_identity_sha256': EXPECTED_RUNTIME_SHA_VALID,
                  },
              ):
             return _runner.main(["--member-id", member_id, "--authorization", str(auth_path), "--execute"])
@@ -942,7 +953,7 @@ def _make_auth_for_member(tmp_path: Path, member_id: str, **overrides) -> Path:
         "max_training_invocations": 1,
         "requested_device": "cuda",
         "expected_resolved_device": "cuda",
-        "expected_runtime_identity_sha256": "a" * 64,
+        "expected_runtime_identity_sha256": EXPECTED_RUNTIME_SHA_VALID,
     }
     base.update(overrides)
     auth_path.write_text(json.dumps(base, indent=2) + "\n", encoding="utf-8")
@@ -1076,6 +1087,169 @@ def test_positive_mocked_j01_traverses_to_pre_scientific_boundary(tmp_path: Path
         assert marker_calls["n"] == 1
         assert sci_calls["n"] == 1
         assert not (REPO / "reports/research/structured_vol_v5_replicates" / prefix / "execution_started.json").exists()
+    finally:
+        _cleanup_auth(auth)
+        _reset_invocations()
+
+
+def test_reserve_j01_runner_eligible_via_eligible_constant():
+    """EXPECTED_RESERVE_J01_TUPLE constant covered without modifying runner."""
+    assert _runner.EXPECTED_RESERVE_J01_TUPLE == ("reserve-j01", 13281, 13282, 8283)
+
+
+def test_positive_mocked_j01_traverses_to_pre_scientific_boundary(tmp_path, monkeypatch):
+    """Positive synthetic j01 auth traverses all layers to pre-scientific boundary with mocked marker/training."""
+    _reset_invocations()
+    if not _runner.EXEC_CONTRACT_PATH.exists():
+        pytest.skip("contract v5 not yet created")
+    auth = _make_auth_for_member(tmp_path, "reserve-j01")
+    prefix = _runner.RUN_PREFIXES["reserve-j01"]
+    fake_report = tmp_path / "report" / prefix
+    fake_model = tmp_path / "model" / prefix
+    marker_calls = {"n": 0}
+    def fake_marker(rd, mid, pfx, ad, ap, **kw):
+        marker_calls["n"] += 1
+        assert mid == "reserve-j01"
+        assert ad["full_config_hash"] == _runner.EXPECTED_CONFIG_HASHES["reserve-j01"]
+        return fake_report / "execution_started.json"
+    sci_calls = {"n": 0}
+    def fake_sci(mid, rd, md, *a, **kw):
+        sci_calls["n"] += 1
+        _runner._SCIENTIFIC_INVOCATIONS += 1
+        return {"config_hash": _runner.EXPECTED_CONFIG_HASHES[mid], "run_prefix": _runner.RUN_PREFIXES[mid],
+                "checkpoint_path": str(md / "checkpoint.pt"), "checkpoint_sha256": "a"*64,
+                "curve_path": str(md / "training_curve.json"), "curve_sha256": "b"*64,
+                "final_checkpoint_path": None, "final_checkpoint_sha256": None,
+                "gate_diagnostics": {"variance_ratio": 1.0}, "gate_passed": True,
+                "best_epoch": 10, "initial_internal_rbf": 1.0, "best_internal_rbf": 0.5,
+                "training_series_sha256": "4863b2cc63a09ffb03bbe455c7859c46b521b6f7bef8212e0e3876ac8488669c",
+                "fit_window_count": 672, "selection_window_count": 107,
+                "training_start_utc": "2026-08-22T00:00:00+00:00", "training_end_utc": "2026-08-22T01:00:00+00:00"}
+    monkeypatch.setattr(_runner, "_exclusive_create_execution_started", fake_marker)
+    monkeypatch.setattr(_runner, "_run_scientific_training", fake_sci)
+    monkeypatch.setattr(_runner, "derive_report_dir", lambda p: fake_report if p == prefix else _runner.derive_report_dir(p))
+    monkeypatch.setattr(_runner, "derive_model_dir", lambda p: fake_model if p == prefix else _runner.derive_model_dir(p))
+    assert _runner.EXPECTED_RESERVE_J01_TUPLE == ("reserve-j01", 13281, 13282, 8283)
+    try:
+        rc = _main_with_mocked_auth("reserve-j01", auth)
+        assert rc == 0, f"positive j01 should traverse to COMPLETED rc=0, got {rc}"
+        assert marker_calls["n"] == 1
+        assert sci_calls["n"] == 1
+        assert not (REPO / "reports/research/structured_vol_v5_replicates" / prefix / "execution_started.json").exists()
+    finally:
+        _cleanup_auth(auth)
+        _reset_invocations()
+
+
+def test_j01_runtime_identity_mismatch_refused_before_marker(tmp_path, monkeypatch):
+    """Runtime observed-vs-expected mismatch refuses before marker and science (non-tautological)."""
+    _reset_invocations()
+    if not _runner.EXEC_CONTRACT_PATH.exists():
+        pytest.skip("contract v5 not yet created")
+    auth = _make_auth_for_member(tmp_path, "reserve-j01")  # expected = EXPECTED_RUNTIME_SHA_VALID
+    prefix = _runner.RUN_PREFIXES["reserve-j01"]
+    fake_report = tmp_path / "report" / prefix
+    fake_model = tmp_path / "model" / prefix
+    marker_calls = {"n": 0}
+    sci_calls = {"n": 0}
+    def fm(*a, **kw):
+        marker_calls["n"] += 1; return fake_report / "x.json"
+    def fs(*a, **kw):
+        sci_calls["n"] += 1; return {}
+    monkeypatch.setattr(_runner, "_exclusive_create_execution_started", fm)
+    monkeypatch.setattr(_runner, "_run_scientific_training", fs)
+    monkeypatch.setattr(_runner, "derive_report_dir", lambda p: fake_report if p == prefix else _runner.derive_report_dir(p))
+    monkeypatch.setattr(_runner, "derive_model_dir", lambda p: fake_model if p == prefix else _runner.derive_model_dir(p))
+    import subprocess as _sp
+    data = json.loads(auth.read_text(encoding="utf-8"))
+    rb = data.get("runner_git_blob", "x"); cb = data.get("execution_contract_git_blob", "x"); sb = data.get("schedule_git_blob", "x")
+    blob = _sp.run(["git", "hash-object", str(auth)], capture_output=True, text=True, check=True).stdout.strip()
+    def mb(p):
+        s = str(p)
+        if s == str(auth): return blob
+        if "replicate_training_runner" in s: return rb
+        if "training_execution_contract" in s: return cb
+        if "seed_schedule" in s: return sb
+        return blob
+    def mh(p):
+        s = str(p)
+        if "replicate_training_runner" in s: return rb
+        if "training_execution_contract" in s: return cb
+        if "seed_schedule" in s: return sb
+        return blob
+    from unittest.mock import patch as _up
+    with patch.object(_runner, "_is_tracked", return_value=True), \
+         patch.object(_runner, "_git_head_blob", side_effect=mh), \
+         patch.object(_runner, "_git_blob", side_effect=mb), \
+         patch.object(_runner, "_is_ancestor", return_value=True), \
+         patch("subprocess.run", side_effect=lambda cmd, *a, **kw: (
+             type('R', (), {'returncode': 0, 'stdout': EXPECTED_RUNTIME_SHA_MISMATCH + '\n', 'stderr': ''})()
+             if isinstance(cmd, list) and 'rev-parse' in str(cmd) and 'replicate' not in str(cmd) and 'contract' not in str(cmd) and 'schedule' not in str(cmd)
+             else type('R', (), {'returncode': 0, 'stdout': '', 'stderr': ''})()
+             if isinstance(cmd, list) and ('diff' in str(cmd) or 'merge-base' in str(cmd))
+             else _sp.run(cmd, *a, **kw)
+         )), \
+         patch('neuralmarket.core.device.resolve_device', return_value=torch.device("cuda")), \
+         patch('neuralmarket.core.device.configure_device_determinism'), \
+         patch('neuralmarket.core.runtime_identity.build_runtime_identity',
+               return_value={'schema_version': 'runtime-identity-v1', 'requested_device': 'cuda',
+                             'resolved_device': 'cuda', 'runtime_identity_sha256': EXPECTED_RUNTIME_SHA_MISMATCH}):
+        rc = _runner.main(["--member-id", "reserve-j01", "--authorization", str(auth), "--execute"])
+    assert rc == 2, f"expected refusal on runtime mismatch, got rc={rc}"
+    assert marker_calls["n"] == 0, "marker must NOT be created on runtime mismatch"
+    assert sci_calls["n"] == 0, "science must NOT be reached on runtime mismatch"
+    _cleanup_auth(auth)
+    _reset_invocations()
+
+
+def test_j01_wrong_contract_blob_rejected_before_marker(tmp_path, monkeypatch):
+    """Wrong execution_contract_git_blob rejected before marker using independently computed real blob."""
+    real_cb = _independent_contract_blob()
+    wrong_cb = "d" * 64
+    assert wrong_cb != real_cb
+    auth = _make_auth_for_member(tmp_path, "reserve-j01", execution_contract_git_blob=wrong_cb)
+    try:
+        # _check_with_mock patches all git boundaries; mock returns independent real contract blob
+        import subprocess as _sp
+        data = json.loads(auth.read_text(encoding="utf-8"))
+        rb = data.get("runner_git_blob", "x"); sb = data.get("schedule_git_blob", "x")
+        real_contract = _independent_contract_blob()  # INDEPENDENT of auth under test
+        blob = _sp.run(["git", "hash-object", str(auth)], capture_output=True, text=True, check=True).stdout.strip()
+        def mb(p):
+            s = str(p)
+            if s == str(auth): return blob
+            if "replicate_training_runner" in s: return rb
+            if "training_execution_contract" in s: return real_contract  # independent
+            if "seed_schedule" in s: return sb
+            return blob
+        def mh(p):
+            s = str(p)
+            if "replicate_training_runner" in s: return rb
+            if "training_execution_contract" in s: return real_contract  # independent
+            if "seed_schedule" in s: return sb
+            return blob
+        from unittest.mock import patch as _up
+        _orig = _sp.run
+        def mr(cmd, *a, **kw):
+            if isinstance(cmd, list) and ("diff" in str(cmd) or "merge-base" in str(cmd)):
+                return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+            return _orig(cmd, *a, **kw)
+        with patch.object(_runner, "_is_tracked", return_value=True),              patch.object(_runner, "_is_clean", return_value=True),              patch.object(_runner, "_git_head_blob", side_effect=mh),              patch.object(_runner, "_git_blob", side_effect=mb),              patch.object(_runner, "_is_ancestor", return_value=True),              patch("subprocess.run", side_effect=mr):
+            with pytest.raises(RuntimeError, match="execution_contract_git_blob mismatch"):
+                _runner.check_authorization("reserve-j01", auth)
+    finally:
+        _cleanup_auth(auth)
+        _reset_invocations()
+
+
+def test_j01_stale_recipe_rejected_before_marker(tmp_path, monkeypatch):
+    """Stale recipe head rejected before marker."""
+    auth = _make_auth_for_member(tmp_path, "reserve-j01")
+    data = json.loads(auth.read_text(encoding="utf-8"))
+    data["execution_recipe_head"] = "0" * 40
+    auth.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    try:
+        _check_with_mock(auth, "reserve-j01", "execution_recipe_head invalid|not ancestor|not committed")
     finally:
         _cleanup_auth(auth)
         _reset_invocations()
