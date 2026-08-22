@@ -46,21 +46,29 @@ HISTORICAL_GENERIC_REPORT = REPO / "reports/research/structured_vol_v5_report.js
 HARNESS_PATH = REPO / "reports/research/evidence/structured_vol_v5_replicate_training_runner.py"
 EXEC_CONTRACT_PATH = REPO / "reports/research/structured_vol_v5_training_execution_contract_v5.json"
 
+# reserve-j01 admitted as FIFTH_VALID_MEMBER_CANDIDATE per Amendments 047/048
+# (DETERMINISTIC_FIRST_RESERVE_PROMOTION); all other reserves remain refused.
+ELIGIBLE_RESERVE_J01 = "reserve-j01"
+
 # Schedule-derived expected hashes (frozen at 89fcc9c)
+# reserve-j01 admitted as FIFTH_VALID_MEMBER_CANDIDATE per 047/048 (DETERMINISTIC_FIRST_RESERVE_PROMOTION)
 EXPECTED_CONFIG_HASHES: dict[str, str] = {
     "v5-seed-01": "5bdbaabd2fb257a7a82b8c600403e638d860520aa4952055a1b153894caf4157",
     "v5-seed-02": "62c7406cb3a2c64237d39559370d70a27f8111f7dd1dc7ee581da9bd475cf00b",
     "v5-seed-03": "e333325c804d95d2f34ad14138e312cde0a00df2ebf1056741abbdc52a8b0955",
     "v5-seed-04": "77e7de9efabb7ce35107e7c9f80f9fb9e28fff6f1a31978c35f601cbf154312b",
     "v5-seed-05": "1e8aa171993a1aba52534ae031d05ba5e8dbdb15772678bf3ec72fc68dcde897",
+    ELIGIBLE_RESERVE_J01: "38c5113b27568e14eabb04621595e7114b8140577459abfe7061ffafd118b605",
 }
 RUN_PREFIXES: dict[str, str] = {k: v[:16] for k, v in EXPECTED_CONFIG_HASHES.items()}
+
+# Schedule-derived reserve-j01 family check (same stripping as primaries): 730475...
+EXPECTED_RESERVE_J01_TUPLE = ("reserve-j01", 13281, 13282, 8283)
 
 RESERVE_MEMBERS = {
     "reserve-01",
     "reserve-02",
     "reserve-03",
-    "reserve-j01",
     "reserve-j02",
     "reserve-j03",
 }
@@ -140,6 +148,18 @@ def get_member(schedule: dict[str, Any], member_id: str) -> dict[str, Any]:
     for m in schedule.get("primary_members", []):
         if m.get("member_id") == member_id:
             return m  # type: ignore[return-value]
+    # reserve-j01 is the only eligible reserve per Amendments 047/048
+    # (DETERMINISTIC_FIRST_RESERVE_PROMOTION) — looked up from reserve_policy.
+    if member_id == ELIGIBLE_RESERVE_J01:
+        for r in schedule.get("reserve_policy", {}).get("reserves", []):
+            if r.get("slot") == member_id:
+                return {
+                    "member_id": r.get("slot"),
+                    "replicate_seed": r.get("replicate_seed"),
+                    "model_init_seed": r.get("model_init_seed"),
+                    "data_seed": r.get("data_seed"),
+                    "eval_seed": r.get("eval_seed"),
+                }  # type: ignore[return-value]
     raise RuntimeError(f"member {member_id!r} not in primary_members")
 
 
@@ -717,22 +737,22 @@ def _run_scientific_training(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Per-member v5 replicate training runner (fail-closed)")
-    parser.add_argument("--member-id", required=True, help="v5-seed-02..05 only")
+    parser.add_argument("--member-id", required=True, help="v5-seed-02..05 or eligible reserve-j01 only")
     parser.add_argument("--authorization", type=str, default=None, help="path to tracked authorization JSON")
     parser.add_argument("--execute", action="store_true", help="execute (default is dry-run)")
     args = parser.parse_args(argv)
 
     member_id: str = args.member_id
 
-    # Hard refuse: reserves and seed-01
+    # Hard refuse: non-j01 reserves and seed-01
     if member_id in RESERVE_MEMBERS:
         print(f"REFUSED: reserve execution not authorized: {member_id}", file=sys.stderr)
         return 2
     if member_id == "v5-seed-01":
         print("REFUSED: v5-seed-01 is EXISTING_FROZEN", file=sys.stderr)
         return 2
-    if member_id not in ALLOWLIST:
-        print(f"REFUSED: member not in allowlist {sorted(ALLOWLIST)}: {member_id!r}", file=sys.stderr)
+    if member_id != ELIGIBLE_RESERVE_J01 and member_id not in ALLOWLIST:
+        print(f"REFUSED: member not in allowlist {sorted(ALLOWLIST | {ELIGIBLE_RESERVE_J01})}: {member_id!r}", file=sys.stderr)
         return 2
 
     # Runner self-identity check (must be tracked, has HEAD blob, clean)
