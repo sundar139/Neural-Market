@@ -1003,8 +1003,8 @@ def test_j02_j03_and_unknown_remain_rejected():
     _reset_invocations()
 
 
-def test_no_real_training_invoked_for_j01_path(monkeypatch: pytest.MonkeyPatch):
-    """Ensure no test invokes real scientific training."""
+def test_refused_j02_never_invokes_scientific_training(monkeypatch: pytest.MonkeyPatch):
+    """Refused reserve-j02 path never reaches scientific training."""
     # The runner's _run_scientific_training must not be called in any j01 dry-run path
     called = {"n": 0}
     orig = _runner._run_scientific_training
@@ -1015,9 +1015,67 @@ def test_no_real_training_invoked_for_j01_path(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(_runner, "_run_scientific_training", spy)
     _reset_invocations()
-    # Dry-run for j01 should not reach training (it stops at preflight/marker checks)
-    # But runner needs to be committed first; we just verify spy not called when main refused early
     _runner.main(["--member-id", "reserve-j02"])
     assert called["n"] == 0
     _reset_invocations()
 
+
+def test_reserve_j01_runner_eligible_via_eligible_constant():
+    assert _runner.EXPECTED_RESERVE_J01_TUPLE == ("reserve-j01", 13281, 13282, 8283)
+
+
+def test_positive_mocked_j01_traverses_to_pre_scientific_boundary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Positive synthetic reserve-j01 auth traverses eligibility->config->family->auth-v2->CUDA/runtime to pre-scientific boundary."""
+    _reset_invocations()
+    if not _runner.EXEC_CONTRACT_PATH.exists():
+        pytest.skip("contract v2 not yet created")
+    auth = _make_auth_for_member(tmp_path, "reserve-j01")
+    prefix = _runner.RUN_PREFIXES["reserve-j01"]
+    fake_report = tmp_path / "report" / prefix
+    fake_model = tmp_path / "model" / prefix
+    marker_calls = {"n": 0}
+    def fake_marker(report_dir, member_id, prefix_arg, auth_data, auth_path, **kw):
+        marker_calls["n"] += 1
+        assert member_id == "reserve-j01"
+        assert prefix_arg == prefix
+        assert auth_data["member_id"] == "reserve-j01"
+        assert auth_data["full_config_hash"] == _runner.EXPECTED_CONFIG_HASHES["reserve-j01"]
+        return fake_report / "execution_started.json"
+    sci_calls = {"n": 0}
+    def fake_sci(member_id, report_dir, model_dir, *args, **kwargs):
+        sci_calls["n"] += 1
+        _runner._SCIENTIFIC_INVOCATIONS += 1
+        return {
+            "config_hash": _runner.EXPECTED_CONFIG_HASHES[member_id],
+            "run_prefix": _runner.RUN_PREFIXES[member_id],
+            "checkpoint_path": str(model_dir / "checkpoint.pt"),
+            "checkpoint_sha256": "a" * 64,
+            "curve_path": str(model_dir / "training_curve.json"),
+            "curve_sha256": "b" * 64,
+            "final_checkpoint_path": None,
+            "final_checkpoint_sha256": None,
+            "gate_diagnostics": {"variance_ratio": 1.0},
+            "gate_passed": True,
+            "best_epoch": 10,
+            "initial_internal_rbf": 1.0,
+            "best_internal_rbf": 0.5,
+            "training_series_sha256": "4863b2cc63a09ffb03bbe455c7859c46b521b6f7bef8212e0e3876ac8488669c",
+            "fit_window_count": 672,
+            "selection_window_count": 107,
+            "training_start_utc": "2026-08-22T00:00:00+00:00",
+            "training_end_utc": "2026-08-22T01:00:00+00:00",
+        }
+    monkeypatch.setattr(_runner, "_exclusive_create_execution_started", fake_marker)
+    monkeypatch.setattr(_runner, "_run_scientific_training", fake_sci)
+    monkeypatch.setattr(_runner, "derive_report_dir", lambda p: fake_report if p == prefix else _runner.derive_report_dir(p))
+    monkeypatch.setattr(_runner, "derive_model_dir", lambda p: fake_model if p == prefix else _runner.derive_model_dir(p))
+    assert _runner.EXPECTED_RESERVE_J01_TUPLE == ("reserve-j01", 13281, 13282, 8283)
+    try:
+        rc = _main_with_mocked_auth("reserve-j01", auth)
+        assert rc == 0, f"positive j01 auth should traverse to COMPLETED, got rc={rc}"
+        assert marker_calls["n"] == 1
+        assert sci_calls["n"] == 1
+        assert not (REPO / "reports/research/structured_vol_v5_replicates" / prefix / "execution_started.json").exists()
+    finally:
+        _cleanup_auth(auth)
+        _reset_invocations()
