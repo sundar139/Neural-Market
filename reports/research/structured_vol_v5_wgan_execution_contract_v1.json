@@ -1,0 +1,101 @@
+{
+  "schema_version": "structured-vol-v5-wgan-execution-contract-v1",
+  "task_id": "NM-R3-V5-WGAN-COMPARATOR-IMPLEMENTATION-109",
+  "status": "IMPLEMENTATION_FROZEN_PENDING_LATER_AUTHORIZATION",
+  "methodology": {
+    "preregistration_path": "reports/research/structured_vol_v5_wgan_comparator_preregistration_v1.json",
+    "preregistration_sha256": "6c4a2725daea9cc616cb540245f669ab8d230428309713202f9bb66ea535a037",
+    "preregistration_git_blob": "72311888542ee83ff497b5f0adbbaf6429e8452a",
+    "amendment_060_path": "reports/protocol/research_protocol_amendment_060.md",
+    "amendment_060_sha256": "2f9bb12f66496d2a7e60d8773271788090c7882c5a7c88171fabff45a6f8239c",
+    "amendment_060_git_blob": "a1ba052abe8b4a50887ec84b934e16a328e60596"
+  },
+  "runtime_config": {
+    "path": "configs/research/structured_vol_wgan_comparator_v1.yaml",
+    "sha256": "de0b4fe775ead7bfad922189d5562c31f7229bbc785d3887e6342909b9a288f7",
+    "git_blob": "e0740afc24697f2eab3620a4243d04411aa508cb"
+  },
+  "seed_schedule": {
+    "path": "reports/research/structured_vol_v5_seed_schedule_v1.json",
+    "sha256": "8c471c3311b05e647b543e46e310a8f1b1055ec00d4690f726dcd6d775f06fd0",
+    "git_blob": "558d08bfee98dbd0c170d65e6a9b1737700c9e98",
+    "primary_members": [
+      {"member_id": "wgan-seed-01", "replicate_seed": 8281, "model_init_seed": 8281, "data_seed": 8282, "eval_seed": 8283},
+      {"member_id": "wgan-seed-02", "replicate_seed": 9281, "model_init_seed": 9281, "data_seed": 9282, "eval_seed": 8283},
+      {"member_id": "wgan-seed-03", "replicate_seed": 10281, "model_init_seed": 10281, "data_seed": 10282, "eval_seed": 8283},
+      {"member_id": "wgan-seed-04", "replicate_seed": 11281, "model_init_seed": 11281, "data_seed": 11282, "eval_seed": 8283},
+      {"member_id": "wgan-seed-05", "replicate_seed": 12281, "model_init_seed": 12281, "data_seed": 12282, "eval_seed": 8283}
+    ],
+    "reserve_order": ["reserve-wgan-j01", "reserve-wgan-j02", "reserve-wgan-j03"],
+    "automatic_reserve_chain": false
+  },
+  "implementation_binding": {
+    "status": "DEFERRED_TO_LATER_AUTHORIZATION",
+    "source_paths": [
+      "src/neuralmarket/models/wgan_cde.py",
+      "src/neuralmarket/research/wgan_comparator.py"
+    ],
+    "runner_path": "src/neuralmarket/research/wgan_runner.py"
+  },
+  "authorization": {
+    "required": true,
+    "schema_version": "structured-vol-v5-wgan-authorization-v1",
+    "required_fields": [
+      "schema_version",
+      "member_id",
+      "replicate_seed",
+      "model_init_seed",
+      "data_seed",
+      "eval_seed",
+      "effective_config_sha256",
+      "effective_config_git_blob",
+      "comparator_methodology_sha256",
+      "amendment_060_sha256",
+      "seed_schedule_sha256",
+      "seed_schedule_git_blob",
+      "execution_contract_git_blob",
+      "runner_git_blob",
+      "implementation_source_git_blobs",
+      "execution_recipe_head",
+      "requested_device",
+      "expected_resolved_device",
+      "expected_runtime_identity_sha256",
+      "max_scientific_invocations",
+      "training_authorized",
+      "validation_authorized",
+      "final_test_authorized"
+    ],
+    "committed_required": true,
+    "clean_worktree_required": true,
+    "implementation_binding_required": true,
+    "training_authorized": true,
+    "validation_authorized": false,
+    "final_test_authorized": false,
+    "max_scientific_invocations": 1
+  },
+  "runtime": {
+    "requested_device": "cuda",
+    "expected_resolved_device": "cuda",
+    "cpu_fallback": false,
+    "torch_deterministic_algorithms": true,
+    "cudnn_benchmark": false,
+    "cudnn_deterministic": true,
+    "nondeterministic_kernel_policy": "FAIL_CLOSED",
+    "validation_access": false,
+    "final_test_access": false,
+    "provider_network": false,
+    "git_remote_network": false
+  },
+  "execution": {
+    "dry_run_supported": true,
+    "scientific_execute_supported": true,
+    "automatic_reserve_chain": false,
+    "overwrite": false,
+    "relaunch": false,
+    "result_dependent_retry": false,
+    "final_test_access": false,
+    "h2_calculation": false,
+    "task_109_authorization_created": false,
+    "task_109_scientific_execution": false
+  }
+}

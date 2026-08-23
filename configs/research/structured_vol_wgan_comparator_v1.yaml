@@ -1,0 +1,54 @@
+version: structured-vol-v5-wgan-comparator-v1
+model:
+  generator_type: conditional_neural_cde
+  critic_type: conditional_neural_cde_path_critic
+  hidden_state_dim: 64
+  latent_dim: 32
+  generator_control_dim: 3
+  critic_control_dim: 6
+  activation: SiLU
+  network_normalization: none
+training:
+  optimizer: Adam
+  learning_rate: 1.0e-4
+  betas: [0.0, 0.9]
+  eps: 1.0e-8
+  weight_decay: 0.0
+  gradient_clipping: false
+  lambda_gp: 10.0
+  critic_generator_update_ratio: 5
+  batch_size: 64
+  max_generator_epochs: 400
+  patience_generator_epochs: 40
+  min_delta: 0.0
+  selection_metric: internal_selection_terminal_wasserstein_normalized
+  selection_direction: lower_is_better
+  selection_paths: 1024
+  real_reference_paths: 1024
+  bootstrap_seed: 8801
+  block_length: 22
+  eval_seed: 8283
+data:
+  underlying: SPY
+  training_start: 2018-05-01
+  training_end: 2021-12-31
+  context_lookback: 22
+  horizon: 63
+  dt: 0.003968253968253968
+  fit_fraction: 0.8
+  normalization: training_fit_only
+  validation_access: prohibited
+  final_test_access: prohibited
+determinism:
+  requested_device: cuda
+  expected_resolved_device: cuda
+  cpu_fallback: prohibited
+  torch_deterministic_algorithms: true
+  cudnn_benchmark: false
+  cudnn_deterministic: true
+  nondeterministic_kernel: fail_closed
+provenance:
+  preregistration_sha256: 6c4a2725daea9cc616cb540245f669ab8d230428309713202f9bb66ea535a037
+  amendment_060_sha256: 2f9bb12f66496d2a7e60d8773271788090c7882c5a7c88171fabff45a6f8239c
+  seed_schedule_sha256: 8c471c3311b05e647b543e46e310a8f1b1055ec00d4690f726dcd6d775f06fd0
+  seed_schedule_git_blob: 558d08bfee98dbd0c170d65e6a9b1737700c9e98
