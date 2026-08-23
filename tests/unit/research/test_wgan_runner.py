@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -48,6 +50,117 @@ def _payload() -> dict[str, object]:
         "validation_authorized": False,
         "final_test_authorized": False,
     }
+
+
+AUTHORIZATION_RELATIVE_PATH = Path(
+    "reports/research/authorizations/structured_vol_v5_wgan_training/wgan-seed-01-v1.json"
+)
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _new_git_repo(tmp_path: Path) -> Path:
+    repo = tmp_path / "authorization-repo"
+    repo.mkdir()
+    _git(repo, "init", "--quiet")
+    _git(repo, "config", "user.name", "Task 118 Tests")
+    _git(repo, "config", "user.email", "task-118-tests@example.invalid")
+    return repo
+
+
+def _write_authorization(path: Path) -> None:
+    path.write_text(json.dumps({"member_id": "wgan-seed-01"}) + "\n", encoding="utf-8")
+
+
+def test_load_authorization_accepts_repository_relative_path() -> None:
+    payload = wgan_runner._load_authorization(AUTHORIZATION_RELATIVE_PATH)
+    assert payload["member_id"] == "wgan-seed-01"
+
+
+def test_load_authorization_accepts_repository_absolute_path() -> None:
+    payload = wgan_runner._load_authorization(
+        (wgan_runner.REPO / AUTHORIZATION_RELATIVE_PATH).resolve()
+    )
+    assert payload["member_id"] == "wgan-seed-01"
+
+
+def test_load_authorization_rejects_absolute_path_outside_repository(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="inside the repository"):
+        wgan_runner._load_authorization(tmp_path / "outside.json")
+
+
+def test_load_authorization_rejects_relative_traversal() -> None:
+    with pytest.raises(RuntimeError, match="inside the repository"):
+        wgan_runner._load_authorization(Path("..") / "outside.json")
+
+
+def test_load_authorization_rejects_symlink_escape(tmp_path: Path) -> None:
+    outside = tmp_path / "outside.json"
+    _write_authorization(outside)
+    link = wgan_runner.REPO / ".agent-memory/task-118-authorization-link.json"
+    try:
+        link.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable in this environment: {exc}")
+    try:
+        with pytest.raises(RuntimeError, match="inside the repository"):
+            wgan_runner._load_authorization(
+                Path(".agent-memory/task-118-authorization-link.json")
+            )
+    finally:
+        link.unlink(missing_ok=True)
+
+
+def test_load_authorization_rejects_untracked_in_repository_artifact() -> None:
+    relative = Path(".agent-memory/task-118-untracked-authorization.json")
+    path = wgan_runner.REPO / relative
+    _write_authorization(path)
+    try:
+        with pytest.raises(RuntimeError, match="tracked"):
+            wgan_runner._load_authorization(relative)
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_load_authorization_rejects_tracked_but_uncommitted_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _new_git_repo(tmp_path)
+    authorization = repo / "authorization.json"
+    _write_authorization(authorization)
+    _git(repo, "add", "authorization.json")
+    monkeypatch.setattr(wgan_runner, "REPO", repo)
+    with pytest.raises(RuntimeError, match="committed"):
+        wgan_runner._load_authorization(Path("authorization.json"))
+
+
+def test_load_authorization_rejects_dirty_tracked_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _new_git_repo(tmp_path)
+    authorization = repo / "authorization.json"
+    _write_authorization(authorization)
+    _git(repo, "add", "authorization.json")
+    _git(repo, "commit", "--quiet", "-m", "freeze authorization")
+    authorization.write_text(json.dumps({"member_id": "mutated"}) + "\n", encoding="utf-8")
+    monkeypatch.setattr(wgan_runner, "REPO", repo)
+    with pytest.raises(RuntimeError, match="clean and equal to HEAD"):
+        wgan_runner._load_authorization(Path("authorization.json"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows case-variant behavior")
+def test_load_authorization_accepts_windows_case_variant() -> None:
+    case_variant = Path(str((wgan_runner.REPO / AUTHORIZATION_RELATIVE_PATH).resolve()).upper())
+    payload = wgan_runner._load_authorization(case_variant)
+    assert payload["member_id"] == "wgan-seed-01"
 
 
 def test_contract_binds_frozen_methodology_and_defers_implementation_blob() -> None:

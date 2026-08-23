@@ -260,8 +260,11 @@ def validate_authorization_payload(
 
 def _load_authorization(path: Path) -> dict[str, Any]:
     """Load only a tracked, committed, clean authorization artifact."""
+    repo = REPO.resolve()
+    candidate = path if path.is_absolute() else repo / path
+    path = candidate.resolve()
     try:
-        path.resolve().relative_to(REPO.resolve())
+        path.relative_to(repo)
     except ValueError as exc:
         raise RuntimeError("authorization artifact must be inside the repository") from exc
     if not _is_tracked(path):
