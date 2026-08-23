@@ -638,6 +638,7 @@ def classify_valid_gate_result(
             "report_only": gate_diagnostics["report_only"],
         },
         "gate_diagnostics": gate_diagnostics,
+        "numerically_valid": True,
         "numerically_included": True,
         "completed_model_member": True,
         "poor_performance_discarded": False,
