@@ -170,6 +170,18 @@ def require_authorization(auth_path: str | Path | None) -> Path:
     return path
 
 
+def _normalize_authorization_path(path: Path) -> Path:
+    """Return one canonical absolute authorization path inside the repository."""
+    repo = REPO.resolve()
+    candidate = path if path.is_absolute() else repo / path
+    candidate = candidate.resolve()
+    try:
+        candidate.relative_to(repo)
+    except ValueError as exc:
+        raise RuntimeError("authorization artifact must be inside the repository") from exc
+    return candidate
+
+
 def require_scientific_cuda(requested_device: str) -> None:
     """Reject every future scientific CPU request before data access."""
     if requested_device.strip().lower() != "cuda":
@@ -259,10 +271,8 @@ def validate_authorization_payload(
 
 
 def _load_authorization(path: Path) -> dict[str, Any]:
-    """Load only a tracked, committed, clean authorization artifact."""
+    """Load a normalized, tracked, committed, clean authorization artifact."""
     repo = REPO.resolve()
-    candidate = path if path.is_absolute() else repo / path
-    path = candidate.resolve()
     try:
         path.relative_to(repo)
     except ValueError as exc:
@@ -311,12 +321,11 @@ def _exclusive_create_execution_started(
     report_dir: Path, member_id: str, auth_path: Path, identity: dict[str, Any]
 ) -> Path:
     """Publish one complete exclusive execution marker after all preflight."""
-    report_dir.mkdir(parents=True, exist_ok=True)
     destination = report_dir / "execution_started.json"
     payload = {
         "schema_version": "structured-vol-v5-wgan-execution-start-v1",
         "member_id": member_id,
-        "authorization_path": auth_path.relative_to(REPO).as_posix(),
+        "authorization_path": auth_path.relative_to(REPO.resolve()).as_posix(),
         "authorization_git_blob": _git_blob(auth_path),
         "implementation_identity": identity,
         "validation_accesses": 0,
@@ -325,6 +334,7 @@ def _exclusive_create_execution_started(
         "network_calls": 0,
     }
     temporary = report_dir / f".execution_started.{os.getpid()}.tmp"
+    report_dir.mkdir(parents=True, exist_ok=True)
     temporary.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     try:
         os.link(temporary, destination)
@@ -447,7 +457,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     try:
-        auth_path = require_authorization(args.authorization)
+        if args.authorization is None:
+            require_authorization(None)
+        auth_path = _normalize_authorization_path(Path(args.authorization))
+        auth_path = require_authorization(auth_path)
         auth_data = _load_authorization(auth_path)
         require_scientific_cuda(str(auth_data.get("requested_device", "")))
         resolved = resolve_device("cuda")

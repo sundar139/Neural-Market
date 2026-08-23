@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -81,25 +82,29 @@ def _write_authorization(path: Path) -> None:
 
 
 def test_load_authorization_accepts_repository_relative_path() -> None:
-    payload = wgan_runner._load_authorization(AUTHORIZATION_RELATIVE_PATH)
+    payload = wgan_runner._load_authorization(
+        wgan_runner._normalize_authorization_path(AUTHORIZATION_RELATIVE_PATH)
+    )
     assert payload["member_id"] == "wgan-seed-01"
 
 
 def test_load_authorization_accepts_repository_absolute_path() -> None:
     payload = wgan_runner._load_authorization(
-        (wgan_runner.REPO / AUTHORIZATION_RELATIVE_PATH).resolve()
+        wgan_runner._normalize_authorization_path(
+            (wgan_runner.REPO / AUTHORIZATION_RELATIVE_PATH).resolve()
+        )
     )
     assert payload["member_id"] == "wgan-seed-01"
 
 
 def test_load_authorization_rejects_absolute_path_outside_repository(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="inside the repository"):
-        wgan_runner._load_authorization(tmp_path / "outside.json")
+        wgan_runner._normalize_authorization_path(tmp_path / "outside.json")
 
 
 def test_load_authorization_rejects_relative_traversal() -> None:
     with pytest.raises(RuntimeError, match="inside the repository"):
-        wgan_runner._load_authorization(Path("..") / "outside.json")
+        wgan_runner._normalize_authorization_path(Path("..") / "outside.json")
 
 
 def test_load_authorization_rejects_symlink_escape(tmp_path: Path) -> None:
@@ -112,7 +117,7 @@ def test_load_authorization_rejects_symlink_escape(tmp_path: Path) -> None:
         pytest.skip(f"symlink creation unavailable in this environment: {exc}")
     try:
         with pytest.raises(RuntimeError, match="inside the repository"):
-            wgan_runner._load_authorization(
+            wgan_runner._normalize_authorization_path(
                 Path(".agent-memory/task-118-authorization-link.json")
             )
     finally:
@@ -125,7 +130,9 @@ def test_load_authorization_rejects_untracked_in_repository_artifact() -> None:
     _write_authorization(path)
     try:
         with pytest.raises(RuntimeError, match="tracked"):
-            wgan_runner._load_authorization(relative)
+            wgan_runner._load_authorization(
+                wgan_runner._normalize_authorization_path(relative)
+            )
     finally:
         path.unlink(missing_ok=True)
 
@@ -139,7 +146,9 @@ def test_load_authorization_rejects_tracked_but_uncommitted_artifact(
     _git(repo, "add", "authorization.json")
     monkeypatch.setattr(wgan_runner, "REPO", repo)
     with pytest.raises(RuntimeError, match="committed"):
-        wgan_runner._load_authorization(Path("authorization.json"))
+        wgan_runner._load_authorization(
+            wgan_runner._normalize_authorization_path(Path("authorization.json"))
+        )
 
 
 def test_load_authorization_rejects_dirty_tracked_artifact(
@@ -153,13 +162,17 @@ def test_load_authorization_rejects_dirty_tracked_artifact(
     authorization.write_text(json.dumps({"member_id": "mutated"}) + "\n", encoding="utf-8")
     monkeypatch.setattr(wgan_runner, "REPO", repo)
     with pytest.raises(RuntimeError, match="clean and equal to HEAD"):
-        wgan_runner._load_authorization(Path("authorization.json"))
+        wgan_runner._load_authorization(
+            wgan_runner._normalize_authorization_path(Path("authorization.json"))
+        )
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows case-variant behavior")
 def test_load_authorization_accepts_windows_case_variant() -> None:
     case_variant = Path(str((wgan_runner.REPO / AUTHORIZATION_RELATIVE_PATH).resolve()).upper())
-    payload = wgan_runner._load_authorization(case_variant)
+    payload = wgan_runner._load_authorization(
+        wgan_runner._normalize_authorization_path(case_variant)
+    )
     assert payload["member_id"] == "wgan-seed-01"
 
 
@@ -217,6 +230,133 @@ def test_dry_run_never_trains_or_creates_scientific_namespace(
     assert wgan_runner.main(["--member-id", "wgan-seed-01"]) == 0
     assert not list(tmp_path.rglob("execution_started.json"))
     assert not list(tmp_path.rglob("*.pt"))
+
+
+def _patch_execute_boundary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> dict[str, object]:
+    auth_path = wgan_runner.REPO / AUTHORIZATION_RELATIVE_PATH
+    auth_data = json.loads(auth_path.read_text(encoding="utf-8"))
+    monkeypatch.setattr(wgan_runner, "WGAN_RUN_ROOT", tmp_path / "wgan-runs")
+    monkeypatch.setattr(
+        wgan_runner,
+        "resolve_device",
+        lambda requested: SimpleNamespace(type="cuda"),
+    )
+    monkeypatch.setattr(wgan_runner, "configure_device_determinism", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        wgan_runner,
+        "build_runtime_identity",
+        lambda **kwargs: {
+            "runtime_identity_sha256": auth_data["expected_runtime_identity_sha256"]
+        },
+    )
+    def current_identity(*, runtime_sha: str) -> dict[str, object]:
+        return {
+            "runner_git_blob": auth_data["runner_git_blob"],
+            "implementation_source_git_blobs": auth_data["implementation_source_git_blobs"],
+            "execution_contract_git_blob": auth_data["execution_contract_git_blob"],
+            "effective_config_sha256": auth_data["effective_config_sha256"],
+            "effective_config_git_blob": auth_data["effective_config_git_blob"],
+            "preregistration_sha256": wgan_runner.PREREGISTRATION_SHA256,
+            "amendment_060_sha256": wgan_runner.AMENDMENT_060_SHA256,
+            "runtime_identity_sha256": runtime_sha,
+        }
+
+    monkeypatch.setattr(wgan_runner, "_current_identity", current_identity)
+    return auth_data
+
+
+@pytest.mark.parametrize(
+    "authorization_path",
+    [
+        AUTHORIZATION_RELATIVE_PATH,
+        (wgan_runner.REPO / AUTHORIZATION_RELATIVE_PATH).resolve(),
+    ],
+    ids=["relative", "absolute"],
+)
+def test_execute_reaches_marker_boundary_with_canonical_authorization_path(
+    authorization_path: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    auth_data = _patch_execute_boundary(monkeypatch, tmp_path)
+    captured_payloads: list[dict[str, object]] = []
+    executed: list[object] = []
+
+    def capture_link(source: Path, destination: Path) -> None:
+        captured_payloads.append(json.loads(source.read_text(encoding="utf-8")))
+        raise RuntimeError("controlled marker filesystem boundary")
+
+    monkeypatch.setattr(wgan_runner.os, "link", capture_link)
+    monkeypatch.setattr(
+        wgan_runner,
+        "execute_authorized_wgan",
+        lambda *args, **kwargs: executed.append((args, kwargs)) or {},
+    )
+
+    assert (
+        wgan_runner.main(
+            [
+                "--member-id",
+                "wgan-seed-01",
+                "--authorization",
+                str(authorization_path),
+                "--execute",
+            ]
+        )
+        == 2
+    )
+    assert len(captured_payloads) == 1
+    payload = captured_payloads[0]
+    assert payload["member_id"] == auth_data["member_id"]
+    assert payload["authorization_path"] == AUTHORIZATION_RELATIVE_PATH.as_posix()
+    assert payload["authorization_git_blob"] == wgan_runner._git_blob(
+        (wgan_runner.REPO / AUTHORIZATION_RELATIVE_PATH).resolve()
+    )
+    assert payload["implementation_identity"]
+    assert not executed
+    assert not list(tmp_path.rglob("execution_started.json"))
+
+
+def test_payload_refusal_before_marker_creation_leaves_no_namespace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _patch_execute_boundary(monkeypatch, tmp_path)
+    auth_path = (wgan_runner.REPO / AUTHORIZATION_RELATIVE_PATH).resolve()
+    real_git_blob = wgan_runner._git_blob
+    authorization_blob_calls = 0
+    executed: list[object] = []
+
+    def fail_on_marker_payload(path: Path) -> str:
+        nonlocal authorization_blob_calls
+        if path.resolve() == auth_path:
+            authorization_blob_calls += 1
+            if authorization_blob_calls == 2:
+                raise RuntimeError("controlled payload preparation failure")
+        return real_git_blob(path)
+
+    monkeypatch.setattr(wgan_runner, "_git_blob", fail_on_marker_payload)
+    monkeypatch.setattr(
+        wgan_runner,
+        "execute_authorized_wgan",
+        lambda *args, **kwargs: executed.append((args, kwargs)) or {},
+    )
+
+    assert (
+        wgan_runner.main(
+            [
+                "--member-id",
+                "wgan-seed-01",
+                "--authorization",
+                AUTHORIZATION_RELATIVE_PATH.as_posix(),
+                "--execute",
+            ]
+        )
+        == 2
+    )
+    assert authorization_blob_calls == 2
+    assert not executed
+    assert not (tmp_path / "wgan-runs").exists()
+    assert not list(tmp_path.rglob("execution_started.json"))
 
 
 def test_primary_and_reserve_rosters_are_fixed_without_automatic_chain() -> None:
