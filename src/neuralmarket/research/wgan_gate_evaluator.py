@@ -11,9 +11,11 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -56,6 +58,8 @@ COMPARATOR_GIT_BLOB = "87f9ad37bcd92d7d0acc0383a5b8bab8a8a2f33b"
 TRAINING_RUNNER_GIT_BLOB = "7e020ea937af9e2713451ae735d58c4cbb645289"
 GATE_AUTHORIZATION_SCHEMA = "structured-vol-v5-wgan-gate-authorization-v1"
 GATE_RESULT_SCHEMA = "structured-vol-v5-wgan-gate-result-v1"
+GATE_MARKER_SCHEMA = "structured-vol-v5-wgan-gate-execution-start-v1"
+GATE_RUN_ROOT_RELATIVE_PATH = "reports/research/wgan_gate_runs"
 EVALUATION_SEED = 8283
 BOOTSTRAP_SEED = 8801
 BLOCK_LENGTH = 22
@@ -90,6 +94,8 @@ _MEMBER_SEEDS: dict[str, tuple[int, int, int, int]] = {
 
 _REQUIRED_AUTH_FIELDS = {
     "schema_version",
+    "gate_task_id",
+    "gate_execution_marker_path",
     "member_id",
     "checkpoint_path",
     "checkpoint_sha256",
@@ -143,9 +149,10 @@ def _sha256(path: Path) -> str:
 
 
 def _git_blob(path: Path) -> str:
-    """Return the working-tree Git blob identity for one artifact."""
+    """Return the filtered working-tree Git blob identity for one artifact."""
+    relative = path.relative_to(REPO).as_posix()
     result = subprocess.run(
-        ["git", "hash-object", str(path)],
+        ["git", "hash-object", f"--path={relative}", str(path)],
         cwd=str(REPO),
         capture_output=True,
         text=True,
@@ -154,6 +161,11 @@ def _git_blob(path: Path) -> str:
     if result.returncode != 0:
         raise RuntimeError(f"git hash-object failed for {path}")
     return result.stdout.strip()
+
+
+def _git_worktree_blob(path: Path) -> str:
+    """Return the current worktree blob after Git path filters are applied."""
+    return _git_blob(path)
 
 
 def _git_head_blob(path: Path) -> str:
@@ -206,6 +218,65 @@ def _normalize_repo_path(path: str | Path) -> Path:
     return candidate
 
 
+def require_tracked_artifact_at_head(path: str | Path, label: str) -> str:
+    """Require a tracked worktree artifact to resolve to its committed HEAD blob."""
+    normalized = _normalize_repo_path(path)
+    if not normalized.is_file() or not _is_tracked(normalized):
+        raise RuntimeError(f"{label} must be tracked and present")
+    head_blob = _git_head_blob(normalized)
+    if not head_blob:
+        raise RuntimeError(f"{label} must be present at HEAD")
+    if _git_worktree_blob(normalized) != head_blob:
+        raise RuntimeError(f"{label} must match HEAD Git blob")
+    return head_blob
+
+
+def canonical_tracked_sha256(path: str | Path) -> str:
+    """Hash committed Git-object bytes for one tracked artifact."""
+    normalized = _normalize_repo_path(path)
+    head_blob = require_tracked_artifact_at_head(normalized, "tracked artifact")
+    relative = normalized.relative_to(REPO).as_posix()
+    result = subprocess.run(
+        ["git", "cat-file", "blob", f"HEAD:{relative}"],
+        cwd=str(REPO),
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"cannot read committed Git object {head_blob}")
+    return hashlib.sha256(result.stdout).hexdigest()
+
+
+def require_tracked_artifact_identity(
+    path: str | Path,
+    *,
+    expected_sha256: str,
+    expected_git_blob: str,
+    label: str,
+) -> str:
+    """Require canonical committed SHA and Git blob identity for one artifact."""
+    head_blob = require_tracked_artifact_at_head(path, label)
+    if head_blob != expected_git_blob:
+        raise ValueError(f"{label} Git blob mismatch")
+    if canonical_tracked_sha256(path) != expected_sha256:
+        raise ValueError(f"{label} SHA mismatch")
+    return head_blob
+
+
+def _validate_gate_marker_path(path: Path, member_id: str) -> Path:
+    """Require the marker to live in the deterministic member/run namespace."""
+    root = _normalize_repo_path(GATE_RUN_ROOT_RELATIVE_PATH)
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError("Gate execution marker must be inside the Gate run root") from exc
+    if len(relative.parts) != 3 or relative.parts[0] != member_id:
+        raise RuntimeError("Gate execution marker namespace mismatch")
+    if relative.parts[2] != "execution_started.json" or not relative.parts[1]:
+        raise RuntimeError("Gate execution marker filename mismatch")
+    return path
+
+
 def require_gate_authorization(auth_path: str | Path | None) -> Path:
     """Require a separately supplied Gate authorization artifact."""
     if auth_path is None:
@@ -219,13 +290,7 @@ def require_gate_authorization(auth_path: str | Path | None) -> Path:
 def load_gate_authorization(auth_path: str | Path | None) -> tuple[Path, dict[str, Any]]:
     """Load only a committed, tracked, clean future Gate authorization."""
     path = require_gate_authorization(auth_path)
-    if not _is_tracked(path):
-        raise RuntimeError("Gate authorization artifact must be tracked")
-    head_blob = _git_head_blob(path)
-    if not head_blob:
-        raise RuntimeError("Gate authorization artifact must be committed")
-    if not _is_clean(path) or _git_blob(path) != head_blob:
-        raise RuntimeError("Gate authorization artifact must be clean and equal to HEAD")
+    require_tracked_artifact_at_head(path, "Gate authorization artifact")
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError("Gate authorization artifact must contain a JSON object")
@@ -250,6 +315,8 @@ def validate_gate_authorization_payload(
         GATE_AUTHORIZATION_SCHEMA,
         "Gate authorization schema",
     )
+    if not isinstance(payload["gate_task_id"], str) or not payload["gate_task_id"]:
+        raise ValueError("Gate task identity is required")
     _require_equal(
         payload,
         "member_id",
@@ -258,6 +325,8 @@ def validate_gate_authorization_payload(
     )
     if str(payload["member_id"]) not in _MEMBER_SEEDS:
         raise ValueError("member is not a frozen WGAN primary or reserve")
+    marker_path = _normalize_repo_path(str(payload["gate_execution_marker_path"]))
+    _validate_gate_marker_path(marker_path, str(payload["member_id"]))
     _require_equal(
         payload,
         "checkpoint_path",
@@ -674,20 +743,15 @@ def _current_identity(
     ):
         if not path.is_file():
             raise RuntimeError(f"{label} missing: {path}")
-    if (
-        not _is_tracked(training_auth_path)
-        or not _git_head_blob(training_auth_path)
-        or not _is_clean(training_auth_path)
-        or _git_blob(training_auth_path) != _git_head_blob(training_auth_path)
-    ):
-        raise RuntimeError("training authorization must be committed")
-    if (
-        not _is_tracked(evidence_path)
-        or not _git_head_blob(evidence_path)
-        or not _is_clean(evidence_path)
-        or _git_blob(evidence_path) != _git_head_blob(evidence_path)
-    ):
-        raise RuntimeError("training execution evidence must be committed")
+    tracked_blobs = {
+        "training_authorization": require_tracked_artifact_at_head(
+            training_auth_path, "training authorization"
+        ),
+        "training_execution_evidence": require_tracked_artifact_at_head(
+            evidence_path, "training execution evidence"
+        ),
+        "evaluator": require_tracked_artifact_at_head(EVALUATOR_SOURCE_PATH, "evaluator source"),
+    }
     frozen_blobs = (
         (MODEL_SOURCE_PATH, MODEL_GIT_BLOB, "model"),
         (COMPARATOR_SOURCE_PATH, COMPARATOR_GIT_BLOB, "comparator"),
@@ -696,12 +760,12 @@ def _current_identity(
         (GATE_CONFIG_PATH, GATE_CONFIG_GIT_BLOB, "Gate config"),
     )
     for path, expected_blob, label in frozen_blobs:
-        actual_blob = _git_head_blob(path)
+        actual_blob = require_tracked_artifact_at_head(path, label)
         if actual_blob != expected_blob:
             raise RuntimeError(f"{label} committed identity drifted")
-    if _sha256(WGAN_CONFIG_PATH) != WGAN_CONFIG_SHA256:
+    if canonical_tracked_sha256(WGAN_CONFIG_PATH) != WGAN_CONFIG_SHA256:
         raise RuntimeError("WGAN scientific config SHA drifted")
-    if _sha256(GATE_CONFIG_PATH) != GATE_CONFIG_SHA256:
+    if canonical_tracked_sha256(GATE_CONFIG_PATH) != GATE_CONFIG_SHA256:
         raise RuntimeError("Gate config SHA drifted")
     return {
         "member_id": str(payload["member_id"]),
@@ -710,20 +774,117 @@ def _current_identity(
         "training_execution_marker_path": marker_path.relative_to(REPO.resolve()).as_posix(),
         "training_execution_marker_sha256": _sha256(marker_path),
         "training_authorization_path": training_auth_path.relative_to(REPO.resolve()).as_posix(),
-        "training_authorization_sha256": _sha256(training_auth_path),
-        "training_authorization_git_blob": _git_head_blob(training_auth_path),
+        "training_authorization_sha256": canonical_tracked_sha256(training_auth_path),
+        "training_authorization_git_blob": tracked_blobs["training_authorization"],
         "training_execution_evidence_path": evidence_path.relative_to(REPO.resolve()).as_posix(),
-        "training_execution_evidence_sha256": _sha256(evidence_path),
-        "training_execution_evidence_git_blob": _git_head_blob(evidence_path),
+        "training_execution_evidence_sha256": canonical_tracked_sha256(evidence_path),
+        "training_execution_evidence_git_blob": tracked_blobs["training_execution_evidence"],
         "training_runner_git_blob": _git_head_blob(TRAINING_RUNNER_SOURCE_PATH),
-        "scientific_config_sha256": _sha256(WGAN_CONFIG_PATH),
+        "scientific_config_sha256": canonical_tracked_sha256(WGAN_CONFIG_PATH),
         "scientific_config_git_blob": _git_head_blob(WGAN_CONFIG_PATH),
         "model_git_blob": _git_head_blob(MODEL_SOURCE_PATH),
         "comparator_git_blob": _git_head_blob(COMPARATOR_SOURCE_PATH),
-        "evaluator_git_blob": _git_head_blob(EVALUATOR_SOURCE_PATH),
-        "gate_config_sha256": _sha256(GATE_CONFIG_PATH),
+        "evaluator_git_blob": tracked_blobs["evaluator"],
+        "gate_config_sha256": canonical_tracked_sha256(GATE_CONFIG_PATH),
         "gate_config_git_blob": _git_head_blob(GATE_CONFIG_PATH),
         "runtime_identity_sha256": runtime_identity_sha256,
+    }
+
+
+_GATE_MARKER_REQUIRED_FIELDS = frozenset(
+    {
+        "schema_version",
+        "gate_task_id",
+        "member_id",
+        "authorization_path",
+        "authorization_git_blob",
+        "authorization_canonical_sha256",
+        "checkpoint_path",
+        "checkpoint_sha256",
+        "training_execution_marker_path",
+        "training_execution_marker_sha256",
+        "training_authorization_path",
+        "training_authorization_sha256",
+        "training_authorization_git_blob",
+        "training_execution_evidence_path",
+        "training_execution_evidence_sha256",
+        "training_execution_evidence_git_blob",
+        "evaluator_git_blob",
+        "gate_config_sha256",
+        "gate_config_git_blob",
+        "evaluation_seed",
+        "bootstrap_seed",
+        "runtime_identity_sha256",
+        "max_scientific_invocations",
+    }
+)
+
+
+def create_gate_execution_marker(
+    marker_path: str | Path, payload: dict[str, Any]
+) -> Path:
+    """Create the one immutable Gate-start marker without overwrite or retry."""
+    marker = _normalize_repo_path(marker_path)
+    member_id = str(payload.get("member_id", ""))
+    _validate_gate_marker_path(marker, member_id)
+    missing = sorted(_GATE_MARKER_REQUIRED_FIELDS - payload.keys())
+    if missing:
+        raise ValueError(f"Gate execution marker missing required field: {missing[0]}")
+    if payload["schema_version"] != GATE_MARKER_SCHEMA:
+        raise ValueError("Gate execution marker schema mismatch")
+    if payload["max_scientific_invocations"] != 1:
+        raise ValueError("Gate execution marker max scientific invocations must be 1")
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with marker.open("x", encoding="utf-8", newline="\n") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+    except FileExistsError as exc:
+        raise RuntimeError("Gate execution marker already exists; overwrite refused") from exc
+    return marker
+
+
+def _build_gate_execution_marker_payload(
+    *,
+    authorization_path: Path,
+    authorization_payload: dict[str, Any],
+    checkpoint_path: Path,
+    checkpoint_sha256: str,
+    expected_identity: dict[str, object],
+) -> dict[str, Any]:
+    """Bind all preflight identities before the scientific boundary."""
+    return {
+        "schema_version": GATE_MARKER_SCHEMA,
+        "gate_task_id": str(authorization_payload["gate_task_id"]),
+        "member_id": str(authorization_payload["member_id"]),
+        "authorization_path": authorization_path.relative_to(REPO.resolve()).as_posix(),
+        "authorization_git_blob": require_tracked_artifact_at_head(
+            authorization_path, "Gate authorization artifact"
+        ),
+        "authorization_canonical_sha256": canonical_tracked_sha256(authorization_path),
+        "checkpoint_path": checkpoint_path.relative_to(REPO.resolve()).as_posix(),
+        "checkpoint_sha256": checkpoint_sha256,
+        "training_execution_marker_path": expected_identity["training_execution_marker_path"],
+        "training_execution_marker_sha256": expected_identity["training_execution_marker_sha256"],
+        "training_authorization_path": expected_identity["training_authorization_path"],
+        "training_authorization_sha256": expected_identity["training_authorization_sha256"],
+        "training_authorization_git_blob": expected_identity["training_authorization_git_blob"],
+        "training_execution_evidence_path": expected_identity["training_execution_evidence_path"],
+        "training_execution_evidence_sha256": expected_identity[
+            "training_execution_evidence_sha256"
+        ],
+        "training_execution_evidence_git_blob": expected_identity[
+            "training_execution_evidence_git_blob"
+        ],
+        "evaluator_git_blob": expected_identity["evaluator_git_blob"],
+        "gate_config_sha256": expected_identity["gate_config_sha256"],
+        "gate_config_git_blob": expected_identity["gate_config_git_blob"],
+        "evaluation_seed": int(authorization_payload["evaluation_seed"]),
+        "bootstrap_seed": int(authorization_payload["bootstrap_seed"]),
+        "runtime_identity_sha256": expected_identity["runtime_identity_sha256"],
+        "max_scientific_invocations": int(authorization_payload["max_scientific_invocations"]),
+        "timestamp_utc": datetime.now(UTC).isoformat(),
+        "process_id": os.getpid(),
     }
 
 
@@ -837,12 +998,21 @@ def evaluate_authorized_wgan_gate(
     validate_gate_authorization_payload(payload, expected_identity=expected)
     if checkpoint_sha256 != expected["checkpoint_sha256"]:
         raise ValueError("checkpoint SHA mismatch")
+    marker_path = _normalize_repo_path(str(payload["gate_execution_marker_path"]))
+    marker_payload = _build_gate_execution_marker_payload(
+        authorization_path=auth_path,
+        authorization_payload=payload,
+        checkpoint_path=normalized_checkpoint,
+        checkpoint_sha256=checkpoint_sha256,
+        expected_identity=expected,
+    )
+    marker = create_gate_execution_marker(marker_path, marker_payload)
     training_returns, return_dates = _load_training_returns()
     result = evaluate_frozen_wgan_checkpoint(
         member_id=member_id,
         checkpoint_path=normalized_checkpoint,
         checkpoint_sha256=checkpoint_sha256,
-        authorization_identity=_sha256(auth_path),
+        authorization_identity=canonical_tracked_sha256(auth_path),
         authorization_payload=payload,
         training_returns=training_returns,
         return_dates=return_dates,
@@ -850,8 +1020,12 @@ def evaluate_authorized_wgan_gate(
     )
     result["authorization"] = {
         "path": auth_path.relative_to(REPO.resolve()).as_posix(),
-        "sha256": _sha256(auth_path),
+        "sha256": canonical_tracked_sha256(auth_path),
         "git_blob": _git_head_blob(auth_path),
+    }
+    result["execution_marker"] = {
+        "path": marker.relative_to(REPO.resolve()).as_posix(),
+        "sha256": _sha256(marker),
     }
     result["runtime"] = runtime
     return result
@@ -892,12 +1066,15 @@ __all__ = [
     "GATE_CONFIG_GIT_BLOB",
     "GATE_CONFIG_RELATIVE_PATH",
     "GATE_CONFIG_SHA256",
+    "GATE_MARKER_SCHEMA",
     "GATE_RESULT_SCHEMA",
     "SAMPLE_COUNT",
     "WGAN_GATE_CRITERIA",
     "WGAN_REPORT_ONLY_METRICS",
+    "canonical_tracked_sha256",
     "classify_valid_gate_result",
     "compute_wgan_gate_metrics",
+    "create_gate_execution_marker",
     "effective_config_for_gate",
     "evaluate_authorized_wgan_gate",
     "evaluate_frozen_wgan_checkpoint",
@@ -907,6 +1084,8 @@ __all__ = [
     "main",
     "require_cuda_device",
     "require_gate_authorization",
+    "require_tracked_artifact_at_head",
+    "require_tracked_artifact_identity",
     "validate_gate_authorization_payload",
 ]
 

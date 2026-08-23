@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -45,6 +46,10 @@ def _identity() -> dict[str, object]:
 def _payload() -> dict[str, object]:
     return {
         "schema_version": gate.GATE_AUTHORIZATION_SCHEMA,
+        "gate_task_id": "NM-R4-V5-WGAN-GATE-V2-EVALUATION-132",
+        "gate_execution_marker_path": (
+            "reports/research/wgan_gate_runs/wgan-seed-01/synthetic/execution_started.json"
+        ),
         "member_id": "wgan-seed-01",
         "checkpoint_path": "synthetic/checkpoint.pt",
         "checkpoint_sha256": "c" * 64,
@@ -90,6 +95,25 @@ def _gate_paths() -> tuple[np.ndarray, np.ndarray]:
     return selection, generated
 
 
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+
+
+def _tracked_fixture_repo(tmp_path: Path, relative: str, content: bytes) -> tuple[Path, Path]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "--quiet")
+    _git(repo, "config", "user.email", "tests@example.com")
+    _git(repo, "config", "user.name", "NeuralMarket tests")
+    _git(repo, "config", "core.autocrlf", "true")
+    path = repo / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    _git(repo, "add", relative)
+    _git(repo, "commit", "--quiet", "-m", "freeze fixture")
+    return repo, path
+
+
 def test_valid_future_gate_authorization_is_accepted() -> None:
     gate.validate_gate_authorization_payload(_payload(), expected_identity=_identity())
 
@@ -112,6 +136,144 @@ def test_incorrect_gate_authorization_is_rejected(
     payload[field] = value
     with pytest.raises(ValueError, match=message):
         gate.validate_gate_authorization_payload(payload, expected_identity=_identity())
+
+
+def test_max_scientific_invocations_must_be_one() -> None:
+    payload = _payload()
+    payload["max_scientific_invocations"] = 2
+    with pytest.raises(ValueError, match="maximum scientific invocations"):
+        gate.validate_gate_authorization_payload(payload, expected_identity=_identity())
+
+
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "src/neuralmarket/research/wgan_gate_evaluator.py",
+        "src/neuralmarket/models/wgan_cde.py",
+        "src/neuralmarket/research/wgan_comparator.py",
+        "src/neuralmarket/research/wgan_runner.py",
+        "configs/research/structured_vol_wgan_comparator_v1.yaml",
+        "configs/research/neural_sde_internal_gate_v2.yaml",
+    ],
+)
+def test_semantic_edit_to_tracked_gate_input_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, relative: str
+) -> None:
+    repo, path = _tracked_fixture_repo(tmp_path, relative, b"frozen\n")
+    monkeypatch.setattr(gate, "REPO", repo)
+    path.write_bytes(b"frozen\nsemantic edit\n")
+    with pytest.raises(RuntimeError, match="must match HEAD"):
+        gate.require_tracked_artifact_at_head(path, "tracked Gate input")
+
+
+def test_line_ending_materialization_is_tolerated_when_filtered_blob_matches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, path = _tracked_fixture_repo(tmp_path, "src/gate.py", b"frozen\n")
+    monkeypatch.setattr(gate, "REPO", repo)
+    path.write_bytes(b"frozen\r\n")
+    head_blob = gate._git_head_blob(path)
+    assert gate._git_worktree_blob(path) == head_blob
+    gate.require_tracked_artifact_at_head(path, "tracked Gate input")
+
+
+def test_tracked_authorization_sha_uses_git_object_content() -> None:
+    path = gate.REPO / (
+        "reports/research/authorizations/structured_vol_v5_wgan_training/wgan-seed-01-v3.json"
+    )
+    assert gate.canonical_tracked_sha256(path) == (
+        "19c50306ef6849ab2153eaeaec0c7bf80dbcc634aeb58048e0c47dacd77f4690"
+    )
+    assert gate._sha256(path) == "7beec8f279bbd9d56f3bc08d46ee404df770823641ab36f0e851005e8f0499d8"
+
+
+def test_tracked_execution_evidence_sha_uses_git_object_content() -> None:
+    path = gate.REPO / (
+        "reports/research/evidence/structured_vol_v5_wgan_seed01_execution_v3_127.json"
+    )
+    canonical = gate.canonical_tracked_sha256(path)
+    assert canonical == "96489abe4f2c0ca7b2c460b70ecbd2d881fcb5dd6ebea9e62643fe0c36f30e6f"
+    assert gate._git_head_blob(path) == "21bcd88957ad69e8aef7b9675d308daf697b2ac7"
+
+
+def test_wrong_canonical_tracked_sha_or_blob_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, path = _tracked_fixture_repo(tmp_path, "auth.json", b"{\"ok\": true}\n")
+    monkeypatch.setattr(gate, "REPO", repo)
+    head_blob = gate._git_head_blob(path)
+    canonical_sha = gate.canonical_tracked_sha256(path)
+    with pytest.raises(ValueError, match="SHA mismatch"):
+        gate.require_tracked_artifact_identity(
+            path, expected_sha256="0" * 64, expected_git_blob=head_blob, label="authorization"
+        )
+    with pytest.raises(ValueError, match="Git blob mismatch"):
+        gate.require_tracked_artifact_identity(
+            path, expected_sha256=canonical_sha, expected_git_blob="0" * 40, label="authorization"
+        )
+
+
+def _marker_payload() -> dict[str, object]:
+    return {
+        "schema_version": gate.GATE_MARKER_SCHEMA,
+        "gate_task_id": "NM-R4-V5-WGAN-GATE-V2-EVALUATION-132",
+        "member_id": "wgan-seed-01",
+        "authorization_path": "auth/gate.json",
+        "authorization_git_blob": "a" * 40,
+        "authorization_canonical_sha256": "b" * 64,
+        "checkpoint_path": "checkpoint.pt",
+        "checkpoint_sha256": "c" * 64,
+        "training_execution_marker_path": "training/execution_started.json",
+        "training_execution_marker_sha256": "d" * 64,
+        "training_authorization_path": "auth/training.json",
+        "training_authorization_sha256": "e" * 64,
+        "training_authorization_git_blob": "f" * 40,
+        "training_execution_evidence_path": "evidence/task-127.json",
+        "training_execution_evidence_sha256": "1" * 64,
+        "training_execution_evidence_git_blob": "2" * 40,
+        "evaluator_git_blob": "3" * 40,
+        "gate_config_sha256": "4" * 64,
+        "gate_config_git_blob": "5" * 40,
+        "evaluation_seed": 8283,
+        "bootstrap_seed": 8801,
+        "runtime_identity_sha256": "6" * 64,
+        "max_scientific_invocations": 1,
+    }
+
+
+def test_gate_marker_is_exclusive_and_non_overwriting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(gate, "REPO", tmp_path)
+    marker = tmp_path / (
+        "reports/research/wgan_gate_runs/wgan-seed-01/synthetic/execution_started.json"
+    )
+    payload = _marker_payload()
+    assert gate.create_gate_execution_marker(marker, payload) == marker
+    original = marker.read_bytes()
+    with pytest.raises(RuntimeError, match="already exists"):
+        gate.create_gate_execution_marker(marker, {**payload, "gate_task_id": "other-task"})
+    assert marker.read_bytes() == original
+
+
+def test_second_gate_invocation_cannot_cross_marker_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(gate, "REPO", tmp_path)
+    marker = tmp_path / (
+        "reports/research/wgan_gate_runs/wgan-seed-01/synthetic/execution_started.json"
+    )
+    payload = _marker_payload()
+    gate.create_gate_execution_marker(marker, payload)
+    generated: list[bool] = []
+    with pytest.raises(RuntimeError, match="already exists"):
+        gate.create_gate_execution_marker(marker, payload)
+    source = inspect.getsource(gate.evaluate_authorized_wgan_gate)
+    assert source.index("create_gate_execution_marker") < source.index("_load_training_returns")
+    assert source.index("create_gate_execution_marker") < source.index(
+        "evaluate_frozen_wgan_checkpoint"
+    )
+    assert generated == []
 
 
 def test_missing_gate_authorization_is_rejected() -> None:
