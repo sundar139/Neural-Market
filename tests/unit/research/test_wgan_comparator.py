@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
 import pytest
 import torch
 
-from neuralmarket.models.wgan_cde import WGANCritic
+from neuralmarket.models.wgan_cde import HORIZON, LATENT_DIM, WGANCritic
+from neuralmarket.research import wgan_comparator
 from neuralmarket.research.wgan_comparator import (
     AMENDMENT_060_SHA256,
+    INTERNAL_SELECTION_GENERATED_PATH_SEED,
     WGAN_PREREGISTRATION_SHA256,
     WGAN_PRIMARY_MEMBER_IDS,
     AttemptOutcome,
@@ -185,3 +188,131 @@ def test_cpu_smoke_is_labeled_and_does_not_train() -> None:
     assert result["critic_loss_finite"] is True
     assert result["generator_loss_finite"] is True
     assert result["gradient_penalty_finite"] is True
+
+
+def _training_random_streams(data_seed: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    config = WGANTrainingConfig(data_seed=data_seed)
+    device = torch.device("cpu")
+    data_generator, order_generator = wgan_comparator._make_seeded_data_generators(
+        device, config
+    )
+    static, temporal = wgan_comparator._draw_noise(8, device, data_generator)
+    order = torch.randperm(128, generator=order_generator, device=device)
+    return static, temporal, order
+
+
+def test_training_noise_varies_with_data_seed_and_reproduces() -> None:
+    first = _training_random_streams(8282)
+    second = _training_random_streams(9282)
+    repeat = _training_random_streams(8282)
+
+    assert not torch.equal(first[0], second[0])
+    assert not torch.equal(first[1], second[1])
+    assert torch.equal(first[0], repeat[0])
+    assert torch.equal(first[1], repeat[1])
+
+
+def test_training_window_order_varies_with_data_seed_and_reproduces() -> None:
+    first = _training_random_streams(8282)[2]
+    second = _training_random_streams(9282)[2]
+    repeat = _training_random_streams(8282)[2]
+
+    assert not torch.equal(first, second)
+    assert torch.equal(first, repeat)
+
+
+def test_refit_noise_and_order_use_data_seed_without_scientific_refit() -> None:
+    first = _training_random_streams(1729)
+    second = _training_random_streams(1730)
+
+    assert not torch.equal(first[0], second[0])
+    assert not torch.equal(first[1], second[1])
+    assert not torch.equal(first[2], second[2])
+
+
+def _capture_selection_randomness(
+    monkeypatch: pytest.MonkeyPatch, config: WGANTrainingConfig
+) -> dict[str, object]:
+    captured: dict[str, object] = {}
+
+    def capture_noise(
+        batch_size: int, device: torch.device, generator: torch.Generator
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        static = torch.randn(batch_size, LATENT_DIM, device=device, generator=generator)
+        temporal = torch.randn(batch_size, HORIZON, 2, device=device, generator=generator)
+        captured["static"] = static
+        captured["temporal"] = temporal
+        return static, temporal
+
+    def capture_bootstrap(
+        returns: np.ndarray,
+        n_paths: int,
+        horizon: int,
+        *,
+        block_length: int,
+        seed: int,
+    ) -> np.ndarray:
+        captured["bootstrap_seed"] = seed
+        assert block_length == 22
+        assert returns.size > horizon
+        return np.ones((n_paths, horizon), dtype=np.float64)
+
+    class ZeroGenerator:
+        def __call__(
+            self, context: torch.Tensor, static: torch.Tensor, temporal: torch.Tensor
+        ) -> torch.Tensor:
+            return torch.zeros((context.shape[0], HORIZON), dtype=context.dtype)
+
+    monkeypatch.setattr(wgan_comparator, "_draw_noise", capture_noise)
+    monkeypatch.setattr(wgan_comparator, "_circular_block_bootstrap", capture_bootstrap)
+    monkeypatch.setattr(
+        wgan_comparator,
+        "normalized_terminal_wasserstein",
+        lambda fake, real: 0.0,
+    )
+    wgan_comparator._selection_metric(
+        ZeroGenerator(),
+        torch.zeros(4, 4),
+        np.ones(64, dtype=np.float64),
+        cumulative_return_scale=1.0,
+        config=config,
+    )
+    return captured
+
+
+def test_selection_draw_is_member_invariant_and_frozen_at_7777(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _capture_selection_randomness(
+        monkeypatch, WGANTrainingConfig(selection_paths=8, real_reference_paths=4, data_seed=8282)
+    )
+    second = _capture_selection_randomness(
+        monkeypatch, WGANTrainingConfig(selection_paths=8, real_reference_paths=4, data_seed=9282)
+    )
+
+    assert INTERNAL_SELECTION_GENERATED_PATH_SEED == 7777
+    assert torch.equal(first["static"], second["static"])
+    assert torch.equal(first["temporal"], second["temporal"])
+
+    expected = torch.Generator(device="cpu")
+    expected.manual_seed(7777)
+    expected_static = torch.randn(8, LATENT_DIM, generator=expected)
+    expected_temporal = torch.randn(8, HORIZON, 2, generator=expected)
+    assert torch.equal(first["static"], expected_static)
+    assert torch.equal(first["temporal"], expected_temporal)
+
+    eval_generator = torch.Generator(device="cpu")
+    eval_generator.manual_seed(8283)
+    eval_static = torch.randn(8, LATENT_DIM, generator=eval_generator)
+    assert not torch.equal(first["static"], eval_static)
+
+
+def test_real_selection_bootstrap_reference_remains_8801(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = _capture_selection_randomness(
+        monkeypatch, WGANTrainingConfig(selection_paths=8, real_reference_paths=4)
+    )
+
+    assert captured["bootstrap_seed"] == 8801
+    assert WGANTrainingConfig().eval_seed == 8283

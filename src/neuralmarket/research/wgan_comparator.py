@@ -52,6 +52,9 @@ REASON_TAXONOMY = (
     "OTHER_FROZEN_FAILURE",
     "NONE",
 )
+# Frozen common random source for internal-selection generated paths.  It is
+# intentionally independent of every member's data_seed and eval_seed.
+INTERNAL_SELECTION_GENERATED_PATH_SEED = 7777
 
 
 def _require_finite(name: str, value: Tensor) -> None:
@@ -86,6 +89,8 @@ class WGANTrainingConfig:
     real_reference_paths: int = 1024
     bootstrap_seed: int = 8801
     block_length: int = 22
+    # Reserved for future post-training Gate/evaluation only; never training,
+    # window order, internal selection, or bootstrap randomness.
     eval_seed: int = 8283
     dt: float = DT
     horizon: int = HORIZON
@@ -356,6 +361,17 @@ def _draw_noise(
     return static, temporal
 
 
+def _make_seeded_data_generators(
+    device: torch.device, config: WGANTrainingConfig
+) -> tuple[torch.Generator, torch.Generator]:
+    """Create the frozen training/refit noise and order generators."""
+    data_generator = torch.Generator(device=device)
+    data_generator.manual_seed(config.data_seed)
+    order_generator = torch.Generator(device=device)
+    order_generator.manual_seed(config.data_seed)
+    return data_generator, order_generator
+
+
 def _check_parameters_finite(*modules: torch.nn.Module) -> None:
     for module in modules:
         for parameter in module.parameters():
@@ -376,7 +392,7 @@ def _selection_metric(
     """Evaluate the frozen internal-selection terminal Wasserstein metric."""
     device = selection_context.device
     gen = torch.Generator(device=device)
-    gen.manual_seed(config.data_seed)
+    gen.manual_seed(INTERNAL_SELECTION_GENERATED_PATH_SEED)
     n = config.selection_paths
     context = selection_context.repeat(
         (n + len(selection_context) - 1) // len(selection_context), 1
@@ -474,10 +490,7 @@ def train_wgan_internal(
         eps=config.eps,
         weight_decay=config.weight_decay,
     )
-    data_generator = torch.Generator(device=resolved)
-    data_generator.manual_seed(config.bootstrap_seed)
-    order_generator = torch.Generator(device=resolved)
-    order_generator.manual_seed(config.bootstrap_seed)
+    data_generator, order_generator = _make_seeded_data_generators(resolved, config)
     tracker = EarlyStoppingState(config.patience_generator_epochs, config.min_delta)
     critic_curve: list[float] = []
     generator_curve: list[float] = []
@@ -601,10 +614,7 @@ def refit_wgan(
         generator_model.parameters(), lr=config.learning_rate, betas=config.betas,
         eps=config.eps, weight_decay=config.weight_decay,
     )
-    noise_generator = torch.Generator(device=resolved)
-    noise_generator.manual_seed(config.bootstrap_seed)
-    order_generator = torch.Generator(device=resolved)
-    order_generator.manual_seed(config.bootstrap_seed)
+    noise_generator, order_generator = _make_seeded_data_generators(resolved, config)
     n_fit = data.all_context.shape[0]
     for _ in range(epochs):
         order = torch.randperm(n_fit, generator=order_generator, device=resolved)
@@ -768,6 +778,7 @@ def compute_completed_member_metrics(
 
 __all__ = [
     "AMENDMENT_060_SHA256",
+    "INTERNAL_SELECTION_GENERATED_PATH_SEED",
     "WGAN_PREREGISTRATION_SHA256",
     "WGAN_PRIMARY_MEMBER_IDS",
     "AttemptOutcome",
