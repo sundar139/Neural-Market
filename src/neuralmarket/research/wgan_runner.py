@@ -24,6 +24,7 @@ from neuralmarket.research.wgan_comparator import (
     AMENDMENT_060_SHA256,
     WGAN_PREREGISTRATION_SHA256,
     WGANTrainingConfig,
+    WGANTrainingOutcome,
     prepare_wgan_training_data,
     refit_wgan,
     train_wgan_internal,
@@ -52,6 +53,12 @@ SEED_SCHEDULE_BLOB = "558d08bfee98dbd0c170d65e6a9b1737700c9e98"
 PRIMARY_MEMBER_IDS = tuple(f"wgan-seed-0{i}" for i in range(1, 6))
 RESERVE_MEMBER_IDS = ("reserve-wgan-j01", "reserve-wgan-j02", "reserve-wgan-j03")
 AUTO_RESERVE_CHAIN = False
+WGAN_TRAINING_DIAGNOSTIC_SCHEMA = "structured-vol-v5-wgan-training-diagnostics-v1"
+DIAGNOSTIC_PRESENT = "PRESENT"
+DIAGNOSTIC_MISSING_BY_DESIGN_HISTORICAL = "MISSING_BY_DESIGN_HISTORICAL"
+DIAGNOSTIC_NOT_AVAILABLE_WITHOUT_SCIENTIFIC_CHANGE = (
+    "NOT_AVAILABLE_WITHOUT_SCIENTIFIC_CHANGE"
+)
 
 _SEED_TUPLES: dict[str, tuple[int, int, int, int]] = {
     "wgan-seed-01": (8281, 8281, 8282, 8283),
@@ -158,6 +165,75 @@ def effective_config_for_member(member_id: str) -> WGANTrainingConfig:
         data_seed=data_seed,
         eval_seed=eval_seed,
     )
+
+
+def serialize_wgan_training_diagnostics(
+    outcome: WGANTrainingOutcome,
+    *,
+    config: WGANTrainingConfig,
+    fit_window_count: int,
+) -> dict[str, Any]:
+    """Serialize diagnostics already produced by the frozen training loop."""
+    if fit_window_count < 1:
+        raise ValueError("fit_window_count must be positive")
+    curve_length = outcome.final_generator_epoch
+    curves = (
+        outcome.critic_loss_curve,
+        outcome.generator_loss_curve,
+        outcome.gradient_penalty_curve,
+        outcome.selection_metric_curve,
+    )
+    if curve_length < 1 or any(len(curve) != curve_length for curve in curves):
+        raise ValueError("WGAN diagnostic curves must match final_generator_epoch")
+    if outcome.critic_update_count < 0 or outcome.generator_update_count < 0:
+        raise ValueError("WGAN update counts must be non-negative")
+    return {
+        "schema_version": WGAN_TRAINING_DIAGNOSTIC_SCHEMA,
+        "availability": {
+            "critic_loss_curve": DIAGNOSTIC_PRESENT,
+            "generator_loss_curve": DIAGNOSTIC_PRESENT,
+            "gradient_penalty_curve": DIAGNOSTIC_PRESENT,
+            "selection_metric_curve": DIAGNOSTIC_PRESENT,
+            "critic_update_count": DIAGNOSTIC_PRESENT,
+            "generator_update_count": DIAGNOSTIC_PRESENT,
+            "training_completion": DIAGNOSTIC_PRESENT,
+            "finite_nonfinite": DIAGNOSTIC_PRESENT,
+            "checkpoint_selection_stability": DIAGNOSTIC_PRESENT,
+            "mode_collapse_indicator": DIAGNOSTIC_NOT_AVAILABLE_WITHOUT_SCIENTIFIC_CHANGE,
+            "wgan-seed-01": DIAGNOSTIC_MISSING_BY_DESIGN_HISTORICAL,
+        },
+        "critic_loss_curve": list(outcome.critic_loss_curve),
+        "generator_loss_curve": list(outcome.generator_loss_curve),
+        "gradient_penalty_curve": list(outcome.gradient_penalty_curve),
+        "critic_update_count": outcome.critic_update_count,
+        "generator_update_count": outcome.generator_update_count,
+        "training_completion": {
+            "status": "COMPLETED" if outcome.training_completed else "INCOMPLETE",
+            "final_generator_epoch": outcome.final_generator_epoch,
+            "fit_window_count": fit_window_count,
+        },
+        "finite_nonfinite": {
+            "status": "FINITE" if outcome.finite_diagnostics else "NONFINITE",
+        },
+        "checkpoint_selection": {
+            "status": DIAGNOSTIC_PRESENT,
+            "selection_metric_curve": list(outcome.selection_metric_curve),
+            "best_generator_epoch": outcome.best_generator_epoch,
+            "best_selection_metric": outcome.best_selection_metric,
+            "final_generator_epoch": outcome.final_generator_epoch,
+            "stopped_early": outcome.final_generator_epoch < config.max_generator_epochs,
+        },
+        "mode_collapse_indicator": {
+            "status": DIAGNOSTIC_NOT_AVAILABLE_WITHOUT_SCIENTIFIC_CHANGE,
+            "value": None,
+        },
+        "historical_missingness": {
+            "wgan-seed-01": {
+                "status": DIAGNOSTIC_MISSING_BY_DESIGN_HISTORICAL,
+                "value": None,
+            }
+        },
+    }
 
 
 def require_authorization(auth_path: str | Path | None) -> Path:
@@ -426,6 +502,11 @@ def execute_authorized_wgan(
         "checkpoint_sha256": _sha256(checkpoint),
         "best_generator_epoch": outcome.best_generator_epoch,
         "best_selection_metric": outcome.best_selection_metric,
+        "training_diagnostics": serialize_wgan_training_diagnostics(
+            outcome,
+            config=config,
+            fit_window_count=int(prepared.fit_context.shape[0]),
+        ),
         "validation_accesses": 0,
         "final_test_accesses": 0,
     }

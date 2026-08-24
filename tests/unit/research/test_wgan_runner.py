@@ -1,6 +1,7 @@
 """Focused fail-closed readiness tests for the future WGAN runner."""
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import subprocess
@@ -8,8 +9,10 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import torch
 
 from neuralmarket.research import wgan_runner
+from neuralmarket.research.wgan_comparator import WGANTrainingConfig, WGANTrainingOutcome
 
 
 def _identity() -> dict[str, object]:
@@ -367,3 +370,74 @@ def test_primary_and_reserve_rosters_are_fixed_without_automatic_chain() -> None
         "reserve-wgan-j03",
     )
     assert wgan_runner.AUTO_RESERVE_CHAIN is False
+
+
+def _diagnostic_outcome() -> WGANTrainingOutcome:
+    return WGANTrainingOutcome(
+        best_generator_epoch=2,
+        best_selection_metric=0.12345678901234567,
+        final_generator_epoch=3,
+        critic_loss_curve=(1.2345678901234567, 0.23456789012345678, -0.000000000000000123),
+        generator_loss_curve=(-1.2345678901234567, -0.23456789012345678, 0.000000000000000123),
+        gradient_penalty_curve=(10.123456789012345, 9.234567890123456, 8.345678901234567),
+        selection_metric_curve=(0.9, 0.12345678901234567, 0.2),
+        critic_update_count=30,
+        generator_update_count=6,
+        training_completed=True,
+        finite_diagnostics=True,
+        best_generator_state={},
+        best_critic_state={},
+    )
+
+
+def test_training_diagnostics_serialize_exactly_with_honest_missingness() -> None:
+    outcome = _diagnostic_outcome()
+    diagnostics = wgan_runner.serialize_wgan_training_diagnostics(
+        outcome,
+        config=WGANTrainingConfig(max_generator_epochs=10),
+        fit_window_count=128,
+    )
+
+    assert diagnostics["critic_loss_curve"] == list(outcome.critic_loss_curve)
+    assert diagnostics["generator_loss_curve"] == list(outcome.generator_loss_curve)
+    assert diagnostics["gradient_penalty_curve"] == list(outcome.gradient_penalty_curve)
+    assert diagnostics["checkpoint_selection"]["selection_metric_curve"] == list(
+        outcome.selection_metric_curve
+    )
+    assert diagnostics["critic_update_count"] == 30
+    assert diagnostics["generator_update_count"] == 6
+    assert diagnostics["training_completion"] == {
+        "status": "COMPLETED",
+        "final_generator_epoch": 3,
+        "fit_window_count": 128,
+    }
+    assert diagnostics["finite_nonfinite"] == {"status": "FINITE"}
+    assert diagnostics["mode_collapse_indicator"]["status"] == (
+        "NOT_AVAILABLE_WITHOUT_SCIENTIFIC_CHANGE"
+    )
+    assert diagnostics["historical_missingness"]["wgan-seed-01"] == {
+        "status": "MISSING_BY_DESIGN_HISTORICAL",
+        "value": None,
+    }
+    assert diagnostics["checkpoint_selection"]["best_selection_metric"] == (
+        outcome.best_selection_metric
+    )
+
+
+def test_training_diagnostic_serialization_does_not_call_scientific_operations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def forbidden(*args: object, **kwargs: object) -> None:
+        raise AssertionError("diagnostic serialization consumed scientific computation")
+
+    monkeypatch.setattr(torch, "rand", forbidden)
+    monkeypatch.setattr(torch, "randn", forbidden)
+    monkeypatch.setattr(torch, "randperm", forbidden)
+    diagnostics = wgan_runner.serialize_wgan_training_diagnostics(
+        _diagnostic_outcome(), config=WGANTrainingConfig(), fit_window_count=128
+    )
+    assert diagnostics["critic_update_count"] == 30
+    source = inspect.getsource(wgan_runner.serialize_wgan_training_diagnostics)
+    assert "torch." not in source
+    assert "optimizer" not in source
+    assert "forward" not in source

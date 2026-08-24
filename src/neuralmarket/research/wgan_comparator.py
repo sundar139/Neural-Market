@@ -449,6 +449,10 @@ class WGANTrainingOutcome:
     generator_loss_curve: tuple[float, ...]
     gradient_penalty_curve: tuple[float, ...]
     selection_metric_curve: tuple[float, ...]
+    critic_update_count: int
+    generator_update_count: int
+    training_completed: bool
+    finite_diagnostics: bool
     best_generator_state: dict[str, Tensor] = field(repr=False)
     best_critic_state: dict[str, Tensor] = field(repr=False)
 
@@ -496,6 +500,8 @@ def train_wgan_internal(
     generator_curve: list[float] = []
     penalty_curve: list[float] = []
     metric_curve: list[float] = []
+    critic_update_count = 0
+    generator_update_count = 0
     best_generator_state: dict[str, Tensor] | None = None
     best_critic_state: dict[str, Tensor] | None = None
     n_fit = data.fit_context.shape[0]
@@ -528,6 +534,7 @@ def train_wgan_internal(
                 critic_optimizer.zero_grad(set_to_none=True)
                 loss.backward()  # type: ignore[no-untyped-call]
                 critic_optimizer.step()
+                critic_update_count += 1
                 _check_parameters_finite(critic_model)
                 epoch_critic += float(loss.detach().item())
                 epoch_penalty += float(penalty.detach().item())
@@ -537,6 +544,7 @@ def train_wgan_internal(
             generator_optimizer.zero_grad(set_to_none=True)
             generator_loss.backward()  # type: ignore[no-untyped-call]
             generator_optimizer.step()
+            generator_update_count += 1
             _check_parameters_finite(generator_model)
             epoch_generator += float(generator_loss.detach().item())
             n_batches += 1
@@ -577,6 +585,10 @@ def train_wgan_internal(
         generator_loss_curve=tuple(generator_curve),
         gradient_penalty_curve=tuple(penalty_curve),
         selection_metric_curve=tuple(metric_curve),
+        critic_update_count=critic_update_count,
+        generator_update_count=generator_update_count,
+        training_completed=True,
+        finite_diagnostics=True,
         best_generator_state=best_generator_state,
         best_critic_state=best_critic_state,
     )
