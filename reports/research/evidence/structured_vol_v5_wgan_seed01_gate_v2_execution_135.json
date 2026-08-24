@@ -1,0 +1,256 @@
+{
+  "schema_version": "structured-vol-v5-wgan-seed01-gate-v2-execution-evidence-v1",
+  "task_id": "NM-R5-V5-WGAN-SEED-01-GATE-V2-EXECUTION-135",
+  "risk": "R5",
+  "governance": {
+    "starting_gate": "NM-R4-V5-WGAN-SEED-01-GATE-V2-AUTHORIZATION-AUDIT-134",
+    "starting_gate_result": "VALIDATED",
+    "transitions": "DISCOVER -> DECIDE -> EXECUTE -> VERIFY -> REPORT",
+    "final_gate": "GATE_FAIL_VALID",
+    "outcome": "VALID_POOR_RESULT_RETAINED",
+    "next_governed_action": "NM-R5-V5-WGAN-SEED-01-GATE-V2-EXECUTION-AUDIT-136"
+  },
+  "repository": {
+    "branch": "main",
+    "starting_head": "76ebe914586314055782bede8e0574b807702f67",
+    "safety_branch": "safety/pre-wgan-seed01-gate-execution-76ebe91",
+    "safety_branch_ref": "76ebe914586314055782bede8e0574b807702f67",
+    "tracked_status_before": "clean",
+    "preexisting_untracked_status": [
+      "?? reports/research/neural_sde_signature_v3_report.json",
+      "?? reports/research/neural_sde_signature_v4_report.json",
+      "?? reports/research/structured_vol_v5_report.json",
+      "?? reports/research/wgan_comparator_runs/"
+    ]
+  },
+  "authorization": {
+    "path": "reports/research/authorizations/structured_vol_v5_wgan_gate/wgan-seed-01-gate-v2-v1.json",
+    "canonical_sha256": "215c307028e5f8a5cf7f25e4277cbf965a81d85aed0c6dfd71164e1439c06a32",
+    "git_blob": "b6960813f843160f4eadd05cce05cf069f0cf0e1",
+    "schema": "structured-vol-v5-wgan-gate-authorization-v1",
+    "gate_task_id": "NM-R5-V5-WGAN-SEED-01-GATE-V2-EXECUTION-135",
+    "marker_path": "reports/research/wgan_gate_runs/wgan-seed-01/gate-v2-execution-135/execution_started.json",
+    "member": "wgan-seed-01",
+    "max_scientific_invocations": 1,
+    "permissions": {
+      "training_authorized": false,
+      "gate_execution_authorized": true,
+      "validation_authorized": false,
+      "final_test_authorized": false,
+      "overwrite": false,
+      "relaunch": false
+    },
+    "alternate_authorization": false,
+    "validator_verdict": "VALIDATED_CONSUMED_BY_TECHNICAL_MARKER"
+  },
+  "prelaunch_identities": {
+    "evaluator": {
+      "path": "src/neuralmarket/research/wgan_gate_evaluator.py",
+      "canonical_sha256": "e6c82d32c2ced3209ed0fb9dc2bf49b883b06d00aeaf73ea8eaf10ebb2e94d67",
+      "git_blob": "f74eaa5c892e6504c9f37b4c8ec78d63eb73aae1"
+    },
+    "training_runner": {
+      "path": "src/neuralmarket/research/wgan_runner.py",
+      "canonical_sha256": "d8af5d1ca85b73de69f9ebee78d9148e534df3b803159b9babc740fc32ae6574",
+      "git_blob": "7e020ea937af9e2713451ae735d58c4cbb645289"
+    },
+    "model": {
+      "path": "src/neuralmarket/models/wgan_cde.py",
+      "canonical_sha256": "4559eae2f17ad007ca93c1f721bb9a047de03b3dca6ea25067562c1383d820ce",
+      "git_blob": "2f5cf1dd2cc3eaa7c563529e5ae7bb127dcbbdfe"
+    },
+    "comparator": {
+      "path": "src/neuralmarket/research/wgan_comparator.py",
+      "canonical_sha256": "c707df4d8ccc5073de83f2d8863677707db3283ffe04e594328193403782f195",
+      "git_blob": "87f9ad37bcd92d7d0acc0383a5b8bab8a8a2f33b"
+    },
+    "wgan_config": {
+      "path": "configs/research/structured_vol_wgan_comparator_v1.yaml",
+      "canonical_sha256": "de0b4fe775ead7bfad922189d5562c31f7229bbc785d3887e6342909b9a288f7",
+      "git_blob": "e0740afc24697f2eab3620a4243d04411aa508cb"
+    },
+    "gate_config": {
+      "path": "configs/research/neural_sde_internal_gate_v2.yaml",
+      "canonical_sha256": "8e70ad15e30927456058d293a766523ba16bbbfce00bb64366bc83151f2d5625",
+      "git_blob": "d9705ef9a11da3e21760015bb2a27fa408018bb5"
+    },
+    "v3_training_authorization": {
+      "path": "reports/research/authorizations/structured_vol_v5_wgan_training/wgan-seed-01-v3.json",
+      "canonical_sha256": "19c50306ef6849ab2153eaeaec0c7bf80dbcc634aeb58048e0c47dacd77f4690",
+      "git_blob": "c261b15c8f3ecb99dd1e0a382c1f648b470103fa"
+    },
+    "task127_evidence": {
+      "path": "reports/research/evidence/structured_vol_v5_wgan_seed01_execution_v3_127.json",
+      "canonical_sha256": "96489abe4f2c0ca7b2c460b70ecbd2d881fcb5dd6ebea9e62643fe0c36f30e6f",
+      "git_blob": "21bcd88957ad69e8aef7b9675d308daf697b2ac7"
+    },
+    "checkpoint": {
+      "path": "data/processed/research/model/wgan-comparator/wgan-seed-01/ebfbf915ec8316d8/checkpoint.pt",
+      "raw_sha256": "332614157e2c1d30e6a5fd043cb893b36c508e4ab2603b07642e0d66ddb7718e"
+    },
+    "training_marker": {
+      "path": "reports/research/wgan_comparator_runs/wgan-seed-01/ebfbf915ec8316d8/execution_started.json",
+      "raw_sha256": "18d246aa4d3146092a3df5ee243492f7e9859f2fb61c7b82d8f6d1f84d907be1"
+    },
+    "checkpoint_metadata": {
+      "best_generator_epoch": 63,
+      "best_selection_metric": 3.0610572388897204,
+      "canonical_config_hash": "31c1dfb28737f9701c52ddbb7f496cf3ba03d7196c6d7ea948a02341c2ecbd58"
+    },
+    "verdict": "ALL_FROZEN_IDENTITIES_MATCHED"
+  },
+  "runtime": {
+    "call_order": [
+      "require_cuda_device(requested_device)",
+      "resolve_device(requested_device)",
+      "require_cuda_device(resolved_device)",
+      "configure_device_determinism(resolved_device, enabled=True)",
+      "build_runtime_identity(requested_device, resolved_device)"
+    ],
+    "python": "3.11.9",
+    "pytorch": "2.13.0+cu132",
+    "cuda": "13.2",
+    "available": true,
+    "gpu": "NVIDIA GeForce RTX 4070 Laptop GPU",
+    "capability": "8.9",
+    "cudnn": 92000,
+    "requested": "cuda",
+    "resolved": "cuda",
+    "deterministic_algorithms": true,
+    "cudnn_benchmark": false,
+    "cudnn_deterministic": true,
+    "runtime_identity": "17e3bb52d5893c4e09ecb759a925004f2e75a37d7d4faf4ece7de41f81870ada",
+    "pre_determinism_identity_rejected": "35d07adc53bebe974457f2e87e8af0b4ff9d3f0cb19791f6370f8cf98d82ffbd",
+    "cpu_fallback": "PROHIBITED",
+    "verdict": "MATCHED"
+  },
+  "invocation": {
+    "exact_command": ".venv-gpu/Scripts/python.exe -m neuralmarket.research.wgan_gate_evaluator --member-id wgan-seed-01 --checkpoint data/processed/research/model/wgan-comparator/wgan-seed-01/ebfbf915ec8316d8/checkpoint.pt --checkpoint-sha256 332614157e2c1d30e6a5fd043cb893b36c508e4ab2603b07642e0d66ddb7718e --authorization reports/research/authorizations/structured_vol_v5_wgan_gate/wgan-seed-01-gate-v2-v1.json --execute",
+    "launch_mode": "background",
+    "terminal_pid": 31688,
+    "terminal_session": "proc_530ec4eaad2e",
+    "launcher_pid": 2670,
+    "evaluator_marker_pid": 25276,
+    "start_utc": "2026-08-24T00:45:41.617592400+0000",
+    "start_local": "2026-08-23T20:45:41.638126500-0400",
+    "end_observed_utc": "2026-08-24T00:45:48.647223+00:00",
+    "wall_seconds": 7.029631,
+    "exit_code": 0,
+    "governed_process_count": 1,
+    "retry": 0,
+    "relaunch": 0,
+    "rerun": 0,
+    "stdout": {
+      "path": ".agent-memory/task-135/stdout.log",
+      "bytes": 7710,
+      "sha256": "6d96c1f792c4a1ce73a06014684a81ef5c74fd53b977f05a0be8c90d4697ed48"
+    },
+    "stderr": {
+      "path": ".agent-memory/task-135/stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "verdict": "ORIGINAL_PROCESS_TERMINATED_EXIT_0"
+  },
+  "gate_marker": {
+    "created": true,
+    "path": "reports/research/wgan_gate_runs/wgan-seed-01/gate-v2-execution-135/execution_started.json",
+    "sha256": "4a1d4dd600d3506cfc839f2bf8da571a9603b2b7af9a08347761e54428cc863a",
+    "count": 1,
+    "authorization": {
+      "path": "reports/research/authorizations/structured_vol_v5_wgan_gate/wgan-seed-01-gate-v2-v1.json",
+      "canonical_sha256": "215c307028e5f8a5cf7f25e4277cbf965a81d85aed0c6dfd71164e1439c06a32",
+      "git_blob": "b6960813f843160f4eadd05cce05cf069f0cf0e1"
+    },
+    "gate_task": "NM-R5-V5-WGAN-SEED-01-GATE-V2-EXECUTION-135",
+    "member": "wgan-seed-01",
+    "checkpoint": "332614157e2c1d30e6a5fd043cb893b36c508e4ab2603b07642e0d66ddb7718e",
+    "training_marker": "18d246aa4d3146092a3df5ee243492f7e9859f2fb61c7b82d8f6d1f84d907be1",
+    "training_authorization": {
+      "path": "reports/research/authorizations/structured_vol_v5_wgan_training/wgan-seed-01-v3.json",
+      "canonical_sha256": "19c50306ef6849ab2153eaeaec0c7bf80dbcc634aeb58048e0c47dacd77f4690",
+      "git_blob": "c261b15c8f3ecb99dd1e0a382c1f648b470103fa"
+    },
+    "task127_evidence": {
+      "path": "reports/research/evidence/structured_vol_v5_wgan_seed01_execution_v3_127.json",
+      "canonical_sha256": "96489abe4f2c0ca7b2c460b70ecbd2d881fcb5dd6ebea9e62643fe0c36f30e6f",
+      "git_blob": "21bcd88957ad69e8aef7b9675d308daf697b2ac7"
+    },
+    "evaluator": "f74eaa5c892e6504c9f37b4c8ec78d63eb73aae1",
+    "gate_config": {
+      "canonical_sha256": "8e70ad15e30927456058d293a766523ba16bbbfce00bb64366bc83151f2d5625",
+      "git_blob": "d9705ef9a11da3e21760015bb2a27fa408018bb5"
+    },
+    "seeds": {
+      "evaluation": 8283,
+      "bootstrap": 8801
+    },
+    "runtime_identity": "17e3bb52d5893c4e09ecb759a925004f2e75a37d7d4faf4ece7de41f81870ada",
+    "timestamp_utc": "2026-08-24T00:45:46.811556+00:00",
+    "pid": 25276,
+    "entitlement_consumed": true,
+    "verdict": "VALID_IMMUTABLE_MARKER"
+  },
+  "gate_execution": {
+    "scientific_boundary_entered": true,
+    "generated_paths": 1024,
+    "bootstrap_paths": 1024,
+    "horizon": 63,
+    "bootstrap_block_length": 22,
+    "acf_lags": [1, 2, 3, 5, 10, 20],
+    "finite_output": true,
+    "variance_ratio": 40.51914294429684,
+    "variance_pass": false,
+    "terminal_dispersion_ratio": 5.884726691292518,
+    "terminal_dispersion_pass": false,
+    "path_uniqueness": 1.0,
+    "uniqueness_pass": true,
+    "acf1_absolute_difference": 0.9724993480217599,
+    "acf1_pass": false,
+    "terminal_wasserstein_normalized": 41.83150998600351,
+    "raw_return_acf_rmse": 0.6877704458613763,
+    "raw_return_acf_max_error": 0.9724993480217599,
+    "absolute_return_acf": {
+      "real": {"1": 0.3450408666836692, "2": 0.2603867592009751, "3": 0.1546991199179677, "5": -0.034484678950656385, "10": 0.034676842472670485, "20": -0.037932909482695794},
+      "generated": {"1": 0.9713642064215674, "2": 0.9356676381145105, "3": 0.8933652742065923, "5": 0.791022819407289, "10": 0.4537705375742863, "20": -0.3634004242756069}
+    },
+    "squared_return_acf": {
+      "real": {"1": 0.30897858687059576, "2": 0.20100656884555976, "3": 0.05184692982603987, "5": -0.04593829130076654, "10": -0.004108221958416775, "20": 0.02556645050472458},
+      "generated": {"1": 0.9412321024102481, "2": 0.8789460523306485, "3": 0.8135984501900332, "5": 0.6761642465520054, "10": 0.3136399948609311, "20": -0.324209414235325}
+    },
+    "conditional_variance_log_correlation": -0.06406967637484266,
+    "excluded_metrics": [
+      "selection-loss Gate criteria",
+      "internal-RBF Gate criteria",
+      "drift_diffusion_rms_ratio",
+      "WGAN drift/diffusion decomposition"
+    ],
+    "result_artifact": {
+      "path": ".agent-memory/task-135/stdout.log",
+      "sha256": "6d96c1f792c4a1ce73a06014684a81ef5c74fd53b977f05a0be8c90d4697ed48",
+      "note": "Evaluator emitted the structured Gate result to stdout; no separate tracked Gate-result report was created."
+    },
+    "overall_classification": "GATE_FAIL_VALID",
+    "valid_poor_result_retained": true,
+    "verdict": "VALID_FINITE_COMPLETED_MEMBER"
+  },
+  "firewalls": {
+    "training": 0,
+    "validation": 0,
+    "external_validation": 0,
+    "h2": 0,
+    "final_test": 0,
+    "seed_02_authorization": 0,
+    "reserve_authorization": 0,
+    "retry": 0,
+    "relaunch": 0,
+    "rerun": 0,
+    "network": 0,
+    "push": 0
+  },
+  "classification": "GATE_FAIL_VALID",
+  "scientific_result": "GATE_FAIL_VALID",
+  "h2": "NOT CALCULATED",
+  "final": "SEALED",
+  "self_hash": "NOT INCLUDED"
+}
