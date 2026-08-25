@@ -26,8 +26,7 @@ EXPECTED_CONTRACT_V3_BLOB = "eef7ad220db889166469799372759dfe1a96e35f"
 EXPECTED_RUNTIME_IDENTITY = "17e3bb52d5893c4e09ecb759a925004f2e75a37d7d4faf4ece7de41f81870ada"
 CONTRACT_V3_PATH = Path("reports/protocol/structured_vol_v5_deep_hedging_training_contract_v3.md")
 AUTHORIZATION_TASK_FAMILY_RE = re.compile(r"^NM-R4-V5-DEEP-HEDGING-TRAINING-EXECUTION-AUTHORIZATION-[0-9]+$")
-
-
+RECOVERY_AUTHORIZATION_TASK_FAMILY_RE = re.compile(r"^NM-R4-V5-DEEP-HEDGING-GRU-TRAINING-RECOVERY-EXECUTION-AUTHORIZATION-[0-9]+$")
 
 
 
@@ -470,8 +469,8 @@ def verify_authorization_artifact(
         task_id = str(payload.get("authorization_task_id") or payload.get("task_id") or "")
     except Exception as e:
         raise AuthorizationError(f"failed to parse authorization_task_id from {rel}: {e}") from e
-    if not AUTHORIZATION_TASK_FAMILY_RE.match(task_id):
-        raise AuthorizationError(f"authorization_task_id {task_id!r} does not match family {AUTHORIZATION_TASK_FAMILY_RE.pattern}")
+    if not (AUTHORIZATION_TASK_FAMILY_RE.match(task_id) or RECOVERY_AUTHORIZATION_TASK_FAMILY_RE.match(task_id)):
+        raise AuthorizationError(f"authorization_task_id {task_id!r} does not match family {AUTHORIZATION_TASK_FAMILY_RE.pattern} or {RECOVERY_AUTHORIZATION_TASK_FAMILY_RE.pattern}")
     return {
         "canonical_sha256": canonical_sha,
         "git_blob": blob,
@@ -619,6 +618,9 @@ def validate_recovery_authorization_schema(payload: dict) -> None:
     # Discriminator
     if payload.get("authorization_type") != RECOVERY_AUTHORIZATION_TYPE:
         raise AuthorizationError(f"recovery authorization_type must be {RECOVERY_AUTHORIZATION_TYPE!r}")
+    task_id = str(payload.get("authorization_task_id") or payload.get("task_id") or "")
+    if not RECOVERY_AUTHORIZATION_TASK_FAMILY_RE.match(task_id):
+        raise AuthorizationError(f"recovery authorization_task_id {task_id!r} does not match family {RECOVERY_AUTHORIZATION_TASK_FAMILY_RE.pattern}")
     # Recovery protocol binding
     if payload.get("recovery_protocol_path") != str(RECOVERY_PROTOCOL_PATH):
         raise AuthorizationError(f"recovery_protocol_path must be {str(RECOVERY_PROTOCOL_PATH)!r}")
