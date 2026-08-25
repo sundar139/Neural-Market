@@ -1,0 +1,94 @@
+{
+  "artifact_roots": [
+    "data/processed/research/hedging_synthetic",
+    "data/processed/research/hedging_policies"
+  ],
+  "authorization_task_id": "NM-R4-V5-DEEP-HEDGING-TRAINING-EXECUTION-AUTHORIZATION-211",
+  "checkpoint_git_hash": {
+    "reserve-j01": "38c9f8a0c8f97c64f1b14d269fc90cadbcccd1f8",
+    "seed-01": "6820d07c0fb253a028c88e46b5db0b16363ae22c",
+    "seed-02": "592df5d33f9342902d5526a710ef4a2c633fe058",
+    "seed-04": "3701888ef57f201370cfd66f763e9bf38e0e64d1",
+    "seed-05": "808db090fe34f15bce8d881ad63616a738b019c3"
+  },
+  "checkpoint_git_hash_object": {
+    "reserve-j01": "38c9f8a0c8f97c64f1b14d269fc90cadbcccd1f8",
+    "seed-01": "6820d07c0fb253a028c88e46b5db0b16363ae22c",
+    "seed-02": "592df5d33f9342902d5526a710ef4a2c633fe058",
+    "seed-04": "3701888ef57f201370cfd66f763e9bf38e0e64d1",
+    "seed-05": "808db090fe34f15bce8d881ad63616a738b019c3"
+  },
+  "checkpoint_identities": {
+    "reserve-j01": "50d14095d95386c0596b36297185c3a1eca6182b463adfae52370890c600d183",
+    "seed-01": "452f70058eb03a83af248fdb3c85f413264becd302b1e71d11167f10ac7b887f",
+    "seed-02": "9e6f8cd030d073d5c93ac36c94c55b09366f07b2f153f181fc82daedffc0064e",
+    "seed-04": "87d022152ba28f886b56bcf966ebc18d40e73d911258a83f01ece150ce8e7a89",
+    "seed-05": "3a71b12e1c0af08e1006b492aefd59d4e2b04ceee8e1f88a1ee07c0178f2d21a"
+  },
+  "checkpoint_paths": {
+    "reserve-j01": "data/processed/research/model/structured-volatility-neural-sde-v5/38c5113b27568e14/checkpoint.pt",
+    "seed-01": "data/processed/research/model/structured-volatility-neural-sde-v5/5bdbaabd2fb257a7/checkpoint.pt",
+    "seed-02": "data/processed/research/model/structured-volatility-neural-sde-v5/62c7406cb3a2c642/checkpoint.pt",
+    "seed-04": "data/processed/research/model/structured-volatility-neural-sde-v5/77e7de9efabb7ce3/checkpoint.pt",
+    "seed-05": "data/processed/research/model/structured-volatility-neural-sde-v5/1e8aa171993a1aba/checkpoint.pt"
+  },
+  "checkpoint_raw_sha256": {
+    "reserve-j01": "50d14095d95386c0596b36297185c3a1eca6182b463adfae52370890c600d183",
+    "seed-01": "452f70058eb03a83af248fdb3c85f413264becd302b1e71d11167f10ac7b887f",
+    "seed-02": "9e6f8cd030d073d5c93ac36c94c55b09366f07b2f153f181fc82daedffc0064e",
+    "seed-04": "87d022152ba28f886b56bcf966ebc18d40e73d911258a83f01ece150ce8e7a89",
+    "seed-05": "3a71b12e1c0af08e1006b492aefd59d4e2b04ceee8e1f88a1ee07c0178f2d21a"
+  },
+  "contract_v3_blob": "eef7ad220db889166469799372759dfe1a96e35f",
+  "contract_v3_canonical": "79611b6b3be41fecf6beadbcbbd12439f434884f1d4d4a09c294a01134318d01",
+  "contract_v3_git_blob": "eef7ad220db889166469799372759dfe1a96e35f",
+  "cost_allowlist": [
+    0.0,
+    0.001,
+    0.005
+  ],
+  "final_test_access": false,
+  "hedger_seed_allowlist": [
+    31001,
+    31002,
+    31003
+  ],
+  "implementation_commit": "66f0fce3f93c74090523a92617d5d980845e3b9d",
+  "implementation_manifest_sha256": "79cad575a932ed87dfd6336d058275431cd49b62988aabe20557eca60421bac3",
+  "implementation_source_blobs": {
+    "src/neuralmarket/cli/deep_hedging.py": "0a601c024e7490254e7e77072ecd820081371c5f",
+    "src/neuralmarket/cli/main.py": "85f03cd4c8c3cf9f6eaa3e1d4188e6a2361592b5",
+    "src/neuralmarket/core/device.py": "5f7f7a1ec29407c5a1734a71a994f444cf092386",
+    "src/neuralmarket/core/runtime_identity.py": "817ba53e2474c6e8dd7ecf15d64e0766e75f73e9",
+    "src/neuralmarket/data/manifests.py": "7ec3a80a795f82bfd19020bd21358e76a300615d",
+    "src/neuralmarket/models/structured_vol_sde.py": "e828a8748216cc9d8d79593e1dd2e42a6226ab08",
+    "src/neuralmarket/research/deep_hedging/__init__.py": "bd994657eab9407ff8593b2c2ad3ede31a689f44",
+    "src/neuralmarket/research/deep_hedging/artifacts.py": "28e3254a16977970a0860f9fc438d05e3949ac30",
+    "src/neuralmarket/research/deep_hedging/cvar.py": "c03166afeb23b34d8fbf8d3d29357933eca2524a",
+    "src/neuralmarket/research/deep_hedging/generation.py": "1b8710fc77362eb59a7167b3b4575d8b93f63d12",
+    "src/neuralmarket/research/deep_hedging/hedger.py": "9a003e45687e1bbd409bde2c37ed39644be9e2ad",
+    "src/neuralmarket/research/deep_hedging/pnl.py": "122a00c996f8d4d01b89474fe98dee5ec49a393f",
+    "src/neuralmarket/research/deep_hedging/runner.py": "97c3dccb1110a08a6406debddf9514d2cb71fb5b",
+    "src/neuralmarket/research/deep_hedging/synthetic.py": "f3838634a6afc57b438d1baa2d078e37d12dacb5",
+    "src/neuralmarket/research/deep_hedging/trainer.py": "26a0080686a40c722a1933f6f1dfaef5515486a2"
+  },
+  "max_generation_invocations": 5,
+  "max_training_invocations": 45,
+  "member_allowlist": [
+    "seed-01",
+    "seed-02",
+    "seed-04",
+    "seed-05",
+    "reserve-j01"
+  ],
+  "network": false,
+  "runtime_identity": "17e3bb52d5893c4e09ecb759a925004f2e75a37d7d4faf4ece7de41f81870ada",
+  "schema_version": "hedging-execution-authorization-v1",
+  "synthetic_rng": {
+    "reserve-j01": 42006,
+    "seed-01": 42001,
+    "seed-02": 42002,
+    "seed-04": 42004,
+    "seed-05": 42005
+  }
+}
