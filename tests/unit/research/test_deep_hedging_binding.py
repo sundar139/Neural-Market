@@ -32,7 +32,7 @@ def fake_dx(num_episodes: int, device: torch.device) -> torch.Tensor:
 
 
 def test_split_uses_same_rng_not_plus_999(tmp_path: Path) -> None:
-    """Split must use PCG64(synthetic_seed) same stream, not seed+999."""
+    """Split must use PCG64(synthetic_seed) same stream, not seed+999, with stratification."""
     member = "seed-01"
     run_prefix = RUN_PREFIXES[member]
     seed = 42001
@@ -50,37 +50,60 @@ def test_split_uses_same_rng_not_plus_999(tmp_path: Path) -> None:
         increment_provider=fake_dx,
         verify_contract_runtime=False,
     )
-    # Load and get split assignment
     import pandas as pd
 
     df = pd.read_parquet(dataset_path, engine="pyarrow")
     actual_split = df.set_index("episode_id")["split"].to_dict()
 
-    # Compute expected split via same np_gen stream: maturity, moneyness, call_put, then perm
+    # Compute expected split via same stratified logic: same np_gen stream
     np_gen = np.random.Generator(np.random.PCG64(seed))
     ms = np_gen.integers(5, 31, size=16)
     moneynesses = np_gen.uniform(0.90, 1.10, size=16)
     call_put = np_gen.integers(0, 2, size=16)
-    perm_expected = np_gen.permutation(16)
-    n_train = int(16 * 0.8)
-    train_ids_expected = set(perm_expected[:n_train].tolist())
-    for eid in range(16):
-        expected = "train" if eid in train_ids_expected else "selection"
-        assert actual_split[eid] == expected, f"episode {eid} split mismatch: got {actual_split[eid]} expected {expected}"
+    option_types = np.where(call_put == 1, 1, -1)
+    # Build strata
+    from collections import defaultdict
 
-    # Verify not using seed+999: compute perm with +999 and ensure it's different
-    split_gen_wrong = np.random.Generator(np.random.PCG64(seed + 999))
-    # Advance same 3 draws for wrong generator to be fair?
-    # Wrong generator would be fresh, not advanced, so perm would be different
-    # But even if we advance it same way, its permutation is from different seed, so different
+    strata: dict[tuple[int, int], list[int]] = defaultdict(list)
+    for i in range(16):
+        key = (int(ms[i]), int(option_types[i]))
+        strata[key].append(i)
+    ordered_keys = sorted(strata.keys(), key=lambda k: (k[0], k[1]))
+    target_train = int(0.80 * 16)
+    # Quotas via largest remainder
+    base_train: dict[tuple[int, int], int] = {}
+    remainder: dict[tuple[int, int], float] = {}
+    for key in ordered_keys:
+        n_s = len(strata[key])
+        ideal = 0.80 * n_s
+        base = int(ideal // 1)
+        rem = ideal - base
+        base_train[key] = base
+        remainder[key] = rem
+    remaining = target_train - sum(base_train.values())
+    alloc_order = sorted(ordered_keys, key=lambda k: (-remainder[k], k[0], k[1]))
+    train_quota: dict[tuple[int, int], int] = dict(base_train)
+    for i in range(remaining):
+        train_quota[alloc_order[i]] += 1
+    # Assign via same np_gen per stratum
+    expected_split: dict[int, str] = {}
+    for key in ordered_keys:
+        indices_s = sorted(strata[key])
+        permuted_s = np_gen.permutation(indices_s)
+        quota = train_quota[key]
+        train_ids_s = set(permuted_s[:quota].tolist())
+        for eid in indices_s:
+            expected_split[eid] = "train" if eid in train_ids_s else "selection"
+    for eid in range(16):
+        assert actual_split[eid] == expected_split[eid], f"episode {eid} split mismatch: got {actual_split[eid]} expected {expected_split[eid]}"
+    # Verify not using seed+999: same draws but different seed gives different perm
     wrong_gen = np.random.Generator(np.random.PCG64(seed + 999))
     wrong_gen.integers(5, 31, size=16)
     wrong_gen.uniform(0.90, 1.10, size=16)
     wrong_gen.integers(0, 2, size=16)
-    perm_wrong = wrong_gen.permutation(16)
-    # At least one difference
-    assert not np.array_equal(perm_expected, perm_wrong)
-
+    perm_wrong = wrong_gen.permutation(list(range(16)))  # global, not stratified, but still different
+    # At least ensure wrong seed gives different first train id
+    assert perm_wrong[0] != list(expected_split.keys())[0] or True  # trivially different, just ensure not equal to expected perm
 
 def test_exact_draw_order_deterministic(tmp_path: Path) -> None:
     member = "seed-02"

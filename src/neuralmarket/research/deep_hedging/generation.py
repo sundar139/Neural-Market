@@ -288,14 +288,73 @@ def generate_and_persist_synthetic_dataset(
     # Deterministic order by episode_id (already 0..N-1)
     df = df.sort_values("episode_id").reset_index(drop=True)
 
-    # Exact 40k/10k split: use SAME np_gen object (single frozen PCG64(synthetic_seed) stream)
-    # Draw order: maturity (N), moneyness (N), call/put (N), then permutation (N)
-    # No +999, no child seed, no second split RNG
-    perm = np_gen.permutation(num_episodes)
-    n_train = int(num_episodes * 0.8)  # 40,000 for N=50,000 per contract
-    train_ids = set(perm[:n_train].tolist())
-    df["split"] = df["episode_id"].apply(lambda eid: "train" if eid in train_ids else "selection")
-
+    # Exact stratified 80/20 split: maturity_option_type_stratified_largest_remainder_v1
+    # Freeze stratum per (maturity, option_type) where maturity 5..30,
+    # option_type is canonical numeric encoding (+1 call / -1 put) from dataset.
+    # Processing order: maturity ascending, then option_type ascending by numeric encoding.
+    # Do not consume RNG for stratum order. Ignore empty strata. Episode IDs remain 0..N-1.
+    # Do not reorder persisted rows; only assign split labels.
+    # Target train = floor(0.80*N), selection = N - train (40,000/10,000 for N=50,000)
+    # Per stratum s with count n_s: ideal_train_s =0.80*n_s, base_train_s=floor(ideal_train_s),
+    # remainder_s = ideal_train_s - base_train_s. remaining = target_train - sum(base_train_s)
+    # Allocate one additional training slot to exactly `remaining` strata ordered by
+    # remainder_s descending, maturity ascending, option_type ascending.
+    # This is deterministic largest-remainder apportionment, no random quota rounding.
+    # Use SAME frozen np_gen stream within strata: continue already-advanced RNG
+    # after metadata draws (maturity, moneyness, call/put), for each nonempty
+    # stratum in canonical order: indices_s = episode IDs in stratum ascending,
+    # permuted_s = np_gen.permutation(indices_s), assign first train_quota_s: train
+    # Do NOT reinitialize np_gen, no +999, no child seed, no second split RNG,
+    # no global permutation. Persist split labels in original episode_id row order.
+    target_train = int(0.80 * num_episodes)  # floor
+    target_selection = num_episodes - target_train
+    # Build strata: key -> list of episode_ids
+    strata: dict[tuple[int, int], list[int]] = {}
+    for _, row in df.iterrows():
+        key = (int(row["maturity"]), int(row["option_type"]))
+        strata.setdefault(key, []).append(int(row["episode_id"]))
+    # Canonical order: maturity asc, then option_type asc
+    ordered_keys = sorted(strata.keys(), key=lambda k: (k[0], k[1]))
+    # Compute quotas per stratum
+    base_train: dict[tuple[int, int], int] = {}
+    remainder: dict[tuple[int, int], float] = {}
+    for key in ordered_keys:
+        n_s = len(strata[key])
+        ideal = 0.80 * n_s
+        base = int(ideal // 1)  # floor
+        rem = ideal - base
+        base_train[key] = base
+        remainder[key] = rem
+    sum_base = sum(base_train.values())
+    remaining = target_train - sum_base
+    if remaining < 0:
+        raise RuntimeError(f"remaining {remaining} <0: target_train {target_train} sum_base {sum_base}")
+    # Order strata for additional allocation: remainder desc, maturity asc, option_type asc
+    alloc_order = sorted(ordered_keys, key=lambda k: (-remainder[k], k[0], k[1]))
+    train_quota: dict[tuple[int, int], int] = dict(base_train)
+    for i in range(remaining):
+        key = alloc_order[i]
+        train_quota[key] += 1
+    # Validate totals
+    if sum(train_quota.values()) != target_train:
+        raise RuntimeError(f"train quota sum {sum(train_quota.values())} != target_train {target_train}")
+    if sum(len(strata[k]) - train_quota[k] for k in ordered_keys) != target_selection:
+        raise RuntimeError("selection quota mismatch")
+    # For real N=50,000 require exactly 40,000/10,000
+    if num_episodes == 50000 and (target_train != 40000 or target_selection != 10000):
+        raise RuntimeError(f"N=50000 requires 40000/10000, got {target_train}/{target_selection}")
+    # Assign split labels using same np_gen stream within strata
+    split_map: dict[int, str] = {}
+    for key in ordered_keys:
+        indices_s = sorted(strata[key])  # ascending before permutation
+        permuted_s = np_gen.permutation(indices_s)
+        quota = train_quota[key]
+        train_ids_s = set(permuted_s[:quota].tolist())
+        for eid in indices_s:
+            split_map[eid] = "train" if eid in train_ids_s else "selection"
+    df["split"] = df["episode_id"].map(split_map)
+    # Ensure persisted row order remains episode_id ascending
+    df = df.sort_values("episode_id").reset_index(drop=True)
     # Persist parquet + manifest (write-once)
     dataset_path.parent.mkdir(parents=True, exist_ok=True)
     # Use pyarrow engine (already installed)
@@ -319,9 +378,17 @@ def generate_and_persist_synthetic_dataset(
             "strike": "K=S[0]/m",
             "p0": "Black-Scholes sigma=0.20 r=0 q=0 multiplier1",
         },
+        "split_method": "maturity_option_type_stratified_largest_remainder_v1",
+        "train_fraction": 0.80,
+        "target_train_count": int(target_train),
+        "target_selection_count": int(target_selection),
+        "stratum_keys": ["maturity", "option_type"],
+        "stratum_order": "maturity ascending, option_type ascending",
+        "quota_method": "largest_remainder",
+        "RNG": "same member PCG64(synthetic_seed) stream after metadata draws",
         "train_selection_split": "80/20",
-        "train_count": int(n_train),
-        "selection_count": int(num_episodes - n_train),
+        "train_count": int(target_train),
+        "selection_count": int(target_selection),
         "cost_levels": [0.0, 0.0010, 0.0050],
         "parquet_sha256": dataset_sha256,
         "contract_v3_canonical": EXPECTED_CONTRACT_V3_CANONICAL,
