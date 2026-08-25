@@ -34,28 +34,16 @@ def fake_provider(num, dev):
 
 
 def _valid_recovery_payload():
-    # Build minimal valid recovery payload
+    # Build valid recovery payload using trusted predecessor map (field-for-field)
+    from neuralmarket.research.deep_hedging.runner import _get_trusted_predecessor_map
+
     tuples = []
     for m in MEMBERS:
         for c in COST_LEVELS:
             for s in HEDGER_SEEDS:
                 tuples.append({"member": m, "cost": c, "hedger_seed": s})
-    pred = {}
-    for t in tuples:
-        key = f"{t['member']}:{t['cost']}:{t['hedger_seed']}"
-        # Use historical path from evidence: data/processed/research/hedging_policies/<prefix>_<member>/c_<bps>/h_<seed>
-        bps = {0.0: 0, 0.0010: 10, 0.0050: 50}[t["cost"]]
-        hist_path = f"data/processed/research/hedging_policies/{RUN_PREFIXES[t['member']]}_{t['member']}/c_{bps}/h_{t['hedger_seed']}"
-        pred[key] = {
-            "historical_artifact_path": hist_path,
-            "historical_execution_started_sha": "a" * 64,
-            "historical_checkpoint_sha": "b" * 64,
-            "historical_terminal_sha": "c" * 64,
-            "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
-            "member": t["member"],
-            "cost": t["cost"],
-            "hedger_seed": t["hedger_seed"],
-        }
+    # Use trusted map for predecessor identities (exact cryptographic binding)
+    pred = _get_trusted_predecessor_map()
     return {
         "schema_version": "hedging-execution-authorization-v1",
         "authorization_task_id": "NM-R4-V5-GRU-RECOVERY-AUTHORIZATION-223",
@@ -82,7 +70,7 @@ def _valid_recovery_payload():
         "recovery_tuples": tuples,
         "predecessor_identities": pred,
         "max_training_invocations": 45,
-        "max_generation_invocations": 5,
+        "max_generation_invocations": 0,
         "network": False,
         "final_test_access": False,
     }
@@ -147,9 +135,117 @@ def test_predecessor_tuple_mismatch_rejected():
 def test_predecessor_sha_mismatch_rejected():
     rec = _valid_recovery_payload()
     k = list(rec["predecessor_identities"].keys())[0]
+    rec["predecessor_identities"][k]["historical_checkpoint_sha"] = "0" * 64
+    with pytest.raises(AuthorizationError):
+        validate_recovery_authorization_schema(rec)
+
+
+def test_wrong_historical_artifact_path_rejected():
+    rec = _valid_recovery_payload()
+    k = list(rec["predecessor_identities"].keys())[0]
+    rec["predecessor_identities"][k]["historical_artifact_path"] = "wrong/path"
+    with pytest.raises(AuthorizationError):
+        validate_recovery_authorization_schema(rec)
+
+
+def test_wrong_historical_started_sha_rejected():
+    rec = _valid_recovery_payload()
+    k = list(rec["predecessor_identities"].keys())[0]
+    rec["predecessor_identities"][k]["historical_execution_started_sha"] = "0" * 64
+    with pytest.raises(AuthorizationError):
+        validate_recovery_authorization_schema(rec)
+
+
+def test_wrong_historical_terminal_sha_rejected():
+    rec = _valid_recovery_payload()
+    k = list(rec["predecessor_identities"].keys())[0]
+    rec["predecessor_identities"][k]["historical_terminal_sha"] = "0" * 64
+    with pytest.raises(AuthorizationError):
+        validate_recovery_authorization_schema(rec)
+
+
+def test_wrong_historical_classification_rejected():
+    rec = _valid_recovery_payload()
+    k = list(rec["predecessor_identities"].keys())[0]
     rec["predecessor_identities"][k]["historical_classification"] = "WRONG"
     with pytest.raises(AuthorizationError):
         validate_recovery_authorization_schema(rec)
+
+
+def test_wrong_evidence_canonical_rejected():
+    rec = _valid_recovery_payload()
+    # Tamper trusted evidence verification by patching EVIDENCE_CANONICAL
+    import neuralmarket.research.deep_hedging.runner as runner
+
+    orig = runner.EVIDENCE_CANONICAL
+    runner.EVIDENCE_CANONICAL = "0" * 64
+    try:
+        with pytest.raises(AuthorizationError):
+            validate_recovery_authorization_schema(rec)
+    finally:
+        runner.EVIDENCE_CANONICAL = orig
+
+
+def test_wrong_evidence_blob_rejected():
+    rec = _valid_recovery_payload()
+    import neuralmarket.research.deep_hedging.runner as runner
+
+    orig = runner.EVIDENCE_BLOB
+    runner.EVIDENCE_BLOB = "0" * 40
+    try:
+        with pytest.raises(AuthorizationError):
+            validate_recovery_authorization_schema(rec)
+    finally:
+        runner.EVIDENCE_BLOB = orig
+
+
+def test_duplicate_evidence_tuple_rejected():
+    # Duplicate tuple in evidence would be caught by trusted map helper; test recovery validator duplicate
+    rec = _valid_recovery_payload()
+    rec["recovery_tuples"].append(rec["recovery_tuples"][0])
+    with pytest.raises(AuthorizationError):
+        validate_recovery_authorization_schema(rec)
+
+
+def test_missing_evidence_tuple_rejected():
+    rec = _valid_recovery_payload()
+    rec["recovery_tuples"] = rec["recovery_tuples"][:-1]
+    rec["predecessor_identities"].pop(list(rec["predecessor_identities"].keys())[-1])
+    with pytest.raises(AuthorizationError):
+        validate_recovery_authorization_schema(rec)
+
+
+def test_record_count_not_45_rejected():
+    rec = _valid_recovery_payload()
+    rec["recovery_tuples"] = rec["recovery_tuples"][:10]
+    with pytest.raises(AuthorizationError):
+        validate_recovery_authorization_schema(rec)
+
+
+def test_generation_1_rejected():
+    rec = _valid_recovery_payload()
+    rec["max_generation_invocations"] = 1
+    with pytest.raises(AuthorizationError):
+        validate_recovery_authorization_schema(rec)
+
+
+def test_generation_5_rejected():
+    rec = _valid_recovery_payload()
+    rec["max_generation_invocations"] = 5
+    with pytest.raises(AuthorizationError):
+        validate_recovery_authorization_schema(rec)
+
+
+def test_exact_45_predecessor_map_passes():
+    rec = _valid_recovery_payload()
+    # Should pass exact trusted map
+    validate_recovery_authorization_schema(rec)
+    # Also test that historical auth still rejected and reverse
+    hist = json.loads(Path("reports/protocol/hedging_execution_authorization_212.json").read_text())
+    with pytest.raises(AuthorizationError):
+        validate_recovery_authorization_schema(hist)
+    with pytest.raises(AuthorizationError):
+        validate_authorization_schema(rec)
 
 
 def test_recovery_path_deterministic():

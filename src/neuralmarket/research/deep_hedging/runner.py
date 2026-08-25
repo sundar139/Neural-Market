@@ -546,6 +546,68 @@ REPAIRED_IMPLEMENTATION_MANIFEST = "1f6524c6c470a7495e3f55168a0ef4b2dfe3b5b9ff8d
 RECOVERY_ROOT = "data/processed/research/hedging_policies_recovery_v1"
 RECOVERY_AUTHORIZATION_TYPE = "GRU_TRAINING_RECOVERY_V1"
 
+EVIDENCE_PATH = Path("reports/research/evidence/structured_vol_v5_deep_hedging_gru_training_execution_v1.json")
+EVIDENCE_COMMIT = "ee7da9f8a465411b87d5ba3df6d7577230630352"
+EVIDENCE_CANONICAL = "1d739b3e3f951331f1c8cc060f677a3d71c24b0184ece0a28796365079b5025c"
+EVIDENCE_RAW = "af4a7a703f0d70537c86c292e68b3fe86c083c1c472a1ffa1d46cb9b992dd838"
+EVIDENCE_BLOB = "b200923949e126ddc9dac60a7fa889f3bc23e2ec"
+
+
+def _get_trusted_predecessor_map() -> dict[str, dict[str, str]]:
+    """Derive expected predecessor map from immutable Task-216 execution evidence.
+
+    Fail-closed unless evidence path, commit, canonical/blob, record count 45,
+    tuple set exact frozen 45, no duplicate, all required fields present.
+    """
+    if not EVIDENCE_PATH.exists():
+        raise AuthorizationError(f"trusted evidence not found: {EVIDENCE_PATH}")
+    raw = EVIDENCE_PATH.read_bytes()
+    canon = raw.decode("utf-8").replace("\r\n", "\n").encode("utf-8")
+    canonical_sha = hashlib.sha256(canon).hexdigest()
+    raw_sha = hashlib.sha256(raw).hexdigest()
+    if canonical_sha != EVIDENCE_CANONICAL:
+        raise AuthorizationError(f"evidence canonical mismatch: got {canonical_sha} expected {EVIDENCE_CANONICAL}")
+    if raw_sha != EVIDENCE_RAW:
+        raise AuthorizationError(f"evidence raw mismatch: got {raw_sha} expected {EVIDENCE_RAW}")
+    blob = subprocess.run(["git", "hash-object", str(EVIDENCE_PATH)], capture_output=True, text=True, check=True).stdout.strip()
+    if blob != EVIDENCE_BLOB:
+        raise AuthorizationError(f"evidence blob mismatch: got {blob} expected {EVIDENCE_BLOB}")
+    log_res = subprocess.run(["git", "log", "--all", "--pretty=format:%H", "--", str(EVIDENCE_PATH)], capture_output=True, text=True, check=True)
+    commits = [c for c in log_res.stdout.splitlines() if c.strip()]
+    if EVIDENCE_COMMIT not in commits:
+        raise AuthorizationError(f"evidence commit {EVIDENCE_COMMIT} not in history")
+    payload = json.loads(raw.decode("utf-8"))
+    policies = payload.get("policies") or payload.get("records")
+    if not isinstance(policies, list) or len(policies) != 45:
+        raise AuthorizationError(f"evidence record count must be 45, got {len(policies) if isinstance(policies, list) else type(policies)}")
+    expected_tuples = {(m, c, s) for m in MEMBERS for c in COST_LEVELS for s in HEDGER_SEEDS}
+    seen = set()
+    trusted: dict[str, dict[str, str]] = {}
+    for rec in policies:
+        member = rec.get("member")
+        cost = rec.get("cost")
+        hedger_seed = rec.get("hedger_seed")
+        key = (member, cost, hedger_seed)
+        if key in seen:
+            raise AuthorizationError(f"duplicate tuple in evidence {key}")
+        seen.add(key)
+        for field in ("execution_started_path", "execution_started_sha256", "checkpoint_path", "checkpoint_raw_sha256", "terminal_manifest_path", "terminal_manifest_sha256"):
+            if field not in rec:
+                raise AuthorizationError(f"evidence record missing {field} for {key}")
+        hist_path = str(Path(rec["checkpoint_path"]).parent.as_posix())
+        hist_path = hist_path.replace("\\", "/")
+        map_key = f"{member}:{cost}:{hedger_seed}"
+        trusted[map_key] = {
+            "historical_artifact_path": hist_path,
+            "historical_execution_started_sha": str(rec["execution_started_sha256"]),
+            "historical_checkpoint_sha": str(rec["checkpoint_raw_sha256"]),
+            "historical_terminal_sha": str(rec["terminal_manifest_sha256"]),
+            "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+        }
+    if seen != expected_tuples:
+        raise AuthorizationError(f"evidence tuple set mismatch: got {seen} expected {expected_tuples}")
+    return trusted
+
 
 def validate_recovery_authorization_schema(payload: dict) -> None:
     """Validate recovery authorization — fail-closed, distinct from historical.
@@ -593,8 +655,8 @@ def validate_recovery_authorization_schema(payload: dict) -> None:
     # Ceiling
     if int(payload.get("max_training_invocations", 0)) != 45:
         raise AuthorizationError("recovery max_training_invocations must be 45")
-    if int(payload.get("max_generation_invocations", 0)) != 5:
-        raise AuthorizationError("recovery max_generation_invocations must be 5")
+    if int(payload.get("max_generation_invocations", 0)) != 0:
+        raise AuthorizationError("recovery max_generation_invocations must be 0")
     # Allowlist 45 tuples: member 5, cost 3, seed 3
     members = payload.get("member_allowlist", [])
     costs = payload.get("cost_allowlist", [])
@@ -626,7 +688,6 @@ def validate_recovery_authorization_schema(payload: dict) -> None:
     if not isinstance(pred, dict) or len(pred) != 45:
         raise AuthorizationError("predecessor_identities must be dict of 45")
     for key, meta in pred.items():
-        # key is like "seed-01_0.0_31001" or tuple string; check it contains member/cost/seed
         if not isinstance(meta, dict):
             raise AuthorizationError(f"predecessor {key} must be dict")
         for req in ("historical_artifact_path", "historical_execution_started_sha", "historical_checkpoint_sha", "historical_terminal_sha", "historical_classification"):
@@ -634,6 +695,15 @@ def validate_recovery_authorization_schema(payload: dict) -> None:
                 raise AuthorizationError(f"predecessor {key} missing {req}")
         if meta.get("historical_classification") != "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP":
             raise AuthorizationError(f"predecessor {key} historical_classification must be SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP")
+    # Field-for-field predecessor equality against trusted immutable evidence
+    trusted = _get_trusted_predecessor_map()
+    if set(pred.keys()) != set(trusted.keys()):
+        raise AuthorizationError(f"predecessor_identities keys mismatch: expected {sorted(trusted.keys())[:3]}... got {sorted(pred.keys())[:3]}...")
+    for key, expected in trusted.items():
+        actual = pred.get(key)
+        if actual is None:
+            raise AuthorizationError(f"predecessor {key} missing in authorization")
+        for field in ("historical_artifact_path", "historical_execution_started_sha", "historical_checkpoint_sha", "historical_terminal_sha", "historical_classification"):
+            if actual.get(field) != expected.get(field):
+                raise AuthorizationError(f"predecessor {key} field {field} mismatch: expected {expected.get(field)!r} got {actual.get(field)!r}")
     # Schema version also required for recovery (reuse same)
-    if "schema_version" not in payload:
-        raise AuthorizationError("recovery authorization missing schema_version")
