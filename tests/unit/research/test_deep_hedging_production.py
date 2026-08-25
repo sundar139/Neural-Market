@@ -305,7 +305,7 @@ def test_no_iterrows_in_hot_path() -> None:
 
 
 def test_generation_started_marker_consumption(tmp_path: Path) -> None:
-    from neuralmarket.research.deep_hedging.generation import generate_and_persist_synthetic_dataset
+    from neuralmarket.research.deep_hedging.generation import _generate_and_persist_synthetic_dataset_internal as generate_and_persist_synthetic_dataset
     from neuralmarket.research.deep_hedging.artifacts import RUN_PREFIXES
 
     member = "seed-01"
@@ -368,7 +368,7 @@ def test_generation_failure_terminal_evidence(tmp_path: Path) -> None:
     # Try real generation with bad checkpoint, should fail and persist terminal evidence
     # This will fail at strict load_state_dict, after generation_started has been written
     try:
-        from neuralmarket.research.deep_hedging.generation import generate_and_persist_synthetic_dataset
+        from neuralmarket.research.deep_hedging.generation import _generate_and_persist_synthetic_dataset_internal as generate_and_persist_synthetic_dataset
 
         generate_and_persist_synthetic_dataset(
             member=member,
@@ -393,7 +393,7 @@ def test_generation_failure_terminal_evidence(tmp_path: Path) -> None:
 
 
 def test_no_generation_retry(tmp_path: Path) -> None:
-    from neuralmarket.research.deep_hedging.generation import generate_and_persist_synthetic_dataset
+    from neuralmarket.research.deep_hedging.generation import _generate_and_persist_synthetic_dataset_internal as generate_and_persist_synthetic_dataset
 
     member = "seed-02"
     run_prefix = RUN_PREFIXES[member]

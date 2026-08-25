@@ -328,8 +328,11 @@ def build_implementation_manifest(
     implementation_commit: str | None = None,
     source_roots: tuple[str, ...] = ("src/neuralmarket/research/deep_hedging",),
     extra_paths: tuple[str, ...] = (
+        "src/neuralmarket/cli/deep_hedging.py",
+        "src/neuralmarket/cli/main.py",
         "src/neuralmarket/core/device.py",
         "src/neuralmarket/core/runtime_identity.py",
+        "src/neuralmarket/data/manifests.py",
         "src/neuralmarket/models/structured_vol_sde.py",
     ),
 ) -> dict[str, object]:
@@ -337,6 +340,8 @@ def build_implementation_manifest(
 
     Collects exact Git blobs for all scientific implementation files under
     source_roots and extra_paths whose mutation would alter science.
+    Includes all *.py under deep_hedging plus CLI dispatch, main, device,
+    runtime, manifests, and NSDE model. Sorted lexicographically.
     Returns dict with implementation_commit, source_blobs, and manifest SHA.
     """
     if implementation_commit is None:
@@ -373,6 +378,7 @@ def build_implementation_manifest(
     manifest_sha = hashlib.sha256(manifest_canonical.encode("utf-8")).hexdigest()
     payload["implementation_manifest_sha256"] = manifest_sha
     return payload  # type: ignore[return-value]
+
 
 
 def verify_implementation_manifest(

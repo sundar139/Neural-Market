@@ -14,7 +14,7 @@ import pytest
 import torch
 
 from neuralmarket.research.deep_hedging.artifacts import RUN_PREFIXES
-from neuralmarket.research.deep_hedging.generation import generate_and_persist_synthetic_dataset
+from neuralmarket.research.deep_hedging.generation import _generate_and_persist_synthetic_dataset_internal as generate_and_persist_synthetic_dataset
 from neuralmarket.research.deep_hedging.runner import (
     AUTHORIZATION_TASK_FAMILY_RE,
     AuthorizationError,

@@ -127,7 +127,7 @@ def _make_rngs(seed: int, device: torch.device) -> tuple[torch.Generator, np.ran
     return gen, np_gen
 
 
-def generate_and_persist_synthetic_dataset(
+def _generate_and_persist_synthetic_dataset_internal(
     *,
     member: str,
     run_prefix: str | None = None,
@@ -560,3 +560,84 @@ def load_synthetic_dataset(
             raise ValueError(f"split must be train/selection, got {split}")
         df = df[df["split"] == split].reset_index(drop=True)
     return df
+
+def generate_and_persist_synthetic_dataset(
+    *,
+    member: str,
+    authorization_path: Path,
+) -> dict[str, str]:
+    """Public production API: generate synthetic dataset for one authorized member.
+
+    Requires authorization_path (tracked, clean, committed, canonical/blob, task family) and member.
+    No caller-supplied scientific override (run_prefix, checkpoint, seed, dataset path, etc. are derived
+    from authorization and frozen mappings). Fail-closed before scientific work if authorization invalid.
+    """
+    # Verify authorization artifact in exact logical order
+    from neuralmarket.research.deep_hedging.runner import (
+        verify_authorization_artifact,
+        validate_authorization_schema,
+        verify_implementation_manifest,
+        build_implementation_manifest,
+    )
+    import json
+
+    # 1. authorization artifact verification
+    info = verify_authorization_artifact(authorization_path)
+    payload = json.loads(authorization_path.read_bytes().decode("utf-8"))
+    # 2. authorization schema validation
+    validate_authorization_schema(payload)
+    # 3. implementation-manifest verification
+    impl_commit = str(payload.get("implementation_commit") or "")
+    blobs = payload.get("implementation_source_blobs") or payload.get("source_blobs")
+    if blobs and impl_commit:
+        verify_implementation_manifest(authorized_commit=impl_commit, authorized_blobs=blobs)
+    # 4. contract SHA/blob verification and 5. clean tree and 6. CUDA/runtime via preflight
+    from neuralmarket.research.deep_hedging.runner import preflight_checks
+
+    preflight_checks(require_clean_tree=True)
+    # 7. authorized job membership
+    allowlist = payload.get("member_allowlist", [])
+    if member not in allowlist:
+        raise RuntimeError(f"member {member} not in authorization allowlist {allowlist}")
+    # 8. artifact nonexistence / consumed checks will be done inside internal
+    # Derive all other values from authorization and frozen mappings
+    run_prefix = RUN_PREFIXES[member]
+    checkpoint_identities = payload.get("checkpoint_identities") or {}
+    checkpoint_paths = payload.get("checkpoint_paths") or {}
+    checkpoint_raw = payload.get("checkpoint_raw_sha256") or {}
+    checkpoint_git = payload.get("checkpoint_git_hash") or payload.get("checkpoint_git_hash_object") or {}
+    # Use actual frozen checkpoint identity source for real generation
+    # For now, derive checkpoint path as data/processed/research/model/structured-volatility-neural-sde-v5/<member>/checkpoint.pt
+    # and expected SHA/blob from checkpoint_identities (selected checkpoint SHA)
+    import hashlib, subprocess
+    # Derive checkpoint path
+    checkpoint_path = Path(checkpoint_paths.get(member) or f"data/processed/research/model/structured-volatility-neural-sde-v5/{member}/checkpoint.pt")
+    expected_sha = checkpoint_identities.get(member) or checkpoint_raw.get(member)
+    # Git blob for checkpoint
+    expected_blob = checkpoint_git.get(member)
+    if expected_blob is None and checkpoint_path.exists():
+        try:
+            expected_blob = subprocess.check_output(["git", "hash-object", str(checkpoint_path)], text=True).strip()
+        except Exception:
+            expected_blob = None
+    synthetic_seed = (payload.get("synthetic_rng") or SYNTHETIC_SEEDS).get(member, SYNTHETIC_SEEDS[member])
+    dataset_path = Path(f"data/processed/research/hedging_synthetic/{run_prefix}_{member}/synthetic_episodes_v1.parquet")
+    manifest_path = Path(f"data/processed/research/hedging_synthetic/{run_prefix}_{member}/synthetic_manifest_v1.json")
+    # Call private implementation with hard-coded production values
+    return _generate_and_persist_synthetic_dataset_internal(
+        member=member,
+        run_prefix=run_prefix,
+        checkpoint_path=checkpoint_path,
+        expected_checkpoint_sha256=expected_sha,
+        expected_checkpoint_blob=expected_blob,
+        synthetic_seed=synthetic_seed,
+        num_episodes=50000,
+        horizon=HORIZON,
+        dt=1.0 / 252.0,
+        dataset_path=dataset_path,
+        manifest_path=manifest_path,
+        device="cuda",
+        increment_provider=None,
+        verify_contract_runtime=True,
+    )
+

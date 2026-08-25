@@ -15,7 +15,7 @@ import torch
 
 from neuralmarket.research.deep_hedging.artifacts import RUN_PREFIXES
 from neuralmarket.research.deep_hedging.generation import (
-    generate_and_persist_synthetic_dataset,
+    _generate_and_persist_synthetic_dataset_internal as generate_and_persist_synthetic_dataset,
     load_synthetic_dataset,
     verify_nsde_checkpoint,
 )
@@ -26,7 +26,7 @@ from neuralmarket.research.deep_hedging.runner import (
     enumerate_training_jobs,
     validate_authorization_schema,
 )
-from neuralmarket.research.deep_hedging.trainer import train_one_policy
+from neuralmarket.research.deep_hedging.trainer import _train_one_policy_internal as train_one_policy
 
 
 # Helpers

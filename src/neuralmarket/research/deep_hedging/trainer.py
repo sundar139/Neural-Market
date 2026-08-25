@@ -29,7 +29,9 @@ from neuralmarket.research.deep_hedging.hedger import GRUHedger
 from neuralmarket.research.deep_hedging.pnl import hedging_pnl
 
 EXPECTED_CONTRACT_CANONICAL = "79611b6b3be41fecf6beadbcbbd12439f434884f1d4d4a09c294a01134318d01"
+EXPECTED_CONTRACT_V3_CANONICAL = EXPECTED_CONTRACT_CANONICAL
 EXPECTED_CONTRACT_BLOB = "eef7ad220db889166469799372759dfe1a96e35f"
+EXPECTED_CONTRACT_V3_BLOB = EXPECTED_CONTRACT_BLOB
 EXPECTED_RUNTIME = "17e3bb52d5893c4e09ecb759a925004f2e75a37d7d4faf4ece7de41f81870ada"
 CONTRACT_V3_PATH = Path("reports/protocol/structured_vol_v5_deep_hedging_training_contract_v3.md")
 
@@ -177,7 +179,7 @@ def _compute_batch_pnl_and_loss(
     return pnl, loss
 
 
-def train_one_policy(
+def _train_one_policy_internal(
     *,
     member: str,
     cost: float,
@@ -283,6 +285,31 @@ def train_one_policy(
     if len(df_train) == 0 or len(df_selection) == 0:
         raise ValueError(f"empty train/selection split: train {len(df_train)} selection {len(df_selection)}")
 
+    # One-time materialization: S_all [N,64], maturity [N], K [N], P0 [N], option_type [N] — preserve episode_id order, do NOT reparse each episode on every epoch
+    # Persisted s_series is variable length M+1, not fixed 64, so we materialize with padding to 64 in one controlled conversion
+    # Use np.stack persisted s_series once then torch.from_numpy / one dtype conversion, preserve scientific dtype exactly (float64 for S/K/P0, int for maturity/option)
+    # Train bundle
+    N_train = len(df_train)
+    N_sel = len(df_selection)
+    # S_train_all: [N_train, 64] padded with 0 (masked), preserve episode_id order 0..N_train-1 as in df_train (which is 0..N-1 sorted)
+    S_train_all = torch.zeros((N_train, 64), dtype=torch.float64, device=resolved_device)
+    for i, s_series in enumerate(df_train["s_series"].tolist()):
+        m = int(df_train.iloc[i]["maturity"])
+        S_train_all[i, : m + 1] = torch.tensor(s_series, dtype=torch.float64, device=resolved_device)
+    maturity_train_all = torch.tensor(df_train["maturity"].values, dtype=torch.long, device=resolved_device)  # [N_train]
+    K_train_all = torch.tensor(df_train["strike"].values, dtype=torch.float64, device=resolved_device)
+    P0_train_all = torch.tensor(df_train["p0"].values, dtype=torch.float64, device=resolved_device)
+    opt_train_all = torch.tensor(df_train["option_type"].values, dtype=torch.float64, device=resolved_device)
+    # Selection bundle
+    S_sel_all = torch.zeros((N_sel, 64), dtype=torch.float64, device=resolved_device)
+    for i, s_series in enumerate(df_selection["s_series"].tolist()):
+        m = int(df_selection.iloc[i]["maturity"])
+        S_sel_all[i, : m + 1] = torch.tensor(s_series, dtype=torch.float64, device=resolved_device)
+    maturity_sel_all = torch.tensor(df_selection["maturity"].values, dtype=torch.long, device=resolved_device)
+    K_sel_all = torch.tensor(df_selection["strike"].values, dtype=torch.float64, device=resolved_device)
+    P0_sel_all = torch.tensor(df_selection["p0"].values, dtype=torch.float64, device=resolved_device)
+    opt_sel_all = torch.tensor(df_selection["option_type"].values, dtype=torch.float64, device=resolved_device)
+
     # Synthetic manifest SHA for reporting
     synthetic_manifest_sha = None
     if synthetic_manifest_path is not None and synthetic_manifest_path.exists():
@@ -303,8 +330,8 @@ def train_one_policy(
         "hedger_seed": hedger_seed,
         "synthetic_dataset_path": str(synthetic_dataset_path),
         "synthetic_manifest_sha256": synthetic_manifest_sha,
-        "contract_v3_canonical": EXPECTED_CONTRACT_CANONICAL,
-        "contract_v3_blob": EXPECTED_CONTRACT_BLOB,
+        "contract_v3_canonical": EXPECTED_CONTRACT_V3_CANONICAL,
+        "contract_v3_blob": EXPECTED_CONTRACT_V3_BLOB,
         "implementation_git_head": git_head,
         "runtime_identity": EXPECTED_RUNTIME,
         "optimizer": {"name": "AdamW", "lr": lr, "betas": list(betas), "weight_decay": weight_decay},
@@ -348,116 +375,33 @@ def train_one_policy(
 
             # Training: shuffle train set deterministically per epoch (seed hedger_seed+epoch)
             perm_gen = np.random.Generator(np.random.PCG64(hedger_seed + epoch))
-            perm = perm_gen.permutation(len(df_train))
-            df_train_shuffled = df_train.iloc[perm].reset_index(drop=True)
+            perm = perm_gen.permutation(N_train)
+            # Convert permutation to index tensor once
+            perm_idx = torch.tensor(perm, dtype=torch.long, device=resolved_device)
+            # Shuffled train tensors via index_select
+            S_train_shuffled = S_train_all[perm_idx]  # [N_train, 64]
+            maturity_train_shuffled = maturity_train_all[perm_idx]
+            K_train_shuffled = K_train_all[perm_idx]
+            P0_train_shuffled = P0_train_all[perm_idx]
+            opt_train_shuffled = opt_train_all[perm_idx]
 
             epoch_train_losses: list[Tensor] = []
             # Mini-batches — batched, loop over time only (max 30), not over 64 episodes
-            # Preserve exact per-epoch membership/order: perm = PCG64(hedger_seed+epoch).permutation(40000) then consecutive batches of 64
-            # Do NOT globally regroup by maturity; for each batch build padded tensors up to M_max and mask
-            for start in range(0, len(df_train_shuffled), batch_size):
-                batch_df = df_train_shuffled.iloc[start : start + batch_size]
-                B = len(batch_df)
-                maturities = batch_df["maturity"].values  # (B,)
-                M_max = int(maturities.max())
-                # Build S_padded (B, M_max+1) batched
-                S_padded = torch.zeros((B, M_max + 1), dtype=torch.float64, device=resolved_device)
-                s_series_list = batch_df["s_series"].tolist()
-                for i, s_series in enumerate(s_series_list):
-                    m = int(maturities[i])
-                    S_padded[i, : m + 1] = torch.tensor(s_series, dtype=torch.float64, device=resolved_device)
-                K = torch.tensor(batch_df["strike"].values, dtype=torch.float64, device=resolved_device)
-                P0 = torch.tensor(batch_df["p0"].values, dtype=torch.float64, device=resolved_device)
-                opt = torch.tensor(batch_df["option_type"].values, dtype=torch.float64, device=resolved_device)
-                cost_t = torch.full((B,), float(cost), dtype=torch.float64, device=resolved_device)
-                # Batched autoregressive hedging: loop over time only (max 30), not episodes
-                hedger.train()
-                optimizer.zero_grad()
-                h = torch.zeros((2, B, 64), dtype=torch.float32, device=resolved_device)
-                prev_delta = torch.zeros((B,), dtype=torch.float32, device=resolved_device)
-                deltas = torch.zeros((B, M_max), dtype=torch.float32, device=resolved_device)
-                for t in range(M_max):
-                    active = torch.tensor([t < int(m) for m in maturities], dtype=torch.bool, device=resolved_device)
-                    if not active.any():
-                        continue
-                    S_t = S_padded[:, t]  # (B,)
-                    # T_t_norm = (M_i - t)/30, moneyness, log, etc., with masking for inactive
-                    T_t = (torch.tensor(maturities, dtype=torch.float64, device=resolved_device) - t) / 30.0
-                    moneyness = S_t / K
-                    # Avoid log(0) for inactive by using where
-                    log_moneyness = torch.log(torch.where(active, moneyness, torch.ones_like(moneyness)))
-                    log_ret = torch.log(torch.where(active, S_t / S_padded[:, 0], torch.ones_like(S_t)))
-                    cost_norm = (cost_t / 0.0050).to(dtype=torch.float32)
-                    opt_t = opt.to(dtype=torch.float32)
-                    x_t = torch.stack(
-                        [
-                            T_t.to(dtype=torch.float32),
-                            moneyness.to(dtype=torch.float32),
-                            log_moneyness.to(dtype=torch.float32),
-                            log_ret.to(dtype=torch.float32),
-                            prev_delta,
-                            cost_norm,
-                            opt_t,
-                        ],
-                        dim=1,
-                    )  # (B,7)
-                    x_t = torch.where(active.unsqueeze(1), x_t, torch.zeros_like(x_t))
-                    delta_t, h_new = hedger.step(x_t, h)
-                    delta_t = torch.where(active, delta_t, torch.zeros_like(delta_t))
-                    # Update h only for active: keep old h for inactive
-                    h_mask = active.float().unsqueeze(0).unsqueeze(-1).expand_as(h)
-                    h = torch.where(h_mask.bool(), h_new, h)
-                    prev_delta = torch.where(active, delta_t, prev_delta)
-                    deltas[:, t] = delta_t
-                # Batched P&L with mask: compute underlying, costs, payoff, unwind exactly per episode's M_i
-                # Underlying: sum_{t=1}^{M_i} delta_{t-1}*(S[t]-S[t-1]) masked
-                dS = S_padded[:, 1:] - S_padded[:, :-1]  # (B, M_max)
-                # deltas is (B, M_max) where deltas[:, t] is delta_t for t=0..M_max-1
-                # Interval t (1-indexed) uses delta_{t-1} and dS[:, t-1], valid if t <= M_i
-                t_range = torch.arange(1, M_max + 1, device=resolved_device).unsqueeze(0).expand(B, M_max)
-                M_tensor = torch.tensor(maturities, dtype=torch.long, device=resolved_device).unsqueeze(1).expand(B, M_max)
-                interval_mask = t_range <= M_tensor  # (B, M_max) true if interval t valid
-                underlying = (deltas * dS * interval_mask.float().to(dtype=torch.float64)).sum(dim=1)  # (B,)
-                # Costs: initial at S[0] + rebalance while active + unwind at S[M_i]
-                # Cost_0: c*|delta_0|*S[0] if M_i >=1
-                cost_0 = cost_t * torch.abs(deltas[:, 0].to(dtype=torch.float64)) * S_padded[:, 0] * (torch.tensor(maturities, dtype=torch.long, device=resolved_device) >= 1).float()
-                # Rebalance costs for t=1..M_max-1: c*|delta_t - delta_{t-1}|*S[t] if t < M_i
-                delta_diff = torch.zeros_like(deltas, dtype=torch.float64)
-                delta_diff[:, 1:] = torch.abs(deltas[:, 1:].to(dtype=torch.float64) - deltas[:, :-1].to(dtype=torch.float64))
-                # S[t] for t=1..M_max-1 is S_padded[:, t] where t is 1..M_max-1
-                # Valid if t < M_i
-                t_cost_range = torch.arange(1, M_max, device=resolved_device).unsqueeze(0).expand(B, M_max - 1)
-                cost_mask = t_cost_range < torch.tensor(maturities, dtype=torch.long, device=resolved_device).unsqueeze(1).expand(B, M_max - 1)
-                S_for_cost = S_padded[:, 1:M_max].to(dtype=torch.float64)  # (B, M_max-1) is S[1]..S[M_max-1]
-                # deltas diff for t=1..M_max-1 is delta_diff[:, 1:]
-                cost_mid = (cost_t.unsqueeze(1).expand(B, M_max - 1) * delta_diff[:, 1:] * S_for_cost * cost_mask.float().to(dtype=torch.float64)).sum(dim=1) if M_max > 1 else torch.zeros(B, dtype=torch.float64, device=resolved_device)
-                # Unwind: c*|delta_{M_i-1}|*S[M_i]
-                unwind = torch.zeros(B, dtype=torch.float64, device=resolved_device)
-                for i in range(B):
-                    m = int(maturities[i])
-                    if m >= 1:
-                        delta_last = deltas[i, m - 1].to(dtype=torch.float64)
-                        s_m = S_padded[i, m].to(dtype=torch.float64)
-                        unwind[i] = cost_t[i].to(dtype=torch.float64) * torch.abs(delta_last) * s_m
-                costs = cost_0.to(dtype=torch.float64) + cost_mid + unwind
-                # Payoff at S[M_i]
-                s_m_all = S_padded[torch.arange(B, device=resolved_device), torch.tensor(maturities, dtype=torch.long, device=resolved_device)]  # (B,)
-                is_call = opt > 0
-                payoff = torch.where(is_call, torch.clamp(s_m_all - K, min=0), torch.clamp(K - s_m_all, min=0))
-                pnl = P0.to(dtype=torch.float64) + underlying - payoff - costs
-                loss_vec_batch = -pnl  # (B,)
-                if not torch.isfinite(loss_vec_batch).all():
-                    stderr_log.append(f"epoch {epoch} batch {start} nonfinite loss, skipping")
-                    continue
-                cvar = empirical_cvar(loss_vec_batch, alpha=0.95)
-                if not torch.isfinite(cvar):
-                    stderr_log.append(f"epoch {epoch} batch {start} nonfinite cvar, skipping")
-                    continue
-                cvar.backward()
-                clip_grad_norm_(hedger.parameters(), max_norm=grad_clip)
-                optimizer.step()
-                epoch_train_losses.append(cvar.detach())
-
+            # Preserve exact per-epoch membership/order: perm then consecutive batches of 64
+            for start in range(0, N_train, batch_size):
+                # Obtain batch via tensor index_select/slicing, no row iteration
+                end = min(start + batch_size, N_train)
+                B = end - start
+                # Slice shuffled tensors for this batch
+                S_batch_full = S_train_shuffled[start:end]  # [B, 64]
+                maturity_batch = maturity_train_shuffled[start:end]  # [B]
+                K_batch = K_train_shuffled[start:end]
+                P0_batch = P0_train_shuffled[start:end]
+                opt_batch = opt_train_shuffled[start:end]
+                cost_t_batch = torch.full((B,), float(cost), dtype=torch.float64, device=resolved_device)
+                M_max = int(maturity_batch.max().item())
+                # Slice S to M_max+1 (need S[0]..S[M_max])
+                S_padded = S_batch_full[:, : M_max + 1]  # [B, M_max+1]
             # Evaluate full selection set: collect every selection loss, ONE CVaR — batched
             hedger.eval()
             # Batch selection episodes in chunks of batch_size with same batched logic, then collect
@@ -712,3 +656,62 @@ def train_one_policy(
             pass
         # Re-raise for caller to handle (tests expect exception or check terminal evidence)
         raise
+
+def train_one_policy(
+    *,
+    member: str,
+    cost: float,
+    hedger_seed: int,
+    authorization_path: Path,
+) -> dict[str, str]:
+    """Public production API: train one GRU hedger policy for one authorized (member,cost,hedger_seed).
+
+    Requires authorization_path (tracked, clean, committed, canonical/blob, task family) and member/cost/hedger_seed.
+    No caller-supplied scientific override (batch_size, max_epochs, etc. are derived from contract and authorization).
+    Fail-closed before scientific work if authorization invalid.
+    """
+    from neuralmarket.research.deep_hedging.runner import (
+        verify_authorization_artifact,
+        validate_authorization_schema,
+        verify_implementation_manifest,
+    )
+    import json
+
+    info = verify_authorization_artifact(authorization_path)
+    payload = json.loads(authorization_path.read_bytes().decode("utf-8"))
+    validate_authorization_schema(payload)
+    impl_commit = str(payload.get("implementation_commit") or "")
+    blobs = payload.get("implementation_source_blobs") or payload.get("source_blobs")
+    if blobs and impl_commit:
+        verify_implementation_manifest(authorized_commit=impl_commit, authorized_blobs=blobs)
+    from neuralmarket.research.deep_hedging.runner import preflight_checks
+
+    preflight_checks(require_clean_tree=True)
+    allowlist = payload.get("member_allowlist", [])
+    if member not in allowlist:
+        raise RuntimeError(f"member {member} not in authorization allowlist {allowlist}")
+    if cost not in payload.get("cost_allowlist", []):
+        raise RuntimeError(f"cost {cost} not in allowlist")
+    if hedger_seed not in payload.get("hedger_seed_allowlist", []):
+        raise RuntimeError(f"hedger_seed {hedger_seed} not in allowlist")
+    from neuralmarket.research.deep_hedging.artifacts import RUN_PREFIXES
+
+    run_prefix = RUN_PREFIXES[member]
+    dataset_path = Path(f"data/processed/research/hedging_synthetic/{run_prefix}_{member}/synthetic_episodes_v1.parquet")
+    manifest_path = Path(f"data/processed/research/hedging_synthetic/{run_prefix}_{member}/synthetic_manifest_v1.json")
+    return _train_one_policy_internal(
+        member=member,
+        cost=cost,
+        hedger_seed=hedger_seed,
+        synthetic_dataset_path=dataset_path,
+        synthetic_manifest_path=manifest_path,
+        policy_root=None,
+        run_prefix=run_prefix,
+        max_epochs=200,
+        min_epochs=20,
+        patience=20,
+        batch_size=64,
+        device="cuda",
+        verify_contract_runtime=True,
+    )
+

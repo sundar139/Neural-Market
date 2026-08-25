@@ -14,7 +14,7 @@ import pytest
 import torch
 
 from neuralmarket.research.deep_hedging.artifacts import RUN_PREFIXES
-from neuralmarket.research.deep_hedging.generation import generate_and_persist_synthetic_dataset, load_synthetic_dataset
+from neuralmarket.research.deep_hedging.generation import _generate_and_persist_synthetic_dataset_internal as generate_and_persist_synthetic_dataset, load_synthetic_dataset
 
 
 def fake_dx(num_episodes: int, device: torch.device) -> torch.Tensor:
@@ -321,7 +321,7 @@ def test_training_loader_uses_persisted_split_and_does_not_resplit(tmp_path: Pat
     )
     # Load via trainer's loader (which uses load_synthetic_dataset) and check it respects persisted split
     from neuralmarket.research.deep_hedging.generation import load_synthetic_dataset
-    from neuralmarket.research.deep_hedging.trainer import train_one_policy
+    from neuralmarket.research.deep_hedging.trainer import _train_one_policy_internal as train_one_policy
 
     df_all = load_synthetic_dataset(dataset_path, manifest_path=manifest_path, split=None)
     df_train_persisted = df_all[df_all["split"] == "train"]
