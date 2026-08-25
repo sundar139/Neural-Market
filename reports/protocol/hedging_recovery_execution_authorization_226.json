@@ -3,7 +3,7 @@
     "data/processed/research/hedging_synthetic",
     "data/processed/research/hedging_policies_recovery_v1"
   ],
-  "authorization_task_id": "NM-R4-V5-DEEP-HEDGING-GRU-TRAINING-RECOVERY-EXECUTION-AUTHORIZATION-226",
+  "authorization_task_id": "NM-R4-V5-DEEP-HEDGING-TRAINING-EXECUTION-AUTHORIZATION-226",
   "authorization_type": "GRU_TRAINING_RECOVERY_V1",
   "contract_v3_blob": "eef7ad220db889166469799372759dfe1a96e35f",
   "contract_v3_canonical": "79611b6b3be41fecf6beadbcbbd12439f434884f1d4d4a09c294a01134318d01",
