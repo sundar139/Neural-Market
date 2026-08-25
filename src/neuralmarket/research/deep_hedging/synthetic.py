@@ -14,7 +14,6 @@ import math
 import torch
 from torch import Tensor
 
-
 # Frozen synthetic seeds per generator member — contract v3 Section 6.3
 SYNTHETIC_SEEDS: dict[str, int] = {
     "seed-01": 42001,

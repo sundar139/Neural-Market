@@ -34,7 +34,6 @@ from neuralmarket.research.deep_hedging.synthetic import (
     price_levels_from_increments,
 )
 
-
 # ---------------------------------------------------------------------------
 # Synthetic indexing: 63 -> 64, M -> M+1, dx_0 maps, dx_M excluded
 # ---------------------------------------------------------------------------
