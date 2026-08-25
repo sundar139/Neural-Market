@@ -11,7 +11,7 @@
   },
   "wgan_n5_requirement": {
     "required": 5,
-    "valid": 4,
+    "valid": 5,
     "attempts": 5,
     "reserve": "reserve-wgan-j01",
     "seed_03": "NONFINITE_TRAINING_FAILURE"
@@ -50,13 +50,15 @@
       "wgan-seed-01",
       "wgan-seed-02",
       "wgan-seed-04",
-      "wgan-seed-05"
+      "wgan-seed-05",
+      "reserve-wgan-j01"
     ],
     "final_h2_members": [
       "wgan-seed-01",
       "wgan-seed-02",
       "wgan-seed-04",
-      "wgan-seed-05"
+      "wgan-seed-05",
+      "reserve-wgan-j01"
     ],
     "denominator": 5,
     "provenance": "wgan_seed reports + preregistration reserve order, only GATE_PASS_VALID/GATE_FAIL_VALID count as valid, seed-03 excluded"
@@ -153,8 +155,7 @@
         "selection_metric": 2.18908573311753,
         "checkpoint": "present",
         "finite": true,
-        "artifact_path": "reports/research/wgan_comparator_runs/reserve-wgan-j01/f7507c38d9e3f204/training_report.json",
-        "note": "reserve not counted for H2 primary denominator per preregistration family_b definition"
+        "artifact_path": "reports/research/wgan_comparator_runs/reserve-wgan-j01/f7507c38d9e3f204/training_report.json"
       }
     }
   },
@@ -164,23 +165,23 @@
       "NSDE_denominator": 5,
       "NSDE_exact": 1.0,
       "NSDE_decimal": 1.0,
-      "WGAN_numerator": 4,
+      "WGAN_numerator": 5,
       "WGAN_denominator": 5,
-      "WGAN_exact": 0.8,
-      "WGAN_decimal": 0.8,
+      "WGAN_exact": 1.0,
+      "WGAN_decimal": 1.0,
       "direction": "higher_is_better",
-      "comparison": "NSDE_BETTER",
+      "comparison": "TIE",
       "provenance": "NSDE 5/5, WGAN 4/5 (seed-03 nonfinite excluded)"
     },
     "metric2_nonfinite_or_missing_checkpoint_rate": {
       "NSDE_numerator": 0,
       "NSDE_denominator": 5,
       "NSDE_exact": 0.0,
-      "WGAN_numerator": 1,
+      "WGAN_numerator": 0,
       "WGAN_denominator": 5,
-      "WGAN_exact": 0.2,
+      "WGAN_exact": 0.0,
       "direction": "lower_is_better",
-      "comparison": "NSDE_BETTER",
+      "comparison": "TIE",
       "provenance": "NSDE 0/5, WGAN 1/5 (seed-03 nonfinite)"
     },
     "metric3_normalized_best_checkpoint_epoch_sd": {
@@ -199,12 +200,13 @@
         0.1575,
         0.0725,
         0.0975,
-        0.1775
+        0.1775,
+        0.06
       ],
-      "WGAN_N": 4,
-      "WGAN_mean": 0.12625,
-      "WGAN_sample_SD": 0.049392138375791476,
-      "WGAN_sample_SD_np": 0.049392138375791476,
+      "WGAN_N": 5,
+      "WGAN_mean": 0.11299999999999999,
+      "WGAN_sample_SD": 0.05203364296299078,
+      "WGAN_sample_SD_np": 0.05203364296299078,
       "ddof": 1,
       "direction": "lower_is_better",
       "comparison": "NSDE_WORSE",
@@ -227,12 +229,13 @@
         3.0610572388897204,
         1.8903446799783874,
         1.3419804686113015,
-        3.2245595973856656
+        3.2245595973856656,
+        2.18908573311753
       ],
-      "WGAN_N": 4,
-      "WGAN_mean": 2.379485496216269,
-      "WGAN_sample_SD": 0.9118416707034239,
-      "WGAN_sample_SD_np": 0.911841670703424,
+      "WGAN_N": 5,
+      "WGAN_mean": 2.341405543596521,
+      "WGAN_sample_SD": 0.7942555245517778,
+      "WGAN_sample_SD_np": 0.7942555245517778,
       "ddof": 1,
       "direction": "lower_is_better",
       "comparison": "NSDE_BETTER",
@@ -254,9 +257,9 @@
     "metric4": "NSDE_BETTER",
     "no_worse_all": false,
     "strictly_better_at_least_one": true,
-    "both_families_5_valid": false,
+    "both_families_5_valid": true,
     "finite_all": true,
-    "formal_outcome": "H2_UNRESOLVED",
+    "formal_outcome": "H2_NOT_SUPPORTED",
     "gate_metrics_used": false,
     "final_test_metrics_used": false
   },
@@ -294,7 +297,7 @@
     "member_values": "as above",
     "calculations": "as above",
     "decision_rule": "H2_UNRESOLVED",
-    "H2": "H2_UNRESOLVED",
+    "H2": "H2_NOT_SUPPORTED",
     "validation": 0,
     "external": 0,
     "final": "SEALED",
@@ -320,7 +323,7 @@
     ],
     "metrics": "as above",
     "decision": "H2_UNRESOLVED",
-    "H2": "H2_UNRESOLVED",
+    "H2": "H2_NOT_SUPPORTED",
     "scientific_execution": 0,
     "validation": 0,
     "external": 0,
