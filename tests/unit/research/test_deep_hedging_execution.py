@@ -302,11 +302,11 @@ def test_early_stop_state_machine(tmp_path: Path) -> None:
 def test_nonfinite_training_failure(tmp_path: Path) -> None:
     dataset_path, manifest_path = _tiny_dataset_for_training(tmp_path, n=8)
     policy_root = tmp_path / "policies5"
-    # Mock empirical_cvar to return nan for all batches (nonfinite)
+    # Mock empirical_cvar to return nan for all batches (nonfinite) — fail-closed must raise immediately
     with patch("neuralmarket.research.deep_hedging.trainer.empirical_cvar", return_value=torch.tensor(float("nan"))):
-        # Also mock selection to be nan -> no valid checkpoint
+        # Also mock selection to be nan -> no valid checkpoint (but fail-closed triggers earlier)
         with patch("neuralmarket.research.deep_hedging.trainer.cvar_full_set_selection", return_value=torch.tensor(float("nan"))):
-            with pytest.raises(RuntimeError, match="no valid checkpoint"):
+            with pytest.raises(RuntimeError, match="nonfinite minibatch CVaR"):
                 train_one_policy(
                     member="seed-01",
                     cost=0.0,

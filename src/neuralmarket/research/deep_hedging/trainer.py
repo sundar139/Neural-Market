@@ -472,38 +472,33 @@ def _train_one_policy_internal(
                 payoff = torch.where(is_call, torch.clamp(s_m_all - K_batch, min=0), torch.clamp(K_batch - s_m_all, min=0))
                 pnl = P0_batch.to(dtype=torch.float64) + underlying - payoff - costs
                 loss_vec = -pnl  # (B,)
-                # Require shape and finiteness
+                # Require shape and finiteness — fail-closed numerical invariant
                 if loss_vec.shape != torch.Size([B]):
-                    raise RuntimeError(f"loss_vec shape mismatch: got {tuple(loss_vec.shape)} expected {(B,)}")
+                    raise RuntimeError(f"loss_vec shape mismatch member {member} cost {cost} hedger_seed {hedger_seed} epoch {epoch} batch {start} got {tuple(loss_vec.shape)} expected {(B,)}")
                 if not torch.isfinite(loss_vec).all():
-                    stderr_log.append(f"epoch {epoch} batch {start} nonfinite loss, skipping")
-                    continue
+                    raise RuntimeError(f"nonfinite loss_vec member {member} cost {cost} hedger_seed {hedger_seed} epoch {epoch} batch {start}")
                 # Minibatch CVaR (frozen alpha 0.95)
                 cvar = empirical_cvar(loss_vec, alpha=0.95)
                 if not torch.isfinite(cvar):
-                    stderr_log.append(f"epoch {epoch} batch {start} nonfinite cvar, skipping")
-                    continue
+                    raise RuntimeError(f"nonfinite minibatch CVaR member {member} cost {cost} hedger_seed {hedger_seed} epoch {epoch} batch {start}")
                 if not bool(cvar.requires_grad):
-                    raise RuntimeError(f"minibatch CVaR requires_grad False at epoch {epoch} batch {start}")
+                    raise RuntimeError(f"minibatch CVaR requires_grad False member {member} cost {cost} hedger_seed {hedger_seed} epoch {epoch} batch {start}")
                 cvar.backward()
-                # Verify gradients finite before step
-                grad_finite = True
+                # Verify gradient completeness and finiteness before step
+                for name, p in hedger.named_parameters():
+                    if p.requires_grad and p.grad is None:
+                        raise RuntimeError(f"missing gradient member {member} cost {cost} hedger_seed {hedger_seed} epoch {epoch} batch {start} param {name}")
                 for name, p in hedger.named_parameters():
                     if p.grad is not None and not torch.isfinite(p.grad).all():
-                        grad_finite = False
-                        stderr_log.append(f"epoch {epoch} batch {start} nonfinite grad {name}, skipping step")
-                        break
-                if not grad_finite:
-                    optimizer.zero_grad()
-                    continue
-                clip_grad_norm_(hedger.parameters(), max_norm=grad_clip)
+                        raise RuntimeError(f"nonfinite gradient member {member} cost {cost} hedger_seed {hedger_seed} epoch {epoch} batch {start} param {name}")
+                clipped_norm = clip_grad_norm_(hedger.parameters(), max_norm=grad_clip)
+                if not torch.isfinite(torch.as_tensor(clipped_norm)):
+                    raise RuntimeError(f"nonfinite clipped grad norm member {member} cost {cost} hedger_seed {hedger_seed} epoch {epoch} batch {start} norm {clipped_norm}")
                 optimizer.step()
                 epoch_train_losses.append(cvar.detach())
-            # Fail-close if no minibatch produced a finite CVaR (would have been NaN reporting defect)
-            # Preserve predecessor semantics: if all batches nonfinite, train_cvar will be NaN and checkpoint selection will rely on selection CVaR
-            # For the repaired valid-data path, epoch_train_losses must be nonempty and finite — enforce via later checkpoint logic
+            # Fail-closed if no minibatch produced a finite CVaR — never persist NaN as success
             if not epoch_train_losses:
-                stderr_log.append(f"epoch {epoch} no finite minibatch CVaR — train_cvar will be NaN")
+                raise RuntimeError(f"empty epoch_train_losses member {member} cost {cost} hedger_seed {hedger_seed} epoch {epoch} — no successful minibatch CVaR")
             # Evaluate full selection set: collect every selection loss, ONE CVaR — batched
             hedger.eval()
             # Batch selection episodes in chunks of batch_size with same batched logic, then collect
