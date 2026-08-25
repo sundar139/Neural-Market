@@ -10,6 +10,8 @@ Dry run enumerates 5 generation + 45 training jobs without model execution.
 from __future__ import annotations
 
 import hashlib
+import json
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,11 +19,16 @@ from typing import Literal
 
 from neuralmarket.core.device import resolve_device
 from neuralmarket.core.runtime_identity import build_runtime_identity
+from neuralmarket.data.manifests import canonical_dumps
 
 EXPECTED_CONTRACT_V3_CANONICAL = "79611b6b3be41fecf6beadbcbbd12439f434884f1d4d4a09c294a01134318d01"
 EXPECTED_CONTRACT_V3_BLOB = "eef7ad220db889166469799372759dfe1a96e35f"
 EXPECTED_RUNTIME_IDENTITY = "17e3bb52d5893c4e09ecb759a925004f2e75a37d7d4faf4ece7de41f81870ada"
 CONTRACT_V3_PATH = Path("reports/protocol/structured_vol_v5_deep_hedging_training_contract_v3.md")
+AUTHORIZATION_TASK_FAMILY_RE = re.compile(r"^NM-R4-V5-DEEP-HEDGING-TRAINING-EXECUTION-AUTHORIZATION-[0-9]+$")
+
+
+
 
 
 class AuthorizationError(RuntimeError):
@@ -135,21 +142,24 @@ def preflight_checks(
         "device": str(device),
     }
 
-
 @dataclass(frozen=True)
 class HedgingAuthorization:
     """Future authorization schema (not created in Task 202).
 
-    This schema is frozen for future Task-202+ authorization.
-    Task 202 does NOT create a real execution authorization.
+    Deprecated: use HedgingExecutionAuthorization with authorization_task_id.
+    No fixed Task ID is hard-coded; future authorization must supply
+    authorization_task_id matching the strict family regex.
     """
 
     schema_version: str = "hedging-execution-authorization-v1"
+    authorization_task_id: str = ""  # required, must match family regex, no hard-coded 202
     contract_v3_canonical: str = EXPECTED_CONTRACT_V3_CANONICAL
     contract_v3_blob: str = EXPECTED_CONTRACT_V3_BLOB
+    implementation_commit: str = ""
     runtime_identity: str = EXPECTED_RUNTIME_IDENTITY
-    # Additional fields (member, synthetic RNG, hedger seed, cost, NSDE checkpoint etc.)
+
     # are per-policy and tracked in per-policy training reports, not here.
+
 
 
 def require_authorization_or_refuse(
@@ -277,27 +287,27 @@ class HedgingExecutionAuthorization:
     """Extended authorization for future governed actions (generation/training).
 
     Scientific execution must require --execute plus tracked committed
-    authorization binding at least: Task ID, contract-v3 canonical SHA/blob,
-    implementation Git commit, runtime identity, member allowlist, checkpoint
-    identities, synthetic RNG, hedger seed allowlist, cost allowlist, maximum
-    generation/training invocations, artifact roots, network false,
+    authorization binding at least: authorization_task_id, contract-v3 canonical
+    SHA/blob, implementation Git commit, runtime identity, member allowlist,
+    checkpoint identities, synthetic RNG, hedger seed allowlist, cost allowlist,
+    maximum generation/training invocations, artifact roots, network false,
     final-test access false.
 
-    This schema is frozen for future Task-202+ authorization; Task 203 does
-    NOT create a real execution authorization.
+    No fixed future numeric Task ID is hard-coded; authorization_task_id must
+    match the strict family regex and the exact committed artifact is bound.
     """
 
     schema_version: str = "hedging-execution-authorization-v1"
-    task_id: str = "NM-R4-V5-DEEP-HEDGING-TRAINING-EXECUTION-AUTHORIZATION-202"
+    authorization_task_id: str = ""  # required, must match AUTHORIZATION_TASK_FAMILY_RE, no hard-coded 202
     contract_v3_canonical: str = EXPECTED_CONTRACT_V3_CANONICAL
     contract_v3_blob: str = EXPECTED_CONTRACT_V3_BLOB
     implementation_commit: str = ""  # filled at authorization creation via git rev-parse HEAD
     runtime_identity: str = EXPECTED_RUNTIME_IDENTITY
-    member_allowlist: tuple[str, ...] = tuple(MEMBERS)
+    member_allowlist: tuple[str, ...] = ()
     checkpoint_identities: dict[str, str] | None = None  # member -> checkpoint SHA
     synthetic_rng: dict[str, int] | None = None  # member -> seed 42001 etc.
-    hedger_seed_allowlist: tuple[int, ...] = tuple(HEDGER_SEEDS)
-    cost_allowlist: tuple[float, ...] = tuple(COST_LEVELS)
+    hedger_seed_allowlist: tuple[int, ...] = ()
+    cost_allowlist: tuple[float, ...] = ()
     max_generation_invocations: int = 5
     max_training_invocations: int = 45
     artifact_roots: tuple[str, ...] = (
@@ -306,6 +316,161 @@ class HedgingExecutionAuthorization:
     )
     network: bool = False
     final_test_access: bool = False
+    # Implementation manifest binding (commit + source blobs)
+    implementation_manifest_sha256: str = ""
+    implementation_source_blobs: dict[str, str] | None = None
+
+
+def build_implementation_manifest(
+    *,
+    implementation_commit: str | None = None,
+    source_roots: tuple[str, ...] = ("src/neuralmarket/research/deep_hedging",),
+    extra_paths: tuple[str, ...] = (
+        "src/neuralmarket/core/device.py",
+        "src/neuralmarket/core/runtime_identity.py",
+        "src/neuralmarket/models/structured_vol_sde.py",
+    ),
+) -> dict[str, object]:
+    """Deterministic implementation-manifest payload and hash.
+
+    Collects exact Git blobs for all scientific implementation files under
+    source_roots and extra_paths whose mutation would alter science.
+    Returns dict with implementation_commit, source_blobs, and manifest SHA.
+    """
+    if implementation_commit is None:
+        implementation_commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+        ).stdout.strip()
+    source_blobs: dict[str, str] = {}
+    for root in source_roots:
+        root_path = Path(root)
+        if not root_path.exists():
+            continue
+        for p in sorted(root_path.rglob("*.py")):
+            rel = p.as_posix()
+            try:
+                blob = subprocess.run(
+                    ["git", "hash-object", rel], capture_output=True, text=True, check=True
+                ).stdout.strip()
+                source_blobs[rel] = blob
+            except subprocess.CalledProcessError:
+                continue
+    for rel in extra_paths:
+        try:
+            blob = subprocess.run(
+                ["git", "hash-object", rel], capture_output=True, text=True, check=True
+            ).stdout.strip()
+            source_blobs[rel] = blob
+        except subprocess.CalledProcessError:
+            continue
+    payload: dict[str, object] = {
+        "implementation_commit": implementation_commit,
+        "source_blobs": dict(sorted(source_blobs.items())),
+    }
+    manifest_canonical = canonical_dumps(payload)
+    manifest_sha = hashlib.sha256(manifest_canonical.encode("utf-8")).hexdigest()
+    payload["implementation_manifest_sha256"] = manifest_sha
+    return payload  # type: ignore[return-value]
+
+
+def verify_implementation_manifest(
+    *,
+    authorized_commit: str,
+    authorized_blobs: dict[str, str],
+) -> None:
+    """Fail closed on source drift or non-ancestor implementation commit.
+
+    Requires authorized_commit is ancestor of current HEAD and every bound
+    execution-critical path at current HEAD has exact authorized Git blob.
+    Does NOT require current HEAD == authorized_commit (permits protocol/audit
+    commits on top while preventing scientific code drift).
+    """
+    current_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    result = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", authorized_commit, current_head]
+    )
+    if result.returncode != 0:
+        raise AuthorizationError(
+            f"implementation_commit {authorized_commit} is not ancestor of current HEAD {current_head} — fail closed on source drift"
+        )
+    for rel, expected_blob in authorized_blobs.items():
+        try:
+            current_blob = subprocess.run(
+                ["git", "hash-object", rel], capture_output=True, text=True, check=True
+            ).stdout.strip()
+        except subprocess.CalledProcessError as e:
+            raise AuthorizationError(f"failed to hash {rel} at current HEAD: {e}") from e
+        if current_blob != expected_blob:
+            raise AuthorizationError(
+                f"source blob drift for {rel}: expected {expected_blob} got {current_blob} — fail closed"
+            )
+
+
+def verify_authorization_artifact(
+    authorization_path: Path,
+) -> dict[str, str]:
+    """Verify authorization artifact is repository-relative, tracked, clean, and bound.
+
+    Requires: path is repository-relative, tracked via git ls-files, no
+    staged/unstaged modification (git diff), canonical SHA computed
+    (LF-canonical), Git blob computed, commit exists in current history,
+    authorization_task_id from its bytes is recorded.
+
+    Returns dict with canonical SHA, blob, commit, task_id.
+    """
+    try:
+        # Handle both absolute and relative paths: resolve to absolute then make repo-relative
+        abs_path = authorization_path.resolve() if not authorization_path.is_absolute() else authorization_path.resolve()
+        cwd = Path.cwd().resolve()
+        rel = abs_path.relative_to(cwd)
+    except ValueError as e:
+        raise AuthorizationError(f"authorization path must be repository-relative, got {authorization_path}: {e}") from e
+    result = subprocess.run(
+        ["git", "ls-files", "--", str(rel)], capture_output=True, text=True, check=True
+    )
+    if not result.stdout.strip():
+        raise AuthorizationError(f"authorization file not tracked: {rel}")
+    for cmd in (["git", "diff", "--name-only", "--", str(rel)], ["git", "diff", "--cached", "--name-only", "--", str(rel)]):
+        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        if res.stdout.strip():
+            raise AuthorizationError(f"authorization file has staged/unstaged modification: {rel} — {res.stdout.strip()}")
+    raw = authorization_path.read_bytes()
+    canon = raw.decode("utf-8").replace("\r\n", "\n").encode("utf-8")
+    canonical_sha = hashlib.sha256(canon).hexdigest()
+    blob = subprocess.run(
+        ["git", "hash-object", str(rel)], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    log_res = subprocess.run(
+        ["git", "log", "--all", "--pretty=format:%H", "--", str(rel)], capture_output=True, text=True, check=True
+    )
+    commits = [c for c in log_res.stdout.splitlines() if c.strip()]
+    if not commits:
+        raise AuthorizationError(f"authorization commit not found in current history for {rel}")
+    head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    found_ancestor = False
+    for commit in commits:
+        res = subprocess.run(["git", "merge-base", "--is-ancestor", commit, head])
+        if res.returncode == 0:
+            found_ancestor = True
+            break
+    if not found_ancestor:
+        raise AuthorizationError(f"authorization commit {commits[0]} not ancestor of HEAD {head}")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+        task_id = str(payload.get("authorization_task_id") or payload.get("task_id") or "")
+    except Exception as e:
+        raise AuthorizationError(f"failed to parse authorization_task_id from {rel}: {e}") from e
+    if not AUTHORIZATION_TASK_FAMILY_RE.match(task_id):
+        raise AuthorizationError(f"authorization_task_id {task_id!r} does not match family {AUTHORIZATION_TASK_FAMILY_RE.pattern}")
+    return {
+        "canonical_sha256": canonical_sha,
+        "git_blob": blob,
+        "commit": commits[0],
+        "authorization_task_id": task_id,
+        "path": str(rel),
+    }
 
 
 def validate_authorization_schema(payload: dict) -> None:
@@ -315,7 +480,6 @@ def validate_authorization_schema(payload: dict) -> None:
     """
     required = [
         "schema_version",
-        "task_id",
         "contract_v3_canonical",
         "contract_v3_blob",
         "implementation_commit",
@@ -332,6 +496,11 @@ def validate_authorization_schema(payload: dict) -> None:
     for field in required:
         if field not in payload:
             raise AuthorizationError(f"authorization missing required field: {field}")
+    task_id = str(payload.get("authorization_task_id") or payload.get("task_id") or "")
+    if not task_id:
+        raise AuthorizationError("authorization missing required field: authorization_task_id")
+    if not AUTHORIZATION_TASK_FAMILY_RE.match(task_id):
+        raise AuthorizationError(f"authorization_task_id {task_id!r} does not match family {AUTHORIZATION_TASK_FAMILY_RE.pattern}")
     if payload.get("contract_v3_canonical") != EXPECTED_CONTRACT_V3_CANONICAL:
         raise AuthorizationError("authorization contract canonical mismatch")
     if payload.get("contract_v3_blob") != EXPECTED_CONTRACT_V3_BLOB:
@@ -346,7 +515,6 @@ def validate_authorization_schema(payload: dict) -> None:
         raise AuthorizationError("max_generation_invocations must be 5")
     if int(payload.get("max_training_invocations", 0)) != 45:
         raise AuthorizationError("max_training_invocations must be 45")
-    # Allowlist sanity: must be subset of frozen allowlists
     members = payload.get("member_allowlist", [])
     if not set(members).issubset(set(MEMBERS)):
         raise AuthorizationError(f"member allowlist contains non-governed member: {members}")

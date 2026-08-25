@@ -180,6 +180,23 @@ def generate_and_persist_synthetic_dataset(
     if dataset_path.exists() or manifest_path.exists():
         raise RuntimeError(f"OVERWRITE_REFUSED: dataset or manifest already exists at {dataset_path} / {manifest_path} (write-once)")
 
+    # Production hardening: real --execute must supply exact checkpoint identity
+    # and must not use test bypass. Low-level helper keeps optional for fixtures,
+    # but production path always validates.
+    is_production = bool(verify_contract_runtime)
+    if is_production:
+        if checkpoint_path is None or expected_checkpoint_sha256 is None or expected_checkpoint_blob is None:
+            raise RuntimeError(
+                "real generation requires member/run_prefix/checkpoint_path/checkpoint raw SHA256/expected selected checkpoint SHA256 and blob; "
+                "no 'if expected provided' bypass allowed on real execution"
+            )
+        if increment_provider is not None:
+            raise RuntimeError("real generation must not use increment_provider (test injection) under scientific --execute — fail closed")
+        # Device must be cuda for production (verify_contract_runtime implies cuda)
+        dev_str = str(device).lower() if device is not None else "cuda"
+        if dev_str.startswith("cpu"):
+            raise RuntimeError("real generation requires cuda device, not cpu — fail closed, no CPU fallback")
+
     # Verify checkpoint if real path (skip for fake increment_provider tests unless checkpoint_path provided)
     if checkpoint_path is not None:
         verify_nsde_checkpoint(
@@ -189,7 +206,6 @@ def generate_and_persist_synthetic_dataset(
             expected_sha256=expected_checkpoint_sha256,
             expected_blob=expected_checkpoint_blob,
         )
-
     # Contract/runtime verification (fail-closed)
     if verify_contract_runtime:
         if isinstance(device, str):
@@ -272,18 +288,11 @@ def generate_and_persist_synthetic_dataset(
     # Deterministic order by episode_id (already 0..N-1)
     df = df.sort_values("episode_id").reset_index(drop=True)
 
-    # Exact 40k/10k split: deterministic 80/20, train first 80% of deterministic order? Or random split seeded by synthetic seed.
-    # Contract says "random split seeded by synthetic generation RNG, stratified if feasible but not required for determinism"
-    # For reproducibility, we use np_gen permutation seeded by same synthetic_seed (already used for sampling, but we need separate permutation)
-    # To keep contract-exact and tiny-fixture friendly, for num_episodes <=16 we use simple deterministic split: first 80% train, rest selection
-    # For full 50k, we would use permutation of 0..N-1 with seed synthetic_seed (or synthetic_seed+1) to avoid overlap with sampling.
-    # Here we implement: permutation = np_gen.permutation(num_episodes) if num_episodes==50000 else deterministic first 80%
-    # But after using np_gen for ms/moneyness/call_put, its state is advanced; for 50k we want separate generator for split.
-    # Simpler: use seed synthetic_seed for split via fresh Generator
-    split_gen = np.random.Generator(np.random.PCG64(synthetic_seed + 999))
-    perm = split_gen.permutation(num_episodes)
-    # For tiny fixtures, still use permutation but ensure 80/20
-    n_train = int(num_episodes * 0.8)
+    # Exact 40k/10k split: use SAME np_gen object (single frozen PCG64(synthetic_seed) stream)
+    # Draw order: maturity (N), moneyness (N), call/put (N), then permutation (N)
+    # No +999, no child seed, no second split RNG
+    perm = np_gen.permutation(num_episodes)
+    n_train = int(num_episodes * 0.8)  # 40,000 for N=50,000 per contract
     train_ids = set(perm[:n_train].tolist())
     df["split"] = df["episode_id"].apply(lambda eid: "train" if eid in train_ids else "selection")
 

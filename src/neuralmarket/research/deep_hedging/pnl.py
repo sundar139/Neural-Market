@@ -184,7 +184,7 @@ def build_features(
     log_return = torch.log(s_t / s0)  # (batch,M), at t=0 log(1)=0
     # f5 prev_delta: delta_{-1}=0 for t=0, else caller fills; here we return 0 for all t
     # Actual training loop will autoregressively fill f5.
-    prev_delta = torch.zeros_like(s_t)  # placeholder
+    prev_delta = torch.zeros_like(s_t)  # initial zero
     cost_norm = (cost_level / 0.0050).unsqueeze(1).expand(-1, m)  # (batch,M)
     opt_type = option_type.unsqueeze(1).expand(-1, m).to(dtype=s_levels.dtype)  # (batch,M)
 
