@@ -5,10 +5,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import typer
-
 from neuralmarket import __version__
 from neuralmarket.cli.data import app as data_app
+from neuralmarket.cli.deep_hedging import app as deep_hedging_app
 from neuralmarket.core.configuration import ConfigurationError, load_config
 from neuralmarket.core.environment import (
     EnvironmentValidationError,
@@ -27,6 +26,7 @@ app = typer.Typer(
 environment_app = typer.Typer(help="Environment provenance and validation commands.")
 app.add_typer(environment_app, name="environment")
 app.add_typer(data_app, name="data")
+app.add_typer(deep_hedging_app, name="deep-hedging")
 
 _DEFAULT_CONFIG = Path("configs/reproducibility/default.yaml")
 

@@ -54,6 +54,27 @@ class GRUHedger(nn.Module):
             raise RuntimeError("non-finite delta produced")
         return delta
 
+    def step(self, x_t: Tensor, h: Tensor) -> tuple[Tensor, Tensor]:
+        """Single autoregressive GRU step using SAME nn.GRU and Linear parameters.
+
+        Args:
+            x_t: (batch, 7) input at time t
+            h: (num_layers, batch, hidden_size) hidden state
+
+        Returns:
+            delta_t: (batch,) raw delta at time t
+            h_new: (num_layers, batch, hidden_size) new hidden state
+        """
+        if x_t.ndim != 2 or x_t.shape[1] != 7:
+            raise ValueError(f"x_t must have shape (batch, 7), got {tuple(x_t.shape)}")
+        if h.ndim != 3 or h.shape[0] != 2 or h.shape[2] != 64:
+            raise ValueError(f"h must have shape (2, batch, 64), got {tuple(h.shape)}")
+        out, h_new = self.gru(x_t.unsqueeze(1), h)  # (batch,1,7) -> (batch,1,64)
+        delta = self.readout(out.squeeze(1)).squeeze(-1)  # (batch,)
+        if not torch.isfinite(delta).all():
+            raise RuntimeError("non-finite delta produced in step")
+        return delta, h_new
+
     def count_parameters(self) -> int:
         """Deterministic parameter count for artifact reporting."""
         return sum(p.numel() for p in self.parameters())

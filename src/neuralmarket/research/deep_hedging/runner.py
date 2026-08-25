@@ -304,7 +304,10 @@ class HedgingExecutionAuthorization:
     implementation_commit: str = ""  # filled at authorization creation via git rev-parse HEAD
     runtime_identity: str = EXPECTED_RUNTIME_IDENTITY
     member_allowlist: tuple[str, ...] = ()
-    checkpoint_identities: dict[str, str] | None = None  # member -> checkpoint SHA
+    checkpoint_identities: dict[str, str] | None = None  # member -> checkpoint SHA (selected)
+    checkpoint_paths: dict[str, str] | None = None  # member -> checkpoint_path
+    checkpoint_raw_sha256: dict[str, str] | None = None  # member -> raw SHA256
+    checkpoint_git_hash: dict[str, str] | None = None  # member -> git hash-object
     synthetic_rng: dict[str, int] | None = None  # member -> seed 42001 etc.
     hedger_seed_allowlist: tuple[int, ...] = ()
     cost_allowlist: tuple[float, ...] = ()
@@ -319,7 +322,6 @@ class HedgingExecutionAuthorization:
     # Implementation manifest binding (commit + source blobs)
     implementation_manifest_sha256: str = ""
     implementation_source_blobs: dict[str, str] | None = None
-
 
 def build_implementation_manifest(
     *,

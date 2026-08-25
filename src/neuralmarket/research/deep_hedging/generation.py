@@ -231,14 +231,109 @@ def generate_and_persist_synthetic_dataset(
 
     # Generate increments [num_episodes,63]
     if increment_provider is not None:
+        # Test-only path via private helper (tiny fixtures, CPU, small N)
+        # Production public function must not use this; it will fail closed above if is_production
         dx = increment_provider(num_episodes, resolved_device)
         if dx.shape != (num_episodes, horizon):
             raise ValueError(f"increment_provider returned shape {tuple(dx.shape)} expected ({num_episodes},{horizon})")
     else:
-        # Real NSDE path: would load checkpoint and instantiate StructuredVolatilityNeuralSde
-        # For now, in Task 203 we do NOT execute 50k real generation, so this branch is
-        # not exercised in tests. Raise to ensure injection is used for non-scientific path.
-        raise RuntimeError("real NSDE generation not executed in Task 203 (no scientific campaign); provide increment_provider for tests")
+        # Real NSDE path: load checkpoint, verify, instantiate frozen model, generate
+        # This path is executed only when later authorized ( Task 207+ ), not in Task 207 tests
+        # Reuse exact canonical V5 NSDE checkpoint-loading implementation
+        if checkpoint_path is None or expected_checkpoint_sha256 is None or expected_checkpoint_blob is None:
+            raise RuntimeError("real generation requires member/run_prefix/checkpoint_path/checkpoint raw SHA256/expected selected checkpoint SHA256 and blob")
+        # Load checkpoint object/schema extraction (checkpoint.pt is {"model_state": ..., "sde_config": ...})
+        payload = torch.load(checkpoint_path, map_location=resolved_device, weights_only=False)
+        if not isinstance(payload, dict) or "model_state" not in payload or "sde_config" not in payload:
+            raise ValueError("checkpoint payload must be dict with model_state and sde_config")
+        sde_config_dict = payload["sde_config"]
+        if not isinstance(sde_config_dict, dict):
+            raise ValueError("sde_config must be dict")
+        from neuralmarket.models.structured_vol_sde import StructuredVolatilityNeuralSde, StructuredVolConfig
+
+        config = StructuredVolConfig(**sde_config_dict)
+        # Verify frozen NSDE config identity (state_dim 2, brownian_dim 2, hidden 64, layers 2, SiLU, etc.)
+        if not (
+            config.state_dim == 2
+            and config.brownian_dim == 2
+            and config.hidden_units == 64
+            and config.hidden_layers == 2
+            and config.activation == "SiLU"
+            and config.diffusion_epsilon == 1e-6
+            and config.dt == 1 / 252
+            and config.horizon == 63
+            and config.signature_level == 3
+            and config.v_clamp_min == -10
+            and config.v_clamp_max == 10
+        ):
+            raise ValueError(f"checkpoint sde_config mismatch frozen contract: {sde_config_dict}")
+        model = StructuredVolatilityNeuralSde(config).to(device=resolved_device)
+        # Strict load_state_dict (no partial, no training-mode dropout)
+        try:
+            model.load_state_dict(payload["model_state"], strict=True)
+        except Exception as e:
+            raise ValueError(f"strict load_state_dict failed: {e}") from e
+        # Verify finiteness
+        for k, v in model.state_dict().items():
+            if not torch.isfinite(v).all():
+                raise RuntimeError(f"non-finite model_state {k}")
+        model.eval()
+        model.to(device=resolved_device)
+        # Generation attempt evidence: write-once before model inference
+        generation_started_path = dataset_path.parent / "generation_execution_started.json"
+        if generation_started_path.exists():
+            raise RuntimeError(f"CONSUMED: generation attempt already exists at {generation_started_path} (write-once)")
+        generation_started = {
+            "member": member,
+            "run_prefix": run_prefix,
+            "checkpoint_path": str(checkpoint_path),
+            "checkpoint_sha256": expected_checkpoint_sha256,
+            "synthetic_seed": synthetic_seed,
+            "num_episodes": int(num_episodes),
+            "horizon": int(horizon),
+            "dt": float(dt),
+            "contract_v3_canonical": EXPECTED_CONTRACT_V3_CANONICAL,
+            "contract_v3_blob": EXPECTED_CONTRACT_V3_BLOB,
+            "runtime_identity": EXPECTED_RUNTIME,
+            "generation_start": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "status": "started",
+        }
+        generation_started_path.parent.mkdir(parents=True, exist_ok=True)
+        generation_started_path.write_text(json.dumps(generation_started, indent=2, sort_keys=True), encoding="utf-8")
+        # Wrap generation in try/except to persist terminal failure evidence
+        try:
+            # Context zeros [N,4] at synthetic inception, x0 semantics source-native initial_state (x0=0, V0 from v0_layer(context))
+            context = torch.zeros((num_episodes, 4), device=resolved_device, dtype=torch.float32)
+            # Noise: one frozen Torch RNG stream using member synthetic seed, shape [N,63,2], standard normal, source-native scaling
+            noise = torch.randn((num_episodes, horizon, 2), device=resolved_device, dtype=torch.float32, generator=torch_gen)
+            with torch.no_grad():
+                dx = model(context, noise)  # [N,63] incremental daily log returns
+            if dx.shape != (num_episodes, horizon):
+                raise RuntimeError(f"model output shape {tuple(dx.shape)} != ({num_episodes},{horizon})")
+            if not torch.isfinite(dx).all():
+                raise RuntimeError("non-finite dx from model")
+        except Exception as e:
+            # Persist terminal failure evidence where technically possible
+            import traceback
+
+            generation_exit_code_path = dataset_path.parent / "generation_exit_code.txt"
+            generation_exit_code_path.write_text("1", encoding="utf-8")
+            generation_terminal_path = dataset_path.parent / "generation_terminal_manifest.json"
+            generation_terminal = {
+                "member": member,
+                "run_prefix": run_prefix,
+                "status": "failure",
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+                "exit_code": 1,
+                "generation_start": generation_started["generation_start"],
+                "generation_end": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+            try:
+                generation_terminal_path.write_text(json.dumps(generation_terminal, indent=2, sort_keys=True), encoding="utf-8")
+            except Exception:
+                pass
+            raise
 
     if not torch.isfinite(dx).all():
         raise RuntimeError("non-finite dx")
@@ -403,6 +498,28 @@ def generate_and_persist_synthetic_dataset(
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True), encoding="utf-8")
     manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    # Success evidence for real generation (only when not using increment_provider)
+    if increment_provider is None:
+        # Real generation success: persist exit_code and terminal manifest
+        try:
+            generation_exit_code_path = dataset_path.parent / "generation_exit_code.txt"
+            generation_exit_code_path.write_text("0", encoding="utf-8")
+            generation_terminal_path = dataset_path.parent / "generation_terminal_manifest.json"
+            # Use generation_started if defined, else fallback to manifest times
+            gen_start = generation_started["generation_start"] if "generation_started" in locals() else manifest["generation_start"]
+            generation_terminal = {
+                "member": member,
+                "run_prefix": run_prefix,
+                "status": "success",
+                "dataset_sha256": dataset_sha256,
+                "manifest_sha256": manifest_sha,
+                "exit_code": 0,
+                "generation_start": gen_start,
+                "generation_end": manifest["generation_end"],
+            }
+            generation_terminal_path.write_text(json.dumps(generation_terminal, indent=2, sort_keys=True), encoding="utf-8")
+        except Exception:
+            pass
 
     return {
         "dataset_path": str(dataset_path),

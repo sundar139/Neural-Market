@@ -352,32 +352,102 @@ def train_one_policy(
             df_train_shuffled = df_train.iloc[perm].reset_index(drop=True)
 
             epoch_train_losses: list[Tensor] = []
-            # Mini-batches — handle variable M per episode via per-episode loop
+            # Mini-batches — batched, loop over time only (max 30), not over 64 episodes
+            # Preserve exact per-epoch membership/order: perm = PCG64(hedger_seed+epoch).permutation(40000) then consecutive batches of 64
+            # Do NOT globally regroup by maturity; for each batch build padded tensors up to M_max and mask
             for start in range(0, len(df_train_shuffled), batch_size):
                 batch_df = df_train_shuffled.iloc[start : start + batch_size]
-                # Per-episode differentiable losses for this minibatch
-                # Need to accumulate gradients across episodes in batch: we will
-                # compute cvar over batch loss vector where each loss is from one episode
-                # To keep autograd, we must compute each episode's loss with grad, then
-                # stack and compute cvar differentiably. We do per-episode forward
-                # with grad enabled.
+                B = len(batch_df)
+                maturities = batch_df["maturity"].values  # (B,)
+                M_max = int(maturities.max())
+                # Build S_padded (B, M_max+1) batched
+                S_padded = torch.zeros((B, M_max + 1), dtype=torch.float64, device=resolved_device)
+                s_series_list = batch_df["s_series"].tolist()
+                for i, s_series in enumerate(s_series_list):
+                    m = int(maturities[i])
+                    S_padded[i, : m + 1] = torch.tensor(s_series, dtype=torch.float64, device=resolved_device)
+                K = torch.tensor(batch_df["strike"].values, dtype=torch.float64, device=resolved_device)
+                P0 = torch.tensor(batch_df["p0"].values, dtype=torch.float64, device=resolved_device)
+                opt = torch.tensor(batch_df["option_type"].values, dtype=torch.float64, device=resolved_device)
+                cost_t = torch.full((B,), float(cost), dtype=torch.float64, device=resolved_device)
+                # Batched autoregressive hedging: loop over time only (max 30), not episodes
                 hedger.train()
                 optimizer.zero_grad()
-                per_episode_losses_for_cvar: list[Tensor] = []
-                for _, row in batch_df.iterrows():
-                    s_levels, k, p0, opt, cost_t = _single_episode_tensors(row, cost, resolved_device)
-                    _, loss_vec = _compute_batch_pnl_and_loss(
-                        hedger=hedger, s_levels=s_levels, strike=k, p0=p0, option_type=opt, cost_level=cost_t, device=resolved_device
-                    )
-                    # loss_vec is (1,) for single episode
-                    per_episode_losses_for_cvar.append(loss_vec.squeeze(0))
-                if len(per_episode_losses_for_cvar) == 0:
-                    continue
-                loss_vec_batch = torch.stack(per_episode_losses_for_cvar)  # (batch_size,)
+                h = torch.zeros((2, B, 64), dtype=torch.float32, device=resolved_device)
+                prev_delta = torch.zeros((B,), dtype=torch.float32, device=resolved_device)
+                deltas = torch.zeros((B, M_max), dtype=torch.float32, device=resolved_device)
+                for t in range(M_max):
+                    active = torch.tensor([t < int(m) for m in maturities], dtype=torch.bool, device=resolved_device)
+                    if not active.any():
+                        continue
+                    S_t = S_padded[:, t]  # (B,)
+                    # T_t_norm = (M_i - t)/30, moneyness, log, etc., with masking for inactive
+                    T_t = (torch.tensor(maturities, dtype=torch.float64, device=resolved_device) - t) / 30.0
+                    moneyness = S_t / K
+                    # Avoid log(0) for inactive by using where
+                    log_moneyness = torch.log(torch.where(active, moneyness, torch.ones_like(moneyness)))
+                    log_ret = torch.log(torch.where(active, S_t / S_padded[:, 0], torch.ones_like(S_t)))
+                    cost_norm = (cost_t / 0.0050).to(dtype=torch.float32)
+                    opt_t = opt.to(dtype=torch.float32)
+                    x_t = torch.stack(
+                        [
+                            T_t.to(dtype=torch.float32),
+                            moneyness.to(dtype=torch.float32),
+                            log_moneyness.to(dtype=torch.float32),
+                            log_ret.to(dtype=torch.float32),
+                            prev_delta,
+                            cost_norm,
+                            opt_t,
+                        ],
+                        dim=1,
+                    )  # (B,7)
+                    x_t = torch.where(active.unsqueeze(1), x_t, torch.zeros_like(x_t))
+                    delta_t, h_new = hedger.step(x_t, h)
+                    delta_t = torch.where(active, delta_t, torch.zeros_like(delta_t))
+                    # Update h only for active: keep old h for inactive
+                    h_mask = active.float().unsqueeze(0).unsqueeze(-1).expand_as(h)
+                    h = torch.where(h_mask.bool(), h_new, h)
+                    prev_delta = torch.where(active, delta_t, prev_delta)
+                    deltas[:, t] = delta_t
+                # Batched P&L with mask: compute underlying, costs, payoff, unwind exactly per episode's M_i
+                # Underlying: sum_{t=1}^{M_i} delta_{t-1}*(S[t]-S[t-1]) masked
+                dS = S_padded[:, 1:] - S_padded[:, :-1]  # (B, M_max)
+                # deltas is (B, M_max) where deltas[:, t] is delta_t for t=0..M_max-1
+                # Interval t (1-indexed) uses delta_{t-1} and dS[:, t-1], valid if t <= M_i
+                t_range = torch.arange(1, M_max + 1, device=resolved_device).unsqueeze(0).expand(B, M_max)
+                M_tensor = torch.tensor(maturities, dtype=torch.long, device=resolved_device).unsqueeze(1).expand(B, M_max)
+                interval_mask = t_range <= M_tensor  # (B, M_max) true if interval t valid
+                underlying = (deltas * dS * interval_mask.float().to(dtype=torch.float64)).sum(dim=1)  # (B,)
+                # Costs: initial at S[0] + rebalance while active + unwind at S[M_i]
+                # Cost_0: c*|delta_0|*S[0] if M_i >=1
+                cost_0 = cost_t * torch.abs(deltas[:, 0].to(dtype=torch.float64)) * S_padded[:, 0] * (torch.tensor(maturities, dtype=torch.long, device=resolved_device) >= 1).float()
+                # Rebalance costs for t=1..M_max-1: c*|delta_t - delta_{t-1}|*S[t] if t < M_i
+                delta_diff = torch.zeros_like(deltas, dtype=torch.float64)
+                delta_diff[:, 1:] = torch.abs(deltas[:, 1:].to(dtype=torch.float64) - deltas[:, :-1].to(dtype=torch.float64))
+                # S[t] for t=1..M_max-1 is S_padded[:, t] where t is 1..M_max-1
+                # Valid if t < M_i
+                t_cost_range = torch.arange(1, M_max, device=resolved_device).unsqueeze(0).expand(B, M_max - 1)
+                cost_mask = t_cost_range < torch.tensor(maturities, dtype=torch.long, device=resolved_device).unsqueeze(1).expand(B, M_max - 1)
+                S_for_cost = S_padded[:, 1:M_max].to(dtype=torch.float64)  # (B, M_max-1) is S[1]..S[M_max-1]
+                # deltas diff for t=1..M_max-1 is delta_diff[:, 1:]
+                cost_mid = (cost_t.unsqueeze(1).expand(B, M_max - 1) * delta_diff[:, 1:] * S_for_cost * cost_mask.float().to(dtype=torch.float64)).sum(dim=1) if M_max > 1 else torch.zeros(B, dtype=torch.float64, device=resolved_device)
+                # Unwind: c*|delta_{M_i-1}|*S[M_i]
+                unwind = torch.zeros(B, dtype=torch.float64, device=resolved_device)
+                for i in range(B):
+                    m = int(maturities[i])
+                    if m >= 1:
+                        delta_last = deltas[i, m - 1].to(dtype=torch.float64)
+                        s_m = S_padded[i, m].to(dtype=torch.float64)
+                        unwind[i] = cost_t[i].to(dtype=torch.float64) * torch.abs(delta_last) * s_m
+                costs = cost_0.to(dtype=torch.float64) + cost_mid + unwind
+                # Payoff at S[M_i]
+                s_m_all = S_padded[torch.arange(B, device=resolved_device), torch.tensor(maturities, dtype=torch.long, device=resolved_device)]  # (B,)
+                is_call = opt > 0
+                payoff = torch.where(is_call, torch.clamp(s_m_all - K, min=0), torch.clamp(K - s_m_all, min=0))
+                pnl = P0.to(dtype=torch.float64) + underlying - payoff - costs
+                loss_vec_batch = -pnl  # (B,)
                 if not torch.isfinite(loss_vec_batch).all():
                     stderr_log.append(f"epoch {epoch} batch {start} nonfinite loss, skipping")
-                    continue
-                if loss_vec_batch.numel() == 0:
                     continue
                 cvar = empirical_cvar(loss_vec_batch, alpha=0.95)
                 if not torch.isfinite(cvar):
@@ -388,29 +458,98 @@ def train_one_policy(
                 optimizer.step()
                 epoch_train_losses.append(cvar.detach())
 
-            # Evaluate full selection set: collect every selection loss, ONE CVaR
+            # Evaluate full selection set: collect every selection loss, ONE CVaR — batched
             hedger.eval()
+            # Batch selection episodes in chunks of batch_size with same batched logic, then collect
             all_selection_losses: list[Tensor] = []
             with torch.no_grad():
-                for _, row in df_selection.iterrows():
-                    s_levels, k, p0, opt, cost_t = _single_episode_tensors(row, cost, resolved_device)
-                    _, loss_vec = _compute_batch_pnl_and_loss(
-                        hedger=hedger, s_levels=s_levels, strike=k, p0=p0, option_type=opt, cost_level=cost_t, device=resolved_device
-                    )
-                    all_selection_losses.append(loss_vec.squeeze(0))
+                for sel_start in range(0, len(df_selection), batch_size):
+                    sel_batch_df = df_selection.iloc[sel_start : sel_start + batch_size]
+                    B_sel = len(sel_batch_df)
+                    maturities_sel = sel_batch_df["maturity"].values
+                    M_max_sel = int(maturities_sel.max())
+                    S_padded_sel = torch.zeros((B_sel, M_max_sel + 1), dtype=torch.float64, device=resolved_device)
+                    s_series_list_sel = sel_batch_df["s_series"].tolist()
+                    for i, s_series in enumerate(s_series_list_sel):
+                        m = int(maturities_sel[i])
+                        S_padded_sel[i, : m + 1] = torch.tensor(s_series, dtype=torch.float64, device=resolved_device)
+                    K_sel = torch.tensor(sel_batch_df["strike"].values, dtype=torch.float64, device=resolved_device)
+                    P0_sel = torch.tensor(sel_batch_df["p0"].values, dtype=torch.float64, device=resolved_device)
+                    opt_sel = torch.tensor(sel_batch_df["option_type"].values, dtype=torch.float64, device=resolved_device)
+                    cost_sel = torch.full((B_sel,), float(cost), dtype=torch.float64, device=resolved_device)
+                    h_sel = torch.zeros((2, B_sel, 64), dtype=torch.float32, device=resolved_device)
+                    prev_delta_sel = torch.zeros((B_sel,), dtype=torch.float32, device=resolved_device)
+                    deltas_sel = torch.zeros((B_sel, M_max_sel), dtype=torch.float32, device=resolved_device)
+                    for t in range(M_max_sel):
+                        active_sel = torch.tensor([t < int(m) for m in maturities_sel], dtype=torch.bool, device=resolved_device)
+                        if not active_sel.any():
+                            continue
+                        S_t_sel = S_padded_sel[:, t]
+                        T_t_sel = (torch.tensor(maturities_sel, dtype=torch.float64, device=resolved_device) - t) / 30.0
+                        moneyness_sel = S_t_sel / K_sel
+                        log_moneyness_sel = torch.log(torch.where(active_sel, moneyness_sel, torch.ones_like(moneyness_sel)))
+                        log_ret_sel = torch.log(torch.where(active_sel, S_t_sel / S_padded_sel[:, 0], torch.ones_like(S_t_sel)))
+                        cost_norm_sel = (cost_sel / 0.0050).to(dtype=torch.float32)
+                        opt_t_sel = opt_sel.to(dtype=torch.float32)
+                        x_t_sel = torch.stack(
+                            [
+                                T_t_sel.to(dtype=torch.float32),
+                                moneyness_sel.to(dtype=torch.float32),
+                                log_moneyness_sel.to(dtype=torch.float32),
+                                log_ret_sel.to(dtype=torch.float32),
+                                prev_delta_sel,
+                                cost_norm_sel,
+                                opt_t_sel,
+                            ],
+                            dim=1,
+                        )
+                        x_t_sel = torch.where(active_sel.unsqueeze(1), x_t_sel, torch.zeros_like(x_t_sel))
+                        delta_t_sel, h_new_sel = hedger.step(x_t_sel, h_sel)
+                        delta_t_sel = torch.where(active_sel, delta_t_sel, torch.zeros_like(delta_t_sel))
+                        h_mask_sel = active_sel.float().unsqueeze(0).unsqueeze(-1).expand_as(h_sel)
+                        h_sel = torch.where(h_mask_sel.bool(), h_new_sel, h_sel)
+                        prev_delta_sel = torch.where(active_sel, delta_t_sel, prev_delta_sel)
+                        deltas_sel[:, t] = delta_t_sel
+                    # Batched P&L for selection batch (same as training)
+                    dS_sel = S_padded_sel[:, 1:] - S_padded_sel[:, :-1]
+                    t_range_sel = torch.arange(1, M_max_sel + 1, device=resolved_device).unsqueeze(0).expand(B_sel, M_max_sel)
+                    M_tensor_sel = torch.tensor(maturities_sel, dtype=torch.long, device=resolved_device).unsqueeze(1).expand(B_sel, M_max_sel)
+                    interval_mask_sel = t_range_sel <= M_tensor_sel
+                    underlying_sel = (deltas_sel.to(dtype=torch.float64) * dS_sel * interval_mask_sel.float().to(dtype=torch.float64)).sum(dim=1)
+                    cost_0_sel = cost_sel * torch.abs(deltas_sel[:, 0].to(dtype=torch.float64)) * S_padded_sel[:, 0] * (torch.tensor(maturities_sel, dtype=torch.long, device=resolved_device) >= 1).float().to(dtype=torch.float64)
+                    delta_diff_sel = torch.zeros_like(deltas_sel, dtype=torch.float64)
+                    delta_diff_sel[:, 1:] = torch.abs(deltas_sel[:, 1:].to(dtype=torch.float64) - deltas_sel[:, :-1].to(dtype=torch.float64))
+                    if M_max_sel > 1:
+                        t_cost_range_sel = torch.arange(1, M_max_sel, device=resolved_device).unsqueeze(0).expand(B_sel, M_max_sel - 1)
+                        cost_mask_sel = t_cost_range_sel < torch.tensor(maturities_sel, dtype=torch.long, device=resolved_device).unsqueeze(1).expand(B_sel, M_max_sel - 1)
+                        S_for_cost_sel = S_padded_sel[:, 1:M_max_sel].to(dtype=torch.float64)
+                        cost_mid_sel = (cost_sel.unsqueeze(1).expand(B_sel, M_max_sel - 1) * delta_diff_sel[:, 1:] * S_for_cost_sel * cost_mask_sel.float().to(dtype=torch.float64)).sum(dim=1)
+                    else:
+                        cost_mid_sel = torch.zeros(B_sel, dtype=torch.float64, device=resolved_device)
+                    unwind_sel = torch.zeros(B_sel, dtype=torch.float64, device=resolved_device)
+                    for i in range(B_sel):
+                        m = int(maturities_sel[i])
+                        if m >= 1:
+                            delta_last = deltas_sel[i, m - 1].to(dtype=torch.float64)
+                            s_m = S_padded_sel[i, m].to(dtype=torch.float64)
+                            unwind_sel[i] = cost_sel[i].to(dtype=torch.float64) * torch.abs(delta_last) * s_m
+                    costs_sel = cost_0_sel.to(dtype=torch.float64) + cost_mid_sel + unwind_sel
+                    s_m_all_sel = S_padded_sel[torch.arange(B_sel, device=resolved_device), torch.tensor(maturities_sel, dtype=torch.long, device=resolved_device)]
+                    is_call_sel = opt_sel > 0
+                    payoff_sel = torch.where(is_call_sel, torch.clamp(s_m_all_sel - K_sel, min=0), torch.clamp(K_sel - s_m_all_sel, min=0))
+                    pnl_sel = P0_sel.to(dtype=torch.float64) + underlying_sel - payoff_sel - costs_sel
+                    loss_sel = -pnl_sel
+                    all_selection_losses.append(loss_sel)
             if len(all_selection_losses) == 0:
                 raise RuntimeError("no selection losses collected")
-            selection_losses = torch.stack(all_selection_losses, dim=0)  # (N_selection,)
+            selection_losses = torch.cat(all_selection_losses, dim=0)  # (N_selection,)
             if not torch.isfinite(selection_losses).all():
-                # Nonfinite handling: mark as nonfinite, do not update best
                 stderr_log.append(f"epoch {epoch} selection nonfinite, skipping checkpoint selection")
                 val_cvar = torch.tensor(float("nan"), device=resolved_device)
                 is_finite = False
             else:
                 val_cvar = cvar_full_set_selection(selection_losses, alpha=0.95)
                 is_finite = bool(torch.isfinite(val_cvar).item())
-            
-            # Record curve
             avg_train_cvar = float(torch.stack(epoch_train_losses).mean().item()) if epoch_train_losses else float("nan")
             curve_entry = {
                 "epoch": int(epoch),
