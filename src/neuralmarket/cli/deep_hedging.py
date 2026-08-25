@@ -51,6 +51,10 @@ def _require_authorization_or_fail(authorization: Path) -> dict:
 
 def _preflight_common(authorization: Path, payload: dict) -> None:
     """Common preflight in exact logical order."""
+    import torch
+    torch.use_deterministic_algorithms(True)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
     # 4. contract SHA/blob verification (via runner preflight)
     # 5. clean tracked tree
     # 6. CUDA/runtime fail-close
@@ -94,25 +98,13 @@ def generate_synthetic(
     if started_path.exists():
         typer.echo(f"CONSUMED: generation attempt already exists at {started_path}", err=True)
         raise typer.Exit(code=2)
-    # Only then call production generation
+    # Only then call production generation (derived from authorization, no caller override)
     from neuralmarket.research.deep_hedging.generation import generate_and_persist_synthetic_dataset
 
     try:
-        # Use checkpoint identity from authorization payload
-        checkpoint_identities = payload.get("checkpoint_identities") or {}
-        synthetic_rng = payload.get("synthetic_rng") or {}
-        checkpoint_sha = checkpoint_identities.get(member)
-        checkpoint_path_str = payload.get("checkpoint_paths", {}).get(member) or f"data/processed/research/model/structured-volatility-neural-sde-v5/{member}/checkpoint.pt"
-        # For now, use the path from payload or default; in real authorized run, this will be exact
         result = generate_and_persist_synthetic_dataset(
             member=member,
-            run_prefix=run_prefix,
-            checkpoint_path=Path(checkpoint_path_str) if checkpoint_path_str else None,
-            expected_checkpoint_sha256=checkpoint_sha,
-            expected_checkpoint_blob=None,  # will be derived via git hash-object if needed
-            synthetic_seed=synthetic_rng.get(member),
-            dataset_path=dataset_path,
-            manifest_path=manifest_path,
+            authorization_path=authorization,
         )
         typer.echo(f"generated {result}")
     except Exception as e:
@@ -175,8 +167,7 @@ def train_policy(
             member=member,
             cost=cost,
             hedger_seed=hedger_seed,
-            synthetic_dataset_path=dataset_path,
-            synthetic_manifest_path=manifest_path,
+            authorization_path=authorization,
         )
         typer.echo(f"trained {result}")
     except Exception as e:

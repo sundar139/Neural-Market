@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import typer
 from pathlib import Path
 
 from neuralmarket import __version__
