@@ -1,0 +1,343 @@
+{
+  "schema_version": "structured-vol-v5-h2-wgan-comparator-stability-adjudication-v1",
+  "task_id": "NM-R4-V5-H2-WGAN-COMPARATOR-STABILITY-ADJUDICATION-185",
+  "starting_head": "259e9f816993a9e2c2130c2c55dfc86bd1ea4d5c",
+  "safety_branch": "safety/pre-h2-wgan-stability-adjudication-259e9f8",
+  "preregistration": {
+    "path": "reports/research/structured_vol_v5_wgan_comparator_preregistration_v1.json",
+    "canonical_sha": "6c4a2725daea9cc616cb540245f669ab8d230428309713202f9bb66ea535a037",
+    "git_blob": "72311888542ee83ff497b5f0adbbaf6429e8452a",
+    "h2_wording": "The signature-score training objective is more stable across seeds and epochs than adversarial (WGAN) training."
+  },
+  "wgan_n5_requirement": {
+    "required": 5,
+    "valid": 4,
+    "attempts": 5,
+    "reserve": "reserve-wgan-j01",
+    "seed_03": "NONFINITE_TRAINING_FAILURE"
+  },
+  "nsde_cohort": {
+    "primary_attempts": 5,
+    "invalid_attempts": 0,
+    "reserve_members": [
+      "reserve-j01"
+    ],
+    "valid_completed_members": [
+      "seed-01",
+      "seed-02",
+      "seed-04",
+      "seed-05",
+      "reserve-j01"
+    ],
+    "final_h2_members": [
+      "seed-01",
+      "seed-02",
+      "seed-04",
+      "seed-05",
+      "reserve-j01"
+    ],
+    "denominator": 5,
+    "provenance": "reports/research/structured_vol_v5_n5_family_analysis_v1.json + preregistration"
+  },
+  "wgan_cohort": {
+    "primary_attempts": 5,
+    "invalid_attempts": 1,
+    "invalid_member": "wgan-seed-03",
+    "reserve_members": [
+      "reserve-wgan-j01"
+    ],
+    "valid_completed_members": [
+      "wgan-seed-01",
+      "wgan-seed-02",
+      "wgan-seed-04",
+      "wgan-seed-05"
+    ],
+    "final_h2_members": [
+      "wgan-seed-01",
+      "wgan-seed-02",
+      "wgan-seed-04",
+      "wgan-seed-05"
+    ],
+    "denominator": 5,
+    "provenance": "wgan_seed reports + preregistration reserve order, only GATE_PASS_VALID/GATE_FAIL_VALID count as valid, seed-03 excluded"
+  },
+  "per_member_source_values": {
+    "nsde": {
+      "seed-01": {
+        "best_epoch": 8,
+        "final_epoch": 48,
+        "normalized_best_epoch": 0.02,
+        "selection_metric": 0.5251655578613281,
+        "checkpoint": "present",
+        "finite": true,
+        "artifact_path": "reports/research/structured_vol_v5_n5_family_analysis_v1.json#seed-01"
+      },
+      "seed-02": {
+        "best_epoch": 8,
+        "final_epoch": 48,
+        "normalized_best_epoch": 0.02,
+        "selection_metric": 0.6258251070976257,
+        "checkpoint": "present",
+        "finite": true,
+        "artifact_path": "reports/research/structured_vol_v5_n5_family_analysis_v1.json#seed-02"
+      },
+      "seed-04": {
+        "best_epoch": 105,
+        "final_epoch": 145,
+        "normalized_best_epoch": 0.2625,
+        "selection_metric": 0.5285217761993408,
+        "checkpoint": "present",
+        "finite": true,
+        "artifact_path": "reports/research/structured_vol_v5_n5_family_analysis_v1.json#seed-04"
+      },
+      "seed-05": {
+        "best_epoch": 104,
+        "final_epoch": 144,
+        "normalized_best_epoch": 0.26,
+        "selection_metric": 0.5789976716041565,
+        "checkpoint": "present",
+        "finite": true,
+        "artifact_path": "reports/research/structured_vol_v5_n5_family_analysis_v1.json#seed-05"
+      },
+      "reserve-j01": {
+        "best_epoch": 165,
+        "final_epoch": 205,
+        "normalized_best_epoch": 0.4125,
+        "selection_metric": 0.5791344046592712,
+        "checkpoint": "present",
+        "finite": true,
+        "artifact_path": "reports/research/structured_vol_v5_n5_family_analysis_v1.json#reserve-j01"
+      }
+    },
+    "wgan": {
+      "wgan-seed-01": {
+        "best_epoch": 63,
+        "final_epoch": 63,
+        "normalized_best_epoch": 0.1575,
+        "selection_metric": 3.0610572388897204,
+        "checkpoint": "present",
+        "finite": true,
+        "artifact_path": "reports/research/wgan_comparator_runs/wgan-seed-01/ebfbf915ec8316d8/training_report.json"
+      },
+      "wgan-seed-02": {
+        "best_epoch": 29,
+        "final_epoch": 69,
+        "normalized_best_epoch": 0.0725,
+        "selection_metric": 1.8903446799783874,
+        "checkpoint": "present",
+        "finite": true,
+        "artifact_path": "reports/research/wgan_comparator_runs/wgan-seed-02/e1cc68218d9eef71/training_report.json"
+      },
+      "wgan-seed-04": {
+        "best_epoch": 39,
+        "final_epoch": 79,
+        "normalized_best_epoch": 0.0975,
+        "selection_metric": 1.3419804686113015,
+        "checkpoint": "present",
+        "finite": true,
+        "artifact_path": "reports/research/wgan_comparator_runs/wgan-seed-04/6009789e9e8645df/training_report.json"
+      },
+      "wgan-seed-05": {
+        "best_epoch": 71,
+        "final_epoch": 111,
+        "normalized_best_epoch": 0.1775,
+        "selection_metric": 3.2245595973856656,
+        "checkpoint": "present",
+        "finite": true,
+        "artifact_path": "reports/research/wgan_comparator_runs/wgan-seed-05/308cda2acc42be1b/training_report.json"
+      },
+      "reserve-wgan-j01": {
+        "best_epoch": 24,
+        "final_epoch": 64,
+        "normalized_best_epoch": 0.06,
+        "selection_metric": 2.18908573311753,
+        "checkpoint": "present",
+        "finite": true,
+        "artifact_path": "reports/research/wgan_comparator_runs/reserve-wgan-j01/f7507c38d9e3f204/training_report.json",
+        "note": "reserve not counted for H2 primary denominator per preregistration family_b definition"
+      }
+    }
+  },
+  "metrics": {
+    "metric1_valid_completed_member_fraction": {
+      "NSDE_numerator": 5,
+      "NSDE_denominator": 5,
+      "NSDE_exact": 1.0,
+      "NSDE_decimal": 1.0,
+      "WGAN_numerator": 4,
+      "WGAN_denominator": 5,
+      "WGAN_exact": 0.8,
+      "WGAN_decimal": 0.8,
+      "direction": "higher_is_better",
+      "comparison": "NSDE_BETTER",
+      "provenance": "NSDE 5/5, WGAN 4/5 (seed-03 nonfinite excluded)"
+    },
+    "metric2_nonfinite_or_missing_checkpoint_rate": {
+      "NSDE_numerator": 0,
+      "NSDE_denominator": 5,
+      "NSDE_exact": 0.0,
+      "WGAN_numerator": 1,
+      "WGAN_denominator": 5,
+      "WGAN_exact": 0.2,
+      "direction": "lower_is_better",
+      "comparison": "NSDE_BETTER",
+      "provenance": "NSDE 0/5, WGAN 1/5 (seed-03 nonfinite)"
+    },
+    "metric3_normalized_best_checkpoint_epoch_sd": {
+      "NSDE_per_member_values": [
+        0.02,
+        0.02,
+        0.2625,
+        0.26,
+        0.4125
+      ],
+      "NSDE_N": 5,
+      "NSDE_mean": 0.195,
+      "NSDE_sample_SD": 0.17127280870003855,
+      "NSDE_sample_SD_np": 0.17127280870003855,
+      "WGAN_per_member_values": [
+        0.1575,
+        0.0725,
+        0.0975,
+        0.1775
+      ],
+      "WGAN_N": 4,
+      "WGAN_mean": 0.12625,
+      "WGAN_sample_SD": 0.049392138375791476,
+      "WGAN_sample_SD_np": 0.049392138375791476,
+      "ddof": 1,
+      "direction": "lower_is_better",
+      "comparison": "NSDE_WORSE",
+      "provenance": "NSDE 5 values, WGAN 4 valid values (seed-03 missing)"
+    },
+    "metric4_checkpoint_selection_metric_sd": {
+      "common_metric_definition": "internal_selection_terminal_wasserstein_normalized for WGAN, best_selection_total_loss for NSDE (common checkpoint-selection metric per preregistration)",
+      "NSDE_per_member_values": [
+        0.5251655578613281,
+        0.6258251070976257,
+        0.5285217761993408,
+        0.5789976716041565,
+        0.5791344046592712
+      ],
+      "NSDE_N": 5,
+      "NSDE_mean": 0.5675289034843445,
+      "NSDE_sample_SD": 0.04177582041932871,
+      "NSDE_sample_SD_np": 0.04177582041932871,
+      "WGAN_per_member_values": [
+        3.0610572388897204,
+        1.8903446799783874,
+        1.3419804686113015,
+        3.2245595973856656
+      ],
+      "WGAN_N": 4,
+      "WGAN_mean": 2.379485496216269,
+      "WGAN_sample_SD": 0.9118416707034239,
+      "WGAN_sample_SD_np": 0.911841670703424,
+      "ddof": 1,
+      "direction": "lower_is_better",
+      "comparison": "NSDE_BETTER",
+      "provenance": "NSDE 5, WGAN 4 valid"
+    }
+  },
+  "decision_rule": {
+    "exact_preregistration_wording": "H2_SUPPORTED iff both families have exactly five valid completed members, every primary metric is finite for both families, the Neural-SDE family is no worse than WGAN on every primary metric, and Neural-SDE is strictly better on at least one primary metric.",
+    "family_a": "Validated five-member Neural-SDE family from Amendment 057: seed-01, seed-02, seed-04, seed-05, reserve-j01",
+    "family_b": "Five WGAN primary members wgan-seed-01 through wgan-seed-05; only GATE_PASS_VALID and GATE_FAIL_VALID count as valid completed members.",
+    "aggregation": "For each family and each metric, use the five valid completed member values in fixed roster order; report arithmetic mean, sample SD ddof=1, median, minimum, maximum, and no weights.",
+    "comparison": "Compare the Neural-SDE and WGAN family values only on the four preregistered cross-family primary metrics, using each metric frozen direction.",
+    "supported": "H2_SUPPORTED iff both families have exactly five valid completed members, every primary metric is finite, NSDE no worse on all, strictly better on at least one.",
+    "not_supported": "H2_NOT_SUPPORTED iff both families have five valid and complete metrics, but supported false.",
+    "unresolved": "H2_UNRESOLVED iff either family has fewer than five valid completed members, any primary metric missing/nonfinite, or governance-invalid.",
+    "metric1": "NSDE_BETTER",
+    "metric2": "NSDE_BETTER",
+    "metric3": "NSDE_WORSE",
+    "metric4": "NSDE_BETTER",
+    "no_worse_all": false,
+    "strictly_better_at_least_one": true,
+    "both_families_5_valid": false,
+    "finite_all": true,
+    "formal_outcome": "H2_UNRESOLVED",
+    "gate_metrics_used": false,
+    "final_test_metrics_used": false
+  },
+  "independent_recomputation": {
+    "method1": "Python statistics.stdev ddof=1",
+    "method2": "NumPy std ddof=1",
+    "metric1_match": true,
+    "metric2_match": true,
+    "metric3_match": true,
+    "metric4_match": false,
+    "decision_match": true,
+    "discrepancy": 0
+  },
+  "execution_evidence": {
+    "path": "reports/research/evidence/structured_vol_v5_h2_wgan_comparator_stability_adjudication_185.json",
+    "preregistration": "6c4a2725daea9cc616cb540245f669ab8d230428309713202f9bb66ea535a037",
+    "cohorts": {
+      "NSDE": [
+        "seed-01",
+        "seed-02",
+        "seed-04",
+        "seed-05",
+        "reserve-j01"
+      ],
+      "WGAN_valid": [
+        "wgan-seed-01",
+        "wgan-seed-02",
+        "wgan-seed-04",
+        "wgan-seed-05"
+      ],
+      "WGAN_invalid": [
+        "wgan-seed-03"
+      ]
+    },
+    "member_values": "as above",
+    "calculations": "as above",
+    "decision_rule": "H2_UNRESOLVED",
+    "H2": "H2_UNRESOLVED",
+    "validation": 0,
+    "external": 0,
+    "final": "SEALED",
+    "accuracy": true
+  },
+  "amendment_095": {
+    "path": "reports/protocol/research_protocol_amendment_095.md",
+    "Task": "NM-R4-V5-H2-WGAN-COMPARATOR-STABILITY-ADJUDICATION-185",
+    "preregistration": "6c4a2725daea9cc616cb540245f669ab8d230428309713202f9bb66ea535a037",
+    "WGAN_completion": "5 valid required, 4 valid present",
+    "NSDE_cohort": [
+      "seed-01",
+      "seed-02",
+      "seed-04",
+      "seed-05",
+      "reserve-j01"
+    ],
+    "WGAN_cohort": [
+      "wgan-seed-01",
+      "wgan-seed-02",
+      "wgan-seed-04",
+      "wgan-seed-05"
+    ],
+    "metrics": "as above",
+    "decision": "H2_UNRESOLVED",
+    "H2": "H2_UNRESOLVED",
+    "scientific_execution": 0,
+    "validation": 0,
+    "external": 0,
+    "final": "SEALED",
+    "self_hash": 0
+  },
+  "preservation": {
+    "NSDE_campaign": "5 valid members preserved",
+    "WGAN_campaign": "4 valid + 1 invalid (seed-03) preserved, reserve not counted for H2 primary",
+    "checkpoints": "all valid checkpoints present",
+    "training_reports": "all valid",
+    "Gate_evidence": "all valid",
+    "new_training": 0,
+    "new_Gate": 0,
+    "validation": 0,
+    "external": 0,
+    "final_access": 0,
+    "network": 0
+  }
+}
