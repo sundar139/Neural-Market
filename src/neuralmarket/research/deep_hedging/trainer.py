@@ -402,6 +402,108 @@ def _train_one_policy_internal(
                 M_max = int(maturity_batch.max().item())
                 # Slice S to M_max+1 (need S[0]..S[M_max])
                 S_padded = S_batch_full[:, : M_max + 1]  # [B, M_max+1]
+                # ---- restored contract-exact minibatch optimization (batched, endogenous prev_delta) ----
+                hedger.train()
+                optimizer.zero_grad()
+                # Autoregressive GRU rollout with mixed-maturity masks and endogenous prev_delta
+                h = torch.zeros((2, B, 64), dtype=torch.float32, device=resolved_device)
+                prev_delta = torch.zeros((B,), dtype=torch.float32, device=resolved_device)
+                deltas = torch.zeros((B, M_max), dtype=torch.float32, device=resolved_device)
+                # Pre-convert maturity to list for per-t active checks, keep tensor for vector ops
+                maturities_np = maturity_batch.cpu().numpy()
+                for t in range(M_max):
+                    active = maturity_batch > t  # (B,) bool
+                    if not bool(active.any().item()):
+                        continue
+                    S_t = S_padded[:, t]
+                    # Time-to-maturity feature is vector per episode
+                    T_t = (maturity_batch.to(dtype=torch.float64) - t) / 30.0
+                    moneyness = S_t / K_batch
+                    # Avoid log(0) on inactive rows via where->1
+                    log_moneyness = torch.log(torch.where(active, moneyness, torch.ones_like(moneyness)))
+                    log_ret = torch.log(torch.where(active, S_t / S_padded[:, 0], torch.ones_like(S_t)))
+                    cost_norm = (cost_t_batch / 0.0050).to(dtype=torch.float32)
+                    opt_t = opt_batch.to(dtype=torch.float32)
+                    x_t = torch.stack(
+                        [
+                            T_t.to(dtype=torch.float32),
+                            moneyness.to(dtype=torch.float32),
+                            log_moneyness.to(dtype=torch.float32),
+                            log_ret.to(dtype=torch.float32),
+                            prev_delta,
+                            cost_norm,
+                            opt_t,
+                        ],
+                        dim=1,
+                    )
+                    x_t = torch.where(active.unsqueeze(1), x_t, torch.zeros_like(x_t))
+                    delta_t, h_new = hedger.step(x_t, h)
+                    delta_t = torch.where(active, delta_t, torch.zeros_like(delta_t))
+                    h_mask = active.float().unsqueeze(0).unsqueeze(-1).expand_as(h)
+                    h = torch.where(h_mask.bool(), h_new, h)
+                    prev_delta = torch.where(active, delta_t, prev_delta)
+                    deltas[:, t] = delta_t
+                # Batched P&L (frozen semantics) — same as selection evaluation
+                dS = S_padded[:, 1:] - S_padded[:, :-1]  # (B, M_max) float64
+                t_range = torch.arange(1, M_max + 1, device=resolved_device).unsqueeze(0).expand(B, M_max)
+                M_tensor = maturity_batch.unsqueeze(1).expand(B, M_max)
+                interval_mask = t_range <= M_tensor  # (B, M_max) bool
+                underlying = (deltas.to(dtype=torch.float64) * dS * interval_mask.float().to(dtype=torch.float64)).sum(dim=1)
+                cost_0 = cost_t_batch * torch.abs(deltas[:, 0].to(dtype=torch.float64)) * S_padded[:, 0] * (maturity_batch >= 1).float().to(dtype=torch.float64)
+                delta_diff = torch.zeros_like(deltas, dtype=torch.float64)
+                delta_diff[:, 1:] = torch.abs(deltas[:, 1:].to(dtype=torch.float64) - deltas[:, :-1].to(dtype=torch.float64))
+                if M_max > 1:
+                    t_cost_range = torch.arange(1, M_max, device=resolved_device).unsqueeze(0).expand(B, M_max - 1)
+                    cost_mask = t_cost_range < maturity_batch.unsqueeze(1).expand(B, M_max - 1)
+                    S_for_cost = S_padded[:, 1:M_max].to(dtype=torch.float64)
+                    cost_mid = (cost_t_batch.unsqueeze(1).expand(B, M_max - 1) * delta_diff[:, 1:] * S_for_cost * cost_mask.float().to(dtype=torch.float64)).sum(dim=1)
+                else:
+                    cost_mid = torch.zeros(B, dtype=torch.float64, device=resolved_device)
+                unwind = torch.zeros(B, dtype=torch.float64, device=resolved_device)
+                for i in range(B):
+                    m = int(maturities_np[i])
+                    if m >= 1:
+                        delta_last = deltas[i, m - 1].to(dtype=torch.float64)
+                        s_m = S_padded[i, m].to(dtype=torch.float64)
+                        unwind[i] = cost_t_batch[i].to(dtype=torch.float64) * torch.abs(delta_last) * s_m
+                costs = cost_0.to(dtype=torch.float64) + cost_mid + unwind
+                s_m_all = S_padded[torch.arange(B, device=resolved_device), maturity_batch]
+                is_call = opt_batch > 0
+                payoff = torch.where(is_call, torch.clamp(s_m_all - K_batch, min=0), torch.clamp(K_batch - s_m_all, min=0))
+                pnl = P0_batch.to(dtype=torch.float64) + underlying - payoff - costs
+                loss_vec = -pnl  # (B,)
+                # Require shape and finiteness
+                if loss_vec.shape != torch.Size([B]):
+                    raise RuntimeError(f"loss_vec shape mismatch: got {tuple(loss_vec.shape)} expected {(B,)}")
+                if not torch.isfinite(loss_vec).all():
+                    stderr_log.append(f"epoch {epoch} batch {start} nonfinite loss, skipping")
+                    continue
+                # Minibatch CVaR (frozen alpha 0.95)
+                cvar = empirical_cvar(loss_vec, alpha=0.95)
+                if not torch.isfinite(cvar):
+                    stderr_log.append(f"epoch {epoch} batch {start} nonfinite cvar, skipping")
+                    continue
+                if not bool(cvar.requires_grad):
+                    raise RuntimeError(f"minibatch CVaR requires_grad False at epoch {epoch} batch {start}")
+                cvar.backward()
+                # Verify gradients finite before step
+                grad_finite = True
+                for name, p in hedger.named_parameters():
+                    if p.grad is not None and not torch.isfinite(p.grad).all():
+                        grad_finite = False
+                        stderr_log.append(f"epoch {epoch} batch {start} nonfinite grad {name}, skipping step")
+                        break
+                if not grad_finite:
+                    optimizer.zero_grad()
+                    continue
+                clip_grad_norm_(hedger.parameters(), max_norm=grad_clip)
+                optimizer.step()
+                epoch_train_losses.append(cvar.detach())
+            # Fail-close if no minibatch produced a finite CVaR (would have been NaN reporting defect)
+            # Preserve predecessor semantics: if all batches nonfinite, train_cvar will be NaN and checkpoint selection will rely on selection CVaR
+            # For the repaired valid-data path, epoch_train_losses must be nonempty and finite — enforce via later checkpoint logic
+            if not epoch_train_losses:
+                stderr_log.append(f"epoch {epoch} no finite minibatch CVaR — train_cvar will be NaN")
             # Evaluate full selection set: collect every selection loss, ONE CVaR — batched
             hedger.eval()
             # Batch selection episodes in chunks of batch_size with same batched logic, then collect
