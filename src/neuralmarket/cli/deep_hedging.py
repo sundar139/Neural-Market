@@ -13,14 +13,17 @@ from pathlib import Path
 import typer
 from typer import Option
 
-from neuralmarket.research.deep_hedging.artifacts import COST_LEVELS, HEDGER_SEEDS, MEMBERS, RUN_PREFIXES
+from neuralmarket.research.deep_hedging.artifacts import (
+    COST_LEVELS,
+    HEDGER_SEEDS,
+    MEMBERS,
+    RUN_PREFIXES,
+)
+from neuralmarket.research.deep_hedging.runner import preflight_checks as runner_preflight_checks
 from neuralmarket.research.deep_hedging.runner import (
-    AuthorizationError,
-    build_implementation_manifest,
     verify_authorization_artifact,
     verify_implementation_manifest,
 )
-from neuralmarket.research.deep_hedging.runner import preflight_checks as runner_preflight_checks
 
 app = typer.Typer(help="Deep-hedging synthetic generation and GRU training (production, fail-closed).", add_completion=False)
 
@@ -72,7 +75,7 @@ def generate_synthetic(
 ) -> None:
     """Generate synthetic dataset for one authorized member (requires --execute and --authorization)."""
     if not execute:
-        typer.echo("DRY RUN: would generate synthetic for member {}".format(member))
+        typer.echo(f"DRY RUN: would generate synthetic for member {member}")
         typer.echo("Use --execute --authorization <path> --member <id> to run")
         raise typer.Exit(code=0)
     if member not in MEMBERS:
@@ -172,6 +175,81 @@ def train_policy(
         typer.echo(f"trained {result}")
     except Exception as e:
         typer.echo(f"training failed: {e}", err=True)
+        raise typer.Exit(code=1) from e
+
+
+@app.command("train-policy-recovery")
+def train_policy_recovery(
+    member: str = Option(..., "--member", help="Member ID"),
+    cost: float = Option(..., "--cost", help="Cost level (0.0, 0.0010, 0.0050)"),
+    hedger_seed: int = Option(..., "--hedger-seed", help="Hedger seed (31001, 31002, 31003)"),
+    authorization: Path = Option(..., "--authorization", help="Tracked committed RECOVERY authorization artifact"),
+    execute: bool = Option(False, "--execute", help="actually execute"),
+) -> None:
+    """Train one GRU hedger policy for one authorized RECOVERY tuple (recovery root)."""
+    if not execute:
+        typer.echo(f"DRY RUN: would train RECOVERY policy for {(member, cost, hedger_seed)}")
+        raise typer.Exit(code=0)
+    if member not in MEMBERS:
+        typer.echo(f"member {member} not in allowlist", err=True)
+        raise typer.Exit(code=2)
+    if cost not in COST_LEVELS:
+        typer.echo(f"cost {cost} not in allowlist {COST_LEVELS}", err=True)
+        raise typer.Exit(code=2)
+    if hedger_seed not in HEDGER_SEEDS:
+        typer.echo(f"hedger_seed {hedger_seed} not in allowlist", err=True)
+        raise typer.Exit(code=2)
+    info_payload = _require_authorization_or_fail(authorization)
+    payload = info_payload["payload"]
+    # Recovery surface must reject historical Authorization 212
+    if payload.get("authorization_type") != "GRU_TRAINING_RECOVERY_V1":
+        typer.echo("recovery authorization_type must be GRU_TRAINING_RECOVERY_V1 — Authorization 212 rejected", err=True)
+        raise typer.Exit(code=2)
+    # Validate recovery schema
+    from neuralmarket.research.deep_hedging.runner import validate_recovery_authorization_schema
+
+    try:
+        validate_recovery_authorization_schema(payload)
+    except Exception as e:
+        typer.echo(f"recovery authorization invalid: {e}", err=True)
+        raise typer.Exit(code=2) from e
+    if member not in payload.get("member_allowlist", []):
+        typer.echo(f"member {member} not in allowlist", err=True)
+        raise typer.Exit(code=2)
+    if cost not in payload.get("cost_allowlist", []):
+        typer.echo(f"cost {cost} not in allowlist", err=True)
+        raise typer.Exit(code=2)
+    if hedger_seed not in payload.get("hedger_seed_allowlist", []):
+        typer.echo(f"hedger_seed {hedger_seed} not in allowlist", err=True)
+        raise typer.Exit(code=2)
+    _preflight_common(authorization, payload)
+    # Recovery artifact path (distinct root)
+    run_prefix = RUN_PREFIXES[member]
+    cost_bps = {0.0: 0, 0.0010: 10, 0.0050: 50}[cost]
+    policy_dir = Path(f"data/processed/research/hedging_policies_recovery_v1/{run_prefix}_{member}/c_{cost_bps}/h_{hedger_seed}")
+    started = policy_dir / "execution_started.json"
+    checkpoint = policy_dir / "checkpoint.pt"
+    if started.exists() or checkpoint.exists():
+        typer.echo(f"CONSUMED or OVERWRITE_REFUSED at {policy_dir} (recovery)", err=True)
+        raise typer.Exit(code=2)
+    # Historical root existence must NOT block recovery (distinct), but recovery same-tuple must block reuse (above)
+    dataset_path = Path(f"data/processed/research/hedging_synthetic/{run_prefix}_{member}/synthetic_episodes_v1.parquet")
+    manifest_path = Path(f"data/processed/research/hedging_synthetic/{run_prefix}_{member}/synthetic_manifest_v1.json")
+    if not dataset_path.exists() or not manifest_path.exists():
+        typer.echo(f"synthetic dataset not found for {member} at {dataset_path}", err=True)
+        raise typer.Exit(code=2)
+    from neuralmarket.research.deep_hedging.trainer import train_one_policy_recovery
+
+    try:
+        result = train_one_policy_recovery(
+            member=member,
+            cost=cost,
+            hedger_seed=hedger_seed,
+            authorization_path=authorization,
+        )
+        typer.echo(f"trained recovery {result}")
+    except Exception as e:
+        typer.echo(f"recovery training failed: {e}", err=True)
         raise typer.Exit(code=1) from e
 
 

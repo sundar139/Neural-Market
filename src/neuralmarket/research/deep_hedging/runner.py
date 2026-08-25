@@ -532,3 +532,108 @@ def validate_authorization_schema(payload: dict) -> None:
     seeds = payload.get("hedger_seed_allowlist", [])
     if not set(seeds).issubset(set(HEDGER_SEEDS)):
         raise AuthorizationError(f"hedger seed allowlist contains non-governed seed: {seeds}")
+    # Historical validator must reject recovery payloads (distinct authorization surface)
+    if any(k in payload for k in ("recovery_protocol_canonical", "recovery_protocol_blob", "recovery_protocol_path", "recovery_root", "recovery_tuples", "predecessor_identities", "authorization_type")):
+        # If any recovery-specific discriminator present, this is not a historical authorization
+        raise AuthorizationError("historical authorization must not contain recovery-specific fields")
+
+
+RECOVERY_PROTOCOL_PATH = Path("reports/protocol/structured_vol_v5_deep_hedging_gru_training_recovery_protocol_v1.md")
+RECOVERY_PROTOCOL_CANONICAL = "4bf228ad508da7a71a07d659d383a5601e0a50540bea248dfccbfbeda9ce6be8"
+RECOVERY_PROTOCOL_BLOB = "6fcb39c29827d0d35ce3c777298fb75a81d00cb4"
+REPAIRED_IMPLEMENTATION_COMMIT = "85f5363518786286247490d8d953701d18fa3ae8"
+REPAIRED_IMPLEMENTATION_MANIFEST = "1f6524c6c470a7495e3f55168a0ef4b2dfe3b5b9ff8dd8a538aa691c5edc1e20"
+RECOVERY_ROOT = "data/processed/research/hedging_policies_recovery_v1"
+RECOVERY_AUTHORIZATION_TYPE = "GRU_TRAINING_RECOVERY_V1"
+
+
+def validate_recovery_authorization_schema(payload: dict) -> None:
+    """Validate recovery authorization — fail-closed, distinct from historical.
+
+    Requires exact binding for recovery protocol, repaired implementation,
+    contract, runtime, recovery root, 45 tuples, predecessor identities,
+    ceiling 45, network false, final false.
+    """
+    # Discriminator
+    if payload.get("authorization_type") != RECOVERY_AUTHORIZATION_TYPE:
+        raise AuthorizationError(f"recovery authorization_type must be {RECOVERY_AUTHORIZATION_TYPE!r}")
+    # Recovery protocol binding
+    if payload.get("recovery_protocol_path") != str(RECOVERY_PROTOCOL_PATH):
+        raise AuthorizationError(f"recovery_protocol_path must be {str(RECOVERY_PROTOCOL_PATH)!r}")
+    if payload.get("recovery_protocol_canonical") != RECOVERY_PROTOCOL_CANONICAL:
+        raise AuthorizationError("recovery_protocol_canonical mismatch")
+    if payload.get("recovery_protocol_blob") != RECOVERY_PROTOCOL_BLOB:
+        raise AuthorizationError("recovery_protocol_blob mismatch")
+    # Repaired implementation binding
+    if payload.get("implementation_commit") != REPAIRED_IMPLEMENTATION_COMMIT:
+        raise AuthorizationError("recovery implementation_commit mismatch")
+    if payload.get("implementation_manifest_sha256") != REPAIRED_IMPLEMENTATION_MANIFEST and payload.get("implementation_manifest") != REPAIRED_IMPLEMENTATION_MANIFEST:
+        # Accept either key for manifest
+        raise AuthorizationError("recovery implementation_manifest mismatch")
+    # Contract / runtime
+    if payload.get("contract_v3_canonical") != EXPECTED_CONTRACT_V3_CANONICAL:
+        raise AuthorizationError("recovery contract canonical mismatch")
+    if payload.get("contract_v3_blob") != EXPECTED_CONTRACT_V3_BLOB:
+        raise AuthorizationError("recovery contract blob mismatch")
+    if payload.get("runtime_identity") != EXPECTED_RUNTIME_IDENTITY:
+        raise AuthorizationError("recovery runtime mismatch")
+    # Recovery root exact
+    if payload.get("recovery_root") != RECOVERY_ROOT:
+        raise AuthorizationError(f"recovery_root must be {RECOVERY_ROOT!r}")
+    artifact_roots = payload.get("artifact_roots", [])
+    if RECOVERY_ROOT not in artifact_roots:
+        raise AuthorizationError(f"artifact_roots must contain recovery root {RECOVERY_ROOT!r}")
+    if "data/processed/research/hedging_policies" in artifact_roots and RECOVERY_ROOT not in artifact_roots:
+        raise AuthorizationError("recovery artifact_roots must be distinct from historical")
+    # Network / final
+    if payload.get("network") is not False:
+        raise AuthorizationError("recovery network must be false")
+    if payload.get("final_test_access") is not False:
+        raise AuthorizationError("recovery final_test_access must be false")
+    # Ceiling
+    if int(payload.get("max_training_invocations", 0)) != 45:
+        raise AuthorizationError("recovery max_training_invocations must be 45")
+    if int(payload.get("max_generation_invocations", 0)) != 5:
+        raise AuthorizationError("recovery max_generation_invocations must be 5")
+    # Allowlist 45 tuples: member 5, cost 3, seed 3
+    members = payload.get("member_allowlist", [])
+    costs = payload.get("cost_allowlist", [])
+    seeds = payload.get("hedger_seed_allowlist", [])
+    if set(members) != set(MEMBERS):
+        raise AuthorizationError(f"recovery member_allowlist must be exactly {MEMBERS}")
+    if set(costs) != set(COST_LEVELS):
+        raise AuthorizationError(f"recovery cost_allowlist must be exactly {COST_LEVELS}")
+    if set(seeds) != set(HEDGER_SEEDS):
+        raise AuthorizationError(f"recovery hedger_seed_allowlist must be exactly {HEDGER_SEEDS}")
+    # Exact 45 recovery tuples
+    tuples = payload.get("recovery_tuples") or payload.get("tuples")
+    if tuples is None:
+        raise AuthorizationError("recovery_tuples missing")
+    if len(tuples) != 45:
+        raise AuthorizationError(f"recovery_tuples must be 45, got {len(tuples)}")
+    seen = set()
+    for t in tuples:
+        key = (t.get("member"), t.get("cost"), t.get("hedger_seed"))
+        if key in seen:
+            raise AuthorizationError(f"duplicate recovery tuple {key}")
+        seen.add(key)
+        if key[0] not in MEMBERS or key[1] not in COST_LEVELS or key[2] not in HEDGER_SEEDS:
+            raise AuthorizationError(f"recovery tuple {key} not in frozen universe")
+    if seen != {(m, c, s) for m in MEMBERS for c in COST_LEVELS for s in HEDGER_SEEDS}:
+        raise AuthorizationError("recovery_tuples must be exactly the frozen 45 universe")
+    # Predecessor identities per tuple
+    pred = payload.get("predecessor_identities") or payload.get("predecessor_mapping")
+    if not isinstance(pred, dict) or len(pred) != 45:
+        raise AuthorizationError("predecessor_identities must be dict of 45")
+    for key, meta in pred.items():
+        # key is like "seed-01_0.0_31001" or tuple string; check it contains member/cost/seed
+        if not isinstance(meta, dict):
+            raise AuthorizationError(f"predecessor {key} must be dict")
+        for req in ("historical_artifact_path", "historical_execution_started_sha", "historical_checkpoint_sha", "historical_terminal_sha", "historical_classification"):
+            if req not in meta:
+                raise AuthorizationError(f"predecessor {key} missing {req}")
+        if meta.get("historical_classification") != "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP":
+            raise AuthorizationError(f"predecessor {key} historical_classification must be SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP")
+    # Schema version also required for recovery (reuse same)
+    if "schema_version" not in payload:
+        raise AuthorizationError("recovery authorization missing schema_version")
