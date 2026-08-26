@@ -1157,7 +1157,7 @@ def train_one_policy_recovery(
     # Verify implementation manifest independently (already verified above, but re-derive for consistency)
     from neuralmarket.research.deep_hedging.runner import build_implementation_manifest as _build_manifest
     try:
-        _derived = _build_manifest(authorized_commit=_payload_impl_commit)  # type: ignore
+        _derived = _build_manifest(implementation_commit=_payload_impl_commit)
     except Exception as e:
         raise RuntimeError(f"recovery provenance fail-closed: build_implementation_manifest failed for {repr(_payload_impl_commit)}: {e}") from e
     _derived_manifest = str(_derived.get("implementation_manifest_sha256") or "")
