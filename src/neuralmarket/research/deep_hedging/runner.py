@@ -541,6 +541,12 @@ RECOVERY_PROTOCOL_BLOB = "6fcb39c29827d0d35ce3c777298fb75a81d00cb4"
 RECOVERY_ROOT = "data/processed/research/hedging_policies_recovery_v2"
 RECOVERY_AUTHORIZATION_TYPE = "GRU_TRAINING_RECOVERY_V1"
 
+PREREQUISITE_PATH = Path("reports/protocol/hedging_recovery_v2_authorization_prerequisites_246.json")
+PREREQUISITE_COMMIT = "d4813d60002128c898fe88e40fd846dde80b5c3d"
+PREREQUISITE_CANONICAL = "c416ba8141cf91f732dfe245552b6ce9035cfb079d5ab71d324db89bc7e0f8e0"
+PREREQUISITE_RAW = "88b51be4822c23c6c608fc75cd3cb4299d96afc1f2a18b7d4e53b929df296224"
+PREREQUISITE_BLOB = "a9d74c8a9fdc325d7e0f99b8a382c4bf8b3428d3"
+
 EVIDENCE_PATH = Path("reports/research/evidence/structured_vol_v5_deep_hedging_gru_training_execution_v1.json")
 EVIDENCE_COMMIT = "ee7da9f8a465411b87d5ba3df6d7577230630352"
 EVIDENCE_CANONICAL = "1d739b3e3f951331f1c8cc060f677a3d71c24b0184ece0a28796365079b5025c"
@@ -604,6 +610,61 @@ def _get_trusted_predecessor_map() -> dict[str, dict[str, str]]:
     return trusted
 
 
+def _get_authenticated_prerequisite_values() -> dict[str, str]:
+    """Independently authenticate the frozen Task-246 prerequisite artifact.
+
+    Verifies tracked exact path, commit existence/ancestry, commit→path blob exact,
+    current bytes unchanged, canonical LF SHA exact, raw SHA exact, git blob exact.
+    Returns dict of trusted values for payload equality check.
+    Fail-closed on any mismatch.
+    """
+    # Tracked exact path
+    if not PREREQUISITE_PATH.exists():
+        raise AuthorizationError(f"prerequisite artifact not found: {PREREQUISITE_PATH}")
+    ls = subprocess.run(["git", "ls-files", "--", str(PREREQUISITE_PATH)], capture_output=True, text=True, check=True)
+    if not ls.stdout.strip():
+        raise AuthorizationError(f"prerequisite artifact not tracked: {PREREQUISITE_PATH}")
+    # No staged/unstaged modification
+    for cmd in (["git", "diff", "--name-only", "--", str(PREREQUISITE_PATH)], ["git", "diff", "--cached", "--name-only", "--", str(PREREQUISITE_PATH)]):
+        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        if res.stdout.strip():
+            raise AuthorizationError(f"prerequisite artifact has staged/unstaged modification: {PREREQUISITE_PATH}")
+    raw = PREREQUISITE_PATH.read_bytes()
+    raw_sha = hashlib.sha256(raw).hexdigest()
+    canon = raw.decode("utf-8").replace("\r\n", "\n").encode("utf-8")
+    canonical_sha = hashlib.sha256(canon).hexdigest()
+    blob = subprocess.run(["git", "hash-object", str(PREREQUISITE_PATH)], capture_output=True, text=True, check=True).stdout.strip()
+    if raw_sha != PREREQUISITE_RAW:
+        raise AuthorizationError(f"prerequisite raw mismatch: got {raw_sha} expected {PREREQUISITE_RAW}")
+    if canonical_sha != PREREQUISITE_CANONICAL:
+        raise AuthorizationError(f"prerequisite canonical mismatch: got {canonical_sha} expected {PREREQUISITE_CANONICAL}")
+    if blob != PREREQUISITE_BLOB:
+        raise AuthorizationError(f"prerequisite blob mismatch: got {blob} expected {PREREQUISITE_BLOB}")
+    # Commit existence
+    res = subprocess.run(["git", "cat-file", "-e", PREREQUISITE_COMMIT], capture_output=True)
+    if res.returncode != 0:
+        raise AuthorizationError(f"prerequisite commit {PREREQUISITE_COMMIT} does not exist locally")
+    # Commit → path blob exact
+    ls_tree = subprocess.run(["git", "ls-tree", PREREQUISITE_COMMIT, "--", str(PREREQUISITE_PATH)], capture_output=True, text=True, check=True)
+    if not ls_tree.stdout.strip():
+        raise AuthorizationError(f"prerequisite commit {PREREQUISITE_COMMIT} missing path {PREREQUISITE_PATH}")
+    commit_blob = ls_tree.stdout.strip().split()[2]
+    if commit_blob != PREREQUISITE_BLOB:
+        raise AuthorizationError(f"prerequisite commit blob mismatch: got {commit_blob} expected {PREREQUISITE_BLOB}")
+    # Commit ancestry
+    cur_head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    res = subprocess.run(["git", "merge-base", "--is-ancestor", PREREQUISITE_COMMIT, cur_head])
+    if res.returncode != 0:
+        raise AuthorizationError(f"prerequisite commit {PREREQUISITE_COMMIT} is not ancestor of current HEAD {cur_head}")
+    return {
+        "prerequisite_artifact_path": PREREQUISITE_PATH.as_posix(),
+        "prerequisite_commit": PREREQUISITE_COMMIT,
+        "prerequisite_canonical_sha256": PREREQUISITE_CANONICAL,
+        "prerequisite_raw_sha256": PREREQUISITE_RAW,
+        "prerequisite_blob": PREREQUISITE_BLOB,
+    }
+
+
 def validate_recovery_authorization_schema(payload: dict) -> None:
     """Validate recovery authorization — fail-closed, distinct from historical.
 
@@ -626,7 +687,31 @@ def validate_recovery_authorization_schema(payload: dict) -> None:
         raise AuthorizationError("recovery_protocol_canonical mismatch")
     if payload.get("recovery_protocol_blob") != RECOVERY_PROTOCOL_BLOB:
         raise AuthorizationError("recovery_protocol_blob mismatch")
-    # Dynamic implementation binding (non-circular)
+    # Independent Task-246 prerequisite authentication — must be before implementation binding so tamper is not masked
+    authenticated = _get_authenticated_prerequisite_values()
+    for field in ("prerequisite_artifact_path", "prerequisite_commit", "prerequisite_canonical_sha256", "prerequisite_raw_sha256", "prerequisite_blob"):
+        if field not in payload:
+            raise AuthorizationError(f"recovery {field} missing")
+        val = payload.get(field)
+        if not isinstance(val, str) or not val:
+            raise AuthorizationError(f"recovery {field} must be non-empty string, got {repr(val)}")
+        if field == "prerequisite_artifact_path":
+            if val.replace("\\", "/") != authenticated[field].replace("\\", "/"):
+                raise AuthorizationError(f"recovery {field} mismatch: got {val!r} expected {authenticated[field]!r}")
+        elif val != authenticated[field]:
+            raise AuthorizationError(f"recovery {field} mismatch: got {val!r} expected {authenticated[field]!r}")
+    for key in ("retry_permitted", "rerun_permitted", "replacement_permitted"):
+        if key not in payload:
+            raise AuthorizationError(f"recovery {key} missing — must be explicitly 0")
+        val = payload[key]
+        if val is None:
+            raise AuthorizationError(f"recovery {key} must not be None, must be  int 0")
+        if isinstance(val, bool):
+            raise AuthorizationError(f"recovery {key} must be int 0, not bool {val!r}")
+        if not isinstance(val, int):
+            raise AuthorizationError(f"recovery {key} must be int 0, got {type(val).__name__} {val!r}")
+        if val != 0:
+            raise AuthorizationError(f"recovery {key} must be 0, got {val!r}")
     impl_commit = str(payload.get("implementation_commit") or "")
     impl_manifest = str(payload.get("implementation_manifest_sha256") or payload.get("implementation_manifest") or "")
     if not impl_commit:
@@ -745,3 +830,5 @@ def validate_recovery_authorization_schema(payload: dict) -> None:
             if actual.get(field) != expected.get(field):
                 raise AuthorizationError(f"predecessor {key} field {field} mismatch: expected {expected.get(field)!r} got {actual.get(field)!r}")
     # Schema version also required for recovery (reuse same)
+    if payload.get("schema_version") not in ("hedging-execution-authorization-v1", "hedging-recovery-authorization-v1"):
+        raise AuthorizationError(f"recovery schema_version {payload.get('schema_version')!r} invalid")

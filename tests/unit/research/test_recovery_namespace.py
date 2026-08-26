@@ -33,7 +33,7 @@ def fake_provider(num, dev):
 
 def _valid_recovery_payload():
     # Build valid recovery payload using trusted predecessor map (field-for-field)
-    from neuralmarket.research.deep_hedging.runner import _get_trusted_predecessor_map, build_implementation_manifest
+    from neuralmarket.research.deep_hedging.runner import _get_authenticated_prerequisite_values, _get_trusted_predecessor_map, build_implementation_manifest
 
     tuples = []
     for m in MEMBERS:
@@ -43,6 +43,7 @@ def _valid_recovery_payload():
     # Use trusted map for predecessor identities (exact cryptographic binding)
     pred = _get_trusted_predecessor_map()
     manifest_payload = build_implementation_manifest()
+    prereq = _get_authenticated_prerequisite_values()
     return {
         "schema_version": "hedging-execution-authorization-v1",
         "authorization_task_id": "NM-R4-V5-DEEP-HEDGING-GRU-TRAINING-RECOVERY-EXECUTION-AUTHORIZATION-223",
@@ -50,6 +51,14 @@ def _valid_recovery_payload():
         "recovery_protocol_path": str(RECOVERY_PROTOCOL_PATH),
         "recovery_protocol_canonical": RECOVERY_PROTOCOL_CANONICAL,
         "recovery_protocol_blob": RECOVERY_PROTOCOL_BLOB,
+        "prerequisite_artifact_path": prereq["prerequisite_artifact_path"],
+        "prerequisite_commit": prereq["prerequisite_commit"],
+        "prerequisite_canonical_sha256": prereq["prerequisite_canonical_sha256"],
+        "prerequisite_raw_sha256": prereq["prerequisite_raw_sha256"],
+        "prerequisite_blob": prereq["prerequisite_blob"],
+        "retry_permitted": 0,
+        "rerun_permitted": 0,
+        "replacement_permitted": 0,
         "contract_v3_canonical": "79611b6b3be41fecf6beadbcbbd12439f434884f1d4d4a09c294a01134318d01",
         "contract_v3_blob": "eef7ad220db889166469799372759dfe1a96e35f",
         "implementation_commit": manifest_payload["implementation_commit"],
