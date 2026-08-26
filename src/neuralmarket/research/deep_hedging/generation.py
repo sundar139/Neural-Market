@@ -31,7 +31,7 @@ from neuralmarket.research.deep_hedging.synthetic import (
 
 EXPECTED_CONTRACT_V3_CANONICAL = "79611b6b3be41fecf6beadbcbbd12439f434884f1d4d4a09c294a01134318d01"
 EXPECTED_CONTRACT_V3_BLOB = "eef7ad220db889166469799372759dfe1a96e35f"
-EXPECTED_RUNTIME = "35d07adc53bebe974457f2e87e8af0b4ff9d3f0cb19791f6370f8cf98d82ffbd"
+EXPECTED_RUNTIME = "17e3bb52d5893c4e09ecb759a925004f2e75a37d7d4faf4ece7de41f81870ada"
 CONTRACT_V3_PATH = Path("reports/protocol/structured_vol_v5_deep_hedging_training_contract_v3.md")
 
 
