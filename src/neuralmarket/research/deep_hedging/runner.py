@@ -26,10 +26,7 @@ EXPECTED_CONTRACT_V3_BLOB = "eef7ad220db889166469799372759dfe1a96e35f"
 EXPECTED_RUNTIME_IDENTITY = "17e3bb52d5893c4e09ecb759a925004f2e75a37d7d4faf4ece7de41f81870ada"
 CONTRACT_V3_PATH = Path("reports/protocol/structured_vol_v5_deep_hedging_training_contract_v3.md")
 AUTHORIZATION_TASK_FAMILY_RE = re.compile(r"^NM-R4-V5-DEEP-HEDGING-TRAINING-EXECUTION-AUTHORIZATION-[0-9]+$")
-
-
-
-
+RECOVERY_AUTHORIZATION_TASK_FAMILY_RE = re.compile(r"^NM-R4-V5-DEEP-HEDGING-GRU-TRAINING-RECOVERY-EXECUTION-AUTHORIZATION-[0-9]+$")
 
 class AuthorizationError(RuntimeError):
     """Raised when scientific execution is not authorized."""
@@ -470,10 +467,9 @@ def verify_authorization_artifact(
         task_id = str(payload.get("authorization_task_id") or payload.get("task_id") or "")
     except Exception as e:
         raise AuthorizationError(f"failed to parse authorization_task_id from {rel}: {e}") from e
-    if not AUTHORIZATION_TASK_FAMILY_RE.match(task_id):
-        raise AuthorizationError(f"authorization_task_id {task_id!r} does not match family {AUTHORIZATION_TASK_FAMILY_RE.pattern}")
+    if not (AUTHORIZATION_TASK_FAMILY_RE.match(task_id) or RECOVERY_AUTHORIZATION_TASK_FAMILY_RE.match(task_id)):
+        raise AuthorizationError(f"authorization_task_id {task_id!r} does not match family {AUTHORIZATION_TASK_FAMILY_RE.pattern} or {RECOVERY_AUTHORIZATION_TASK_FAMILY_RE.pattern}")
     return {
-        "canonical_sha256": canonical_sha,
         "git_blob": blob,
         "commit": commits[0],
         "authorization_task_id": task_id,
@@ -541,8 +537,6 @@ def validate_authorization_schema(payload: dict) -> None:
 RECOVERY_PROTOCOL_PATH = Path("reports/protocol/structured_vol_v5_deep_hedging_gru_training_recovery_protocol_v1.md")
 RECOVERY_PROTOCOL_CANONICAL = "4bf228ad508da7a71a07d659d383a5601e0a50540bea248dfccbfbeda9ce6be8"
 RECOVERY_PROTOCOL_BLOB = "6fcb39c29827d0d35ce3c777298fb75a81d00cb4"
-REPAIRED_IMPLEMENTATION_COMMIT = "a34ce51718604ee1bd8fb4a527483b29f0b3b538"
-REPAIRED_IMPLEMENTATION_MANIFEST = "5706fa069cb89358c3497a3985217d311c8b956f9da73f2ec43c3fc09783fe1d"
 RECOVERY_ROOT = "data/processed/research/hedging_policies_recovery_v1"
 RECOVERY_AUTHORIZATION_TYPE = "GRU_TRAINING_RECOVERY_V1"
 
@@ -619,6 +613,11 @@ def validate_recovery_authorization_schema(payload: dict) -> None:
     # Discriminator
     if payload.get("authorization_type") != RECOVERY_AUTHORIZATION_TYPE:
         raise AuthorizationError(f"recovery authorization_type must be {RECOVERY_AUTHORIZATION_TYPE!r}")
+    task_id = str(payload.get("authorization_task_id") or payload.get("task_id") or "")
+    if not RECOVERY_AUTHORIZATION_TASK_FAMILY_RE.match(task_id):
+        raise AuthorizationError(f"recovery authorization_task_id {task_id!r} does not match family {RECOVERY_AUTHORIZATION_TASK_FAMILY_RE.pattern}")
+    if AUTHORIZATION_TASK_FAMILY_RE.match(task_id):
+        raise AuthorizationError(f"recovery authorization_task_id {task_id!r} must not match historical family")
     # Recovery protocol binding
     if payload.get("recovery_protocol_path") != str(RECOVERY_PROTOCOL_PATH):
         raise AuthorizationError(f"recovery_protocol_path must be {str(RECOVERY_PROTOCOL_PATH)!r}")
@@ -626,12 +625,44 @@ def validate_recovery_authorization_schema(payload: dict) -> None:
         raise AuthorizationError("recovery_protocol_canonical mismatch")
     if payload.get("recovery_protocol_blob") != RECOVERY_PROTOCOL_BLOB:
         raise AuthorizationError("recovery_protocol_blob mismatch")
-    # Repaired implementation binding
-    if payload.get("implementation_commit") != REPAIRED_IMPLEMENTATION_COMMIT:
-        raise AuthorizationError("recovery implementation_commit mismatch")
-    if payload.get("implementation_manifest_sha256") != REPAIRED_IMPLEMENTATION_MANIFEST and payload.get("implementation_manifest") != REPAIRED_IMPLEMENTATION_MANIFEST:
-        # Accept either key for manifest
-        raise AuthorizationError("recovery implementation_manifest mismatch")
+    # Dynamic implementation binding (non-circular)
+    impl_commit = str(payload.get("implementation_commit") or "")
+    impl_manifest = str(payload.get("implementation_manifest_sha256") or payload.get("implementation_manifest") or "")
+    if not impl_commit:
+        raise AuthorizationError("recovery implementation_commit missing")
+    if not impl_manifest:
+        raise AuthorizationError("recovery implementation_manifest missing")
+    # A. Prove implementation_commit exists locally
+    res = subprocess.run(["git", "cat-file", "-e", impl_commit], capture_output=True)
+    if res.returncode != 0:
+        raise AuthorizationError(f"implementation_commit {impl_commit} does not exist locally")
+    # B. Rebuild exact execution-critical source manifest at that commit
+    rebuilt = build_implementation_manifest(implementation_commit=impl_commit)
+    rebuilt_manifest = str(rebuilt.get("implementation_manifest_sha256"))
+    # C. Require rebuilt manifest SHA == authorization manifest
+    if rebuilt_manifest != impl_manifest:
+        raise AuthorizationError(f"rebuilt manifest {rebuilt_manifest} != authorization manifest {impl_manifest}")
+    # D. Require current executing production source blobs equal the blobs at authorization commit
+    auth_blobs = payload.get("implementation_source_blobs") or rebuilt.get("source_blobs")
+    # If payload provides source_blobs, verify they match rebuilt, otherwise use rebuilt
+    if payload.get("implementation_source_blobs"):
+        if payload["implementation_source_blobs"] != rebuilt["source_blobs"]:
+            raise AuthorizationError("implementation_source_blobs mismatch with rebuilt manifest")
+        auth_blobs = payload["implementation_source_blobs"]
+    else:
+        auth_blobs = rebuilt["source_blobs"]
+    for rel, expected_blob in auth_blobs.items():
+        try:
+            cur_blob = subprocess.run(["git", "hash-object", rel], capture_output=True, text=True, check=True).stdout.strip()
+        except subprocess.CalledProcessError as e:
+            raise AuthorizationError(f"failed to hash {rel}: {e}") from e
+        if cur_blob != expected_blob:
+            raise AuthorizationError(f"source blob drift for {rel}: expected {expected_blob} got {cur_blob}")
+    # E. Require implementation commit is ancestor of current HEAD
+    cur_head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    res = subprocess.run(["git", "merge-base", "--is-ancestor", impl_commit, cur_head])
+    if res.returncode != 0:
+        raise AuthorizationError(f"implementation_commit {impl_commit} is not ancestor of current HEAD {cur_head}")
     # Contract / runtime
     if payload.get("contract_v3_canonical") != EXPECTED_CONTRACT_V3_CANONICAL:
         raise AuthorizationError("recovery contract canonical mismatch")

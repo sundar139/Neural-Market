@@ -21,8 +21,6 @@ from neuralmarket.research.deep_hedging.runner import (
     RECOVERY_PROTOCOL_CANONICAL,
     RECOVERY_PROTOCOL_BLOB,
     RECOVERY_PROTOCOL_PATH,
-    REPAIRED_IMPLEMENTATION_COMMIT,
-    REPAIRED_IMPLEMENTATION_MANIFEST,
     RECOVERY_ROOT,
     RECOVERY_AUTHORIZATION_TYPE,
 )
@@ -35,7 +33,7 @@ def fake_provider(num, dev):
 
 def _valid_recovery_payload():
     # Build valid recovery payload using trusted predecessor map (field-for-field)
-    from neuralmarket.research.deep_hedging.runner import _get_trusted_predecessor_map
+    from neuralmarket.research.deep_hedging.runner import _get_trusted_predecessor_map, build_implementation_manifest
 
     tuples = []
     for m in MEMBERS:
@@ -44,20 +42,19 @@ def _valid_recovery_payload():
                 tuples.append({"member": m, "cost": c, "hedger_seed": s})
     # Use trusted map for predecessor identities (exact cryptographic binding)
     pred = _get_trusted_predecessor_map()
+    manifest_payload = build_implementation_manifest(implementation_commit="a34ce51718604ee1bd8fb4a527483b29f0b3b538")
     return {
         "schema_version": "hedging-execution-authorization-v1",
-        "authorization_task_id": "NM-R4-V5-GRU-RECOVERY-AUTHORIZATION-223",
+        "authorization_task_id": "NM-R4-V5-DEEP-HEDGING-GRU-TRAINING-RECOVERY-EXECUTION-AUTHORIZATION-223",
         "authorization_type": RECOVERY_AUTHORIZATION_TYPE,
         "recovery_protocol_path": str(RECOVERY_PROTOCOL_PATH),
         "recovery_protocol_canonical": RECOVERY_PROTOCOL_CANONICAL,
         "recovery_protocol_blob": RECOVERY_PROTOCOL_BLOB,
         "contract_v3_canonical": "79611b6b3be41fecf6beadbcbbd12439f434884f1d4d4a09c294a01134318d01",
         "contract_v3_blob": "eef7ad220db889166469799372759dfe1a96e35f",
-        "implementation_commit": REPAIRED_IMPLEMENTATION_COMMIT,
-        "implementation_manifest_sha256": REPAIRED_IMPLEMENTATION_MANIFEST,
-        "implementation_source_blobs": {
-            "src/neuralmarket/research/deep_hedging/trainer.py": "1860f99fcbd52ac26daab33e5325c36955fde7f8"
-        },
+        "implementation_commit": "a34ce51718604ee1bd8fb4a527483b29f0b3b538",
+        "implementation_manifest_sha256": manifest_payload["implementation_manifest_sha256"],
+        "implementation_source_blobs": manifest_payload["source_blobs"],
         "runtime_identity": "17e3bb52d5893c4e09ecb759a925004f2e75a37d7d4faf4ece7de41f81870ada",
         "recovery_root": RECOVERY_ROOT,
         "artifact_roots": [
@@ -338,8 +335,8 @@ def test_recovery_provenance_fields_emitted(tmp_path: Path):
         "recovery_protocol_path": "reports/protocol/structured_vol_v5_deep_hedging_gru_training_recovery_protocol_v1.md",
         "recovery_protocol_canonical": RECOVERY_PROTOCOL_CANONICAL,
         "recovery_protocol_blob": RECOVERY_PROTOCOL_BLOB,
-        "recovery_implementation_commit": REPAIRED_IMPLEMENTATION_COMMIT,
-        "recovery_implementation_manifest": REPAIRED_IMPLEMENTATION_MANIFEST,
+        "recovery_implementation_commit": "a34ce51718604ee1bd8fb4a527483b29f0b3b538",
+        "recovery_implementation_manifest": "5706fa069cb89358c3497a3985217d311c8b956f9da73f2ec43c3fc09783fe1d",
         "historical_predecessor_artifact_path": "data/processed/research/hedging_policies/5bdbaabd2fb257a7_seed-01/c_0/h_31001",
         "historical_execution_started_sha": "a" * 64,
         "historical_checkpoint_sha": "b" * 64,
@@ -351,8 +348,7 @@ def test_recovery_provenance_fields_emitted(tmp_path: Path):
     assert started["recovery_protocol_canonical"] == RECOVERY_PROTOCOL_CANONICAL
     assert started["historical_classification"] == "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP"
     report = json.loads((rec_root / f"{rp}_seed-01/c_0/h_31001/training_report.json").read_text())
-    assert report["recovery_implementation_commit"] == REPAIRED_IMPLEMENTATION_COMMIT
-
+    assert report["recovery_implementation_commit"] == "a34ce51718604ee1bd8fb4a527483b29f0b3b538"
 
 def test_same_repaired_internal_trainer_is_invoked():
     import pathlib
