@@ -228,7 +228,7 @@ def train_policy_recovery(
     # Recovery artifact path (distinct root)
     run_prefix = RUN_PREFIXES[member]
     cost_bps = {0.0: 0, 0.0010: 10, 0.0050: 50}[cost]
-    policy_dir = Path(f"data/processed/research/hedging_policies_recovery_v1/{run_prefix}_{member}/c_{cost_bps}/h_{hedger_seed}")
+    policy_dir = Path(f"data/processed/research/hedging_policies_recovery_v2/{run_prefix}_{member}/c_{cost_bps}/h_{hedger_seed}")
     started = policy_dir / "execution_started.json"
     checkpoint = policy_dir / "checkpoint.pt"
     if started.exists() or checkpoint.exists():

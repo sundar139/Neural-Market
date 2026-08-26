@@ -128,6 +128,11 @@ def _validate_recovery_provenance_packet(
     if "recovery_protocol_blob" in provenance:
         if provenance["recovery_protocol_blob"] != RECOVERY_PROTOCOL_BLOB:
             raise RuntimeError("recovery provenance fail-closed: recovery_protocol_blob mismatch")
+    if "recovery_root" in provenance:
+        _got_root = provenance["recovery_root"].replace("\\", "/")
+        _exp_root = str(RECOVERY_ROOT_PATH).replace("\\", "/")
+        if _got_root != _exp_root:
+            raise RuntimeError(f"recovery provenance fail-closed: recovery_root mismatch provenance {repr(provenance['recovery_root'])} vs expected {repr(str(RECOVERY_ROOT_PATH))}")
     auth_path = Path(str(provenance["recovery_authorization_path"]))
     try:
         info = verify_authorization_artifact(auth_path)
@@ -1003,7 +1008,7 @@ def train_one_policy(
     )
 
 
-RECOVERY_ROOT_PATH = Path("data/processed/research/hedging_policies_recovery_v1")
+RECOVERY_ROOT_PATH = Path("data/processed/research/hedging_policies_recovery_v2")
 RECOVERY_PROTOCOL_PATH = Path("reports/protocol/structured_vol_v5_deep_hedging_gru_training_recovery_protocol_v1.md")
 RECOVERY_PROTOCOL_CANONICAL = "4bf228ad508da7a71a07d659d383a5601e0a50540bea248dfccbfbeda9ce6be8"
 RECOVERY_PROTOCOL_BLOB = "6fcb39c29827d0d35ce3c777298fb75a81d00cb4"
@@ -1022,8 +1027,7 @@ def train_one_policy_recovery(
     Requires recovery authorization (tracked, clean, committed) binding recovery
     protocol, repaired implementation, contract, runtime, recovery root,
     45 tuples and predecessor identities. Rejects historical Authorization 212.
-    Resolves recovery artifact path under `hedging_policies_recovery_v1` and
-    calls the SAME repaired internal trainer (no duplicated optimization loop).
+    Resolves recovery artifact path under `hedging_policies_recovery_v2` and
     """
     import json
 

@@ -255,7 +255,7 @@ def test_recovery_path_deterministic():
     p1 = recovery_dir("seed-01", 0.0, 31001)
     p2 = recovery_dir("seed-01", 0.0, 31001)
     assert p1 == p2
-    assert "hedging_policies_recovery_v1" in str(p1)
+    assert "hedging_policies_recovery_v2" in str(p1)
 
 
 def test_recovery_path_distinct_from_historical():
@@ -270,7 +270,7 @@ def test_recovery_path_distinct_from_historical():
         return RECOVERY_ROOT_PATH / f"{RUN_PREFIXES[member]}_{member}" / f"c_{bps}" / f"h_{seed}"
 
     assert hist_dir("seed-01", 0.0, 31001) != rec_dir("seed-01", 0.0, 31001)
-    assert "hedging_policies_recovery_v1" not in str(hist_dir("seed-01", 0.0, 31001))
+    assert "hedging_policies_recovery_v2" not in str(hist_dir("seed-01", 0.0, 31001))
 
 
 def test_historical_directory_may_exist_without_colliding(tmp_path: Path):

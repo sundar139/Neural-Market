@@ -538,7 +538,7 @@ def validate_authorization_schema(payload: dict) -> None:
 RECOVERY_PROTOCOL_PATH = Path("reports/protocol/structured_vol_v5_deep_hedging_gru_training_recovery_protocol_v1.md")
 RECOVERY_PROTOCOL_CANONICAL = "4bf228ad508da7a71a07d659d383a5601e0a50540bea248dfccbfbeda9ce6be8"
 RECOVERY_PROTOCOL_BLOB = "6fcb39c29827d0d35ce3c777298fb75a81d00cb4"
-RECOVERY_ROOT = "data/processed/research/hedging_policies_recovery_v1"
+RECOVERY_ROOT = "data/processed/research/hedging_policies_recovery_v2"
 RECOVERY_AUTHORIZATION_TYPE = "GRU_TRAINING_RECOVERY_V1"
 
 EVIDENCE_PATH = Path("reports/research/evidence/structured_vol_v5_deep_hedging_gru_training_execution_v1.json")
