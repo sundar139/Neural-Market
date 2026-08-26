@@ -470,6 +470,7 @@ def verify_authorization_artifact(
     if not (AUTHORIZATION_TASK_FAMILY_RE.match(task_id) or RECOVERY_AUTHORIZATION_TASK_FAMILY_RE.match(task_id)):
         raise AuthorizationError(f"authorization_task_id {task_id!r} does not match family {AUTHORIZATION_TASK_FAMILY_RE.pattern} or {RECOVERY_AUTHORIZATION_TASK_FAMILY_RE.pattern}")
     return {
+        "canonical_sha256": canonical_sha,
         "git_blob": blob,
         "commit": commits[0],
         "authorization_task_id": task_id,
