@@ -199,20 +199,22 @@ def train_policy_recovery(
     if hedger_seed not in HEDGER_SEEDS:
         typer.echo(f"hedger_seed {hedger_seed} not in allowlist", err=True)
         raise typer.Exit(code=2)
-    info_payload = _require_authorization_or_fail(authorization)
-    payload = info_payload["payload"]
-    # Recovery surface must reject historical Authorization 212
-    if payload.get("authorization_type") != "GRU_TRAINING_RECOVERY_V1":
-        typer.echo("recovery authorization_type must be GRU_TRAINING_RECOVERY_V1 — Authorization 212 rejected", err=True)
-        raise typer.Exit(code=2)
-    # Validate recovery schema
-    from neuralmarket.research.deep_hedging.runner import validate_recovery_authorization_schema
+    # For recovery, directly verify artifact and recovery schema (not historical)
+    from neuralmarket.research.deep_hedging.runner import verify_authorization_artifact, validate_recovery_authorization_schema
 
+    try:
+        info = verify_authorization_artifact(authorization)
+    except Exception as e:
+        typer.echo(f"recovery authorization artifact invalid: {e}", err=True)
+        raise typer.Exit(code=2) from e
+    payload = json.loads(authorization.read_bytes().decode("utf-8"))
+    # Validate recovery schema (includes authorization_type and recovery family checks)
     try:
         validate_recovery_authorization_schema(payload)
     except Exception as e:
         typer.echo(f"recovery authorization invalid: {e}", err=True)
         raise typer.Exit(code=2) from e
+    info_payload = {"info": info, "payload": payload}
     if member not in payload.get("member_allowlist", []):
         typer.echo(f"member {member} not in allowlist", err=True)
         raise typer.Exit(code=2)
