@@ -42,7 +42,7 @@ def _valid_recovery_payload():
                 tuples.append({"member": m, "cost": c, "hedger_seed": s})
     # Use trusted map for predecessor identities (exact cryptographic binding)
     pred = _get_trusted_predecessor_map()
-    manifest_payload = build_implementation_manifest(implementation_commit="a34ce51718604ee1bd8fb4a527483b29f0b3b538")
+    manifest_payload = build_implementation_manifest()
     return {
         "schema_version": "hedging-execution-authorization-v1",
         "authorization_task_id": "NM-R4-V5-DEEP-HEDGING-GRU-TRAINING-RECOVERY-EXECUTION-AUTHORIZATION-223",
@@ -52,7 +52,7 @@ def _valid_recovery_payload():
         "recovery_protocol_blob": RECOVERY_PROTOCOL_BLOB,
         "contract_v3_canonical": "79611b6b3be41fecf6beadbcbbd12439f434884f1d4d4a09c294a01134318d01",
         "contract_v3_blob": "eef7ad220db889166469799372759dfe1a96e35f",
-        "implementation_commit": "a34ce51718604ee1bd8fb4a527483b29f0b3b538",
+        "implementation_commit": manifest_payload["implementation_commit"],
         "implementation_manifest_sha256": manifest_payload["implementation_manifest_sha256"],
         "implementation_source_blobs": manifest_payload["source_blobs"],
         "runtime_identity": "17e3bb52d5893c4e09ecb759a925004f2e75a37d7d4faf4ece7de41f81870ada",

@@ -643,21 +643,27 @@ def validate_recovery_authorization_schema(payload: dict) -> None:
     if rebuilt_manifest != impl_manifest:
         raise AuthorizationError(f"rebuilt manifest {rebuilt_manifest} != authorization manifest {impl_manifest}")
     # D. Require current executing production source blobs equal the blobs at authorization commit
-    auth_blobs = payload.get("implementation_source_blobs") or rebuilt.get("source_blobs")
-    # If payload provides source_blobs, verify they match rebuilt, otherwise use rebuilt
+    # First, verify payload's source_blobs matches rebuilt (if provided)
     if payload.get("implementation_source_blobs"):
         if payload["implementation_source_blobs"] != rebuilt["source_blobs"]:
             raise AuthorizationError("implementation_source_blobs mismatch with rebuilt manifest")
-        auth_blobs = payload["implementation_source_blobs"]
-    else:
-        auth_blobs = rebuilt["source_blobs"]
-    for rel, expected_blob in auth_blobs.items():
+    # Then, verify current source equals the blobs at the implementation commit (not just the payload's blobs)
+    for rel in rebuilt["source_blobs"]:
+        # Get expected blob at the implementation commit
+        res_commit = subprocess.run(["git", "ls-tree", impl_commit, "--", rel], capture_output=True, text=True, check=True)
+        if not res_commit.stdout.strip():
+            raise AuthorizationError(f"implementation_commit {impl_commit} missing expected path {rel}")
+        expected_at_commit = res_commit.stdout.strip().split()[2]
+        # Get current blob
         try:
             cur_blob = subprocess.run(["git", "hash-object", rel], capture_output=True, text=True, check=True).stdout.strip()
         except subprocess.CalledProcessError as e:
             raise AuthorizationError(f"failed to hash {rel}: {e}") from e
-        if cur_blob != expected_blob:
-            raise AuthorizationError(f"source blob drift for {rel}: expected {expected_blob} got {cur_blob}")
+        if cur_blob != expected_at_commit:
+            raise AuthorizationError(f"source blob drift for {rel}: current {cur_blob} != expected at {impl_commit} {expected_at_commit}")
+        # Also ensure payload's blob (if provided) matches expected at commit
+        if payload.get("implementation_source_blobs") and payload["implementation_source_blobs"].get(rel) != expected_at_commit:
+            raise AuthorizationError(f"payload source blob for {rel} does not match expected at {impl_commit}")
     # E. Require implementation commit is ancestor of current HEAD
     cur_head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
     res = subprocess.run(["git", "merge-base", "--is-ancestor", impl_commit, cur_head])
