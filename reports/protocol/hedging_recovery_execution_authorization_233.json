@@ -18,8 +18,8 @@
     31002,
     31003
   ],
-  "implementation_commit": "778ff389a30003bb97059e6559a1f8e4e2d07542",
-  "implementation_manifest_sha256": "bcc31028c971ddbd75b548fb87789947e89a9fae05ca52532fc0f9e3e81b1196",
+  "implementation_commit": "73171c13c0831bd9eb543a0f1801405906f0e03a",
+  "implementation_manifest_sha256": "57ad1099a03beed6993f7e1eaf13954d339fb53ed8e4d7d7292e7553d4b00eac",
   "implementation_source_blobs": {
     "src/neuralmarket/cli/deep_hedging.py": "dacea6bd568ba4bd4b0491e0d01280ada9d818eb",
     "src/neuralmarket/cli/main.py": "ac7aa07e3304e91894fd5717f33c40b57bc83ae4",
@@ -30,12 +30,12 @@
     "src/neuralmarket/research/deep_hedging/__init__.py": "bd994657eab9407ff8593b2c2ad3ede31a689f44",
     "src/neuralmarket/research/deep_hedging/artifacts.py": "28e3254a16977970a0860f9fc438d05e3949ac30",
     "src/neuralmarket/research/deep_hedging/cvar.py": "c03166afeb23b34d8fbf8d3d29357933eca2524a",
-    "src/neuralmarket/research/deep_hedging/generation.py": "1b8710fc77362eb59a7167b3b4575d8b93f63d12",
+    "src/neuralmarket/research/deep_hedging/generation.py": "13f27943d936d621220278dabfdcab8666c1744e",
     "src/neuralmarket/research/deep_hedging/hedger.py": "9a003e45687e1bbd409bde2c37ed39644be9e2ad",
     "src/neuralmarket/research/deep_hedging/pnl.py": "122a00c996f8d4d01b89474fe98dee5ec49a393f",
-    "src/neuralmarket/research/deep_hedging/runner.py": "8e0fec84b5eb2ee14c579dc6b22b155c0ecf3f32",
+    "src/neuralmarket/research/deep_hedging/runner.py": "380f18e9faa5b5bcacd03f651f2b250502c91665",
     "src/neuralmarket/research/deep_hedging/synthetic.py": "f3838634a6afc57b438d1baa2d078e37d12dacb5",
-    "src/neuralmarket/research/deep_hedging/trainer.py": "d8100a95010e73e55e7154de0998bfa8365d1fef"
+    "src/neuralmarket/research/deep_hedging/trainer.py": "79ab28adfeee663ad0e76c71d49665a550a9b244"
   },
   "max_generation_invocations": 0,
   "max_training_invocations": 45,
