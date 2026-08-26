@@ -40,6 +40,17 @@ def _tiny_dataset(tmp_path: Path, n: int = 8):
 
 
 def _valid_provenance(tmp_path: Path, ds: Path) -> dict:
+    from neuralmarket.research.deep_hedging.runner import _get_trusted_predecessor_map as _gtpm
+    try:
+        _trusted = _gtpm()[f"seed-01:0.0:31001"]
+    except Exception:
+        _trusted = {
+            "historical_artifact_path": "data/processed/research/hedging_policies/5bdbaabd2fb257a7_seed-01/c_0/h_31001",
+            "historical_execution_started_sha": "a" * 64,
+            "historical_checkpoint_sha": "b" * 64,
+            "historical_terminal_sha": "c" * 64,
+            "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+        }
     return {
         "recovery_protocol_path": "reports\\protocol\\structured_vol_v5_deep_hedging_gru_training_recovery_protocol_v1.md",
         "recovery_protocol_canonical": "4bf228ad508da7a71a07d659d383a5601e0a50540bea248dfccbfbeda9ce6be8",
@@ -55,26 +66,44 @@ def _valid_provenance(tmp_path: Path, ds: Path) -> dict:
         "runtime_identity": "17e3bb52d5893c4e09ecb759a925004f2e75a37d7d4faf4ece7de41f81870ada",
         "dataset_path": str(ds),
         "dataset_sha256": hashlib.sha256(ds.read_bytes()).hexdigest(),
-        "historical_predecessor_artifact_path": "data/processed/research/hedging_policies/5bdbaabd2fb257a7_seed-01/c_0/h_31001",
-        "historical_execution_started_sha": "a" * 64,
-        "historical_checkpoint_sha": "b" * 64,
-        "historical_terminal_sha": "c" * 64,
-        "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+        "historical_predecessor_artifact_path": _trusted["historical_artifact_path"],
+        "historical_execution_started_sha": _trusted["historical_execution_started_sha"],
+        "historical_checkpoint_sha": _trusted["historical_checkpoint_sha"],
+        "historical_terminal_sha": _trusted["historical_terminal_sha"],
+        "historical_classification": _trusted["historical_classification"],
     }
 
 
 def test_a_verified_authorization_exact_provenance(tmp_path: Path):
+    from unittest import mock
     ds, mp = _tiny_dataset(tmp_path / "a", n=8)
     rp = RUN_PREFIXES["seed-01"]
     policy_root = tmp_path / "policies"
     prov = _valid_provenance(tmp_path, ds)
-    _train_one_policy_internal(
-        member="seed-01", cost=0.0, hedger_seed=31001,
-        synthetic_dataset_path=ds, synthetic_manifest_path=mp,
-        policy_root=policy_root, run_prefix=rp,
-        max_epochs=2, min_epochs=1, patience=1, batch_size=4, device="cpu",
-        recovery_provenance=prov,
-    )
+    info = {
+        "canonical_sha256": prov["recovery_authorization_canonical"],
+        "git_blob": prov["recovery_authorization_blob"],
+        "commit": prov["recovery_authorization_commit"],
+        "authorization_task_id": prov["recovery_authorization_task_id"],
+        "path": prov["recovery_authorization_path"],
+    }
+    payload = {
+        "authorization_task_id": prov["recovery_authorization_task_id"],
+        "implementation_commit": prov["recovery_implementation_commit"],
+        "implementation_manifest_sha256": prov["recovery_implementation_manifest"],
+        "implementation_source_blobs": {},
+        "runtime_identity": prov["runtime_identity"],
+    }
+    Path(prov["recovery_authorization_path"]).parent.mkdir(parents=True, exist_ok=True)
+    Path(prov["recovery_authorization_path"]).write_text(json.dumps(payload))
+    with mock.patch("neuralmarket.research.deep_hedging.runner.verify_authorization_artifact", return_value=info),          mock.patch("neuralmarket.research.deep_hedging.runner.validate_recovery_authorization_schema", return_value=None),          mock.patch("neuralmarket.research.deep_hedging.runner.build_implementation_manifest", return_value={"implementation_manifest_sha256": prov["recovery_implementation_manifest"], "source_blobs": {}}),          mock.patch("neuralmarket.research.deep_hedging.runner.verify_implementation_manifest", return_value=None):
+        _train_one_policy_internal(
+            member="seed-01", cost=0.0, hedger_seed=31001,
+            synthetic_dataset_path=ds, synthetic_manifest_path=mp,
+            policy_root=policy_root, run_prefix=rp,
+            max_epochs=2, min_epochs=1, patience=1, batch_size=4, device="cpu",
+            recovery_provenance=prov,
+        )
     started = json.loads((policy_root / f"{rp}_seed-01" / "c_0" / "h_31001" / "execution_started.json").read_text())
     for k, v in prov.items():
         assert started.get(k) == v
@@ -227,17 +256,35 @@ def test_l_authorization212_substitution(tmp_path: Path):
 
 
 def test_m_marker_fields_exact(tmp_path: Path):
+    from unittest import mock
     ds, mp = _tiny_dataset(tmp_path / "m", n=8)
     rp = RUN_PREFIXES["seed-01"]
     policy_root = tmp_path / "policies_m"
     prov = _valid_provenance(tmp_path, ds)
-    _train_one_policy_internal(
-        member="seed-01", cost=0.0, hedger_seed=31001,
-        synthetic_dataset_path=ds, synthetic_manifest_path=mp,
-        policy_root=policy_root, run_prefix=rp,
-        max_epochs=2, min_epochs=1, patience=1, batch_size=4, device="cpu",
-        recovery_provenance=prov,
-    )
+    info = {
+        "canonical_sha256": prov["recovery_authorization_canonical"],
+        "git_blob": prov["recovery_authorization_blob"],
+        "commit": prov["recovery_authorization_commit"],
+        "authorization_task_id": prov["recovery_authorization_task_id"],
+        "path": prov["recovery_authorization_path"],
+    }
+    payload = {
+        "authorization_task_id": prov["recovery_authorization_task_id"],
+        "implementation_commit": prov["recovery_implementation_commit"],
+        "implementation_manifest_sha256": prov["recovery_implementation_manifest"],
+        "implementation_source_blobs": {},
+        "runtime_identity": prov["runtime_identity"],
+    }
+    Path(prov["recovery_authorization_path"]).parent.mkdir(parents=True, exist_ok=True)
+    Path(prov["recovery_authorization_path"]).write_text(json.dumps(payload))
+    with mock.patch("neuralmarket.research.deep_hedging.runner.verify_authorization_artifact", return_value=info),          mock.patch("neuralmarket.research.deep_hedging.runner.validate_recovery_authorization_schema", return_value=None),          mock.patch("neuralmarket.research.deep_hedging.runner.build_implementation_manifest", return_value={"implementation_manifest_sha256": prov["recovery_implementation_manifest"], "source_blobs": {}}),          mock.patch("neuralmarket.research.deep_hedging.runner.verify_implementation_manifest", return_value=None):
+        _train_one_policy_internal(
+            member="seed-01", cost=0.0, hedger_seed=31001,
+            synthetic_dataset_path=ds, synthetic_manifest_path=mp,
+            policy_root=policy_root, run_prefix=rp,
+            max_epochs=2, min_epochs=1, patience=1, batch_size=4, device="cpu",
+            recovery_provenance=prov,
+        )
     started = json.loads((policy_root / f"{rp}_seed-01" / "c_0" / "h_31001" / "execution_started.json").read_text())
     required = [
         "recovery_authorization_path", "recovery_authorization_task_id", "recovery_authorization_commit",
@@ -252,3 +299,275 @@ def test_m_marker_fields_exact(tmp_path: Path):
         assert started[k] is not None
         assert isinstance(started[k], str) and started[k].strip() != ""
         assert started[k] == prov[k]
+
+def _assert_direct_internal_fails_before_mkdir(tmp_path: Path, prov: dict):
+    rp = RUN_PREFIXES["seed-01"]
+    policy_root = tmp_path / "policies_adversarial"
+    policy_dir = policy_root / f"{rp}_seed-01" / "c_0" / "h_31001"
+    assert not policy_dir.exists()
+    ds = Path(prov["dataset_path"])
+    mp = ds.parent / "synthetic_manifest_v1.json"
+    with pytest.raises(RuntimeError, match="fail-closed"):
+        _train_one_policy_internal(
+            member="seed-01", cost=0.0, hedger_seed=31001,
+            synthetic_dataset_path=ds, synthetic_manifest_path=mp,
+            policy_root=policy_root, run_prefix=rp,
+            max_epochs=2, min_epochs=1, patience=1, batch_size=4, device="cpu",
+            recovery_provenance=prov,
+        )
+    assert not policy_dir.exists()
+    assert not (policy_dir / "execution_started.json").exists()
+
+
+def test_n_direct_wrong_auth_commit_valid_hex(tmp_path: Path):
+    from unittest import mock
+    ds, mp = _tiny_dataset(tmp_path / "n0", n=8)
+    prov = _valid_provenance(tmp_path / "n", ds)
+    prov["recovery_authorization_commit"] = "f" * 40
+    correct = _valid_provenance(tmp_path / "n_correct", ds)
+    info = {
+        "canonical_sha256": correct["recovery_authorization_canonical"],
+        "git_blob": correct["recovery_authorization_blob"],
+        "commit": correct["recovery_authorization_commit"],
+        "authorization_task_id": correct["recovery_authorization_task_id"],
+        "path": prov["recovery_authorization_path"],
+    }
+    Path(prov["recovery_authorization_path"]).parent.mkdir(parents=True, exist_ok=True)
+    Path(prov["recovery_authorization_path"]).write_text(json.dumps({"authorization_task_id": correct["recovery_authorization_task_id"], "implementation_commit": correct["recovery_implementation_commit"], "implementation_manifest_sha256": correct["recovery_implementation_manifest"], "runtime_identity": correct["runtime_identity"]}))
+    with mock.patch("neuralmarket.research.deep_hedging.runner.verify_authorization_artifact", return_value=info),          mock.patch("neuralmarket.research.deep_hedging.runner.validate_recovery_authorization_schema", return_value=None),          mock.patch("neuralmarket.research.deep_hedging.runner.build_implementation_manifest", return_value={"implementation_manifest_sha256": correct["recovery_implementation_manifest"], "source_blobs": {}}),          mock.patch("neuralmarket.research.deep_hedging.runner.verify_implementation_manifest", return_value=None):
+        _assert_direct_internal_fails_before_mkdir(tmp_path / "n1", prov)
+
+
+def test_o_direct_wrong_auth_blob_valid_hex(tmp_path: Path):
+    from unittest import mock
+    ds, mp = _tiny_dataset(tmp_path / "o0", n=8)
+    prov = _valid_provenance(tmp_path / "o", ds)
+    prov["recovery_authorization_blob"] = "f" * 40
+    correct = _valid_provenance(tmp_path / "o_correct", ds)
+    info = {
+        "canonical_sha256": correct["recovery_authorization_canonical"],
+        "git_blob": correct["recovery_authorization_blob"],
+        "commit": correct["recovery_authorization_commit"],
+        "authorization_task_id": correct["recovery_authorization_task_id"],
+        "path": prov["recovery_authorization_path"],
+    }
+    Path(prov["recovery_authorization_path"]).parent.mkdir(parents=True, exist_ok=True)
+    Path(prov["recovery_authorization_path"]).write_text(json.dumps({"authorization_task_id": correct["recovery_authorization_task_id"], "implementation_commit": correct["recovery_implementation_commit"], "implementation_manifest_sha256": correct["recovery_implementation_manifest"], "runtime_identity": correct["runtime_identity"]}))
+    with mock.patch("neuralmarket.research.deep_hedging.runner.verify_authorization_artifact", return_value=info),          mock.patch("neuralmarket.research.deep_hedging.runner.validate_recovery_authorization_schema", return_value=None),          mock.patch("neuralmarket.research.deep_hedging.runner.build_implementation_manifest", return_value={"implementation_manifest_sha256": correct["recovery_implementation_manifest"], "source_blobs": {}}),          mock.patch("neuralmarket.research.deep_hedging.runner.verify_implementation_manifest", return_value=None):
+        _assert_direct_internal_fails_before_mkdir(tmp_path / "o1", prov)
+
+
+def test_p_direct_wrong_auth_canonical_valid_hex(tmp_path: Path):
+    from unittest import mock
+    ds, mp = _tiny_dataset(tmp_path / "p0", n=8)
+    prov = _valid_provenance(tmp_path / "p", ds)
+    prov["recovery_authorization_canonical"] = "f" * 64
+    correct = _valid_provenance(tmp_path / "p_correct", ds)
+    info = {
+        "canonical_sha256": correct["recovery_authorization_canonical"],
+        "git_blob": correct["recovery_authorization_blob"],
+        "commit": correct["recovery_authorization_commit"],
+        "authorization_task_id": correct["recovery_authorization_task_id"],
+        "path": prov["recovery_authorization_path"],
+    }
+    Path(prov["recovery_authorization_path"]).parent.mkdir(parents=True, exist_ok=True)
+    Path(prov["recovery_authorization_path"]).write_text(json.dumps({"authorization_task_id": correct["recovery_authorization_task_id"], "implementation_commit": correct["recovery_implementation_commit"], "implementation_manifest_sha256": correct["recovery_implementation_manifest"], "runtime_identity": correct["runtime_identity"]}))
+    with mock.patch("neuralmarket.research.deep_hedging.runner.verify_authorization_artifact", return_value=info),          mock.patch("neuralmarket.research.deep_hedging.runner.validate_recovery_authorization_schema", return_value=None),          mock.patch("neuralmarket.research.deep_hedging.runner.build_implementation_manifest", return_value={"implementation_manifest_sha256": correct["recovery_implementation_manifest"], "source_blobs": {}}),          mock.patch("neuralmarket.research.deep_hedging.runner.verify_implementation_manifest", return_value=None):
+        _assert_direct_internal_fails_before_mkdir(tmp_path / "p1", prov)
+
+
+def test_q_direct_wrong_task_id(tmp_path: Path):
+    from unittest import mock
+    ds, mp = _tiny_dataset(tmp_path / "q0", n=8)
+    prov = _valid_provenance(tmp_path / "q", ds)
+    prov["recovery_authorization_task_id"] = "NM-R4-V5-DEEP-HEDGING-GRU-TRAINING-RECOVERY-EXECUTION-AUTHORIZATION-999"
+    correct = _valid_provenance(tmp_path / "q_correct", ds)
+    info = {
+        "canonical_sha256": correct["recovery_authorization_canonical"],
+        "git_blob": correct["recovery_authorization_blob"],
+        "commit": correct["recovery_authorization_commit"],
+        "authorization_task_id": correct["recovery_authorization_task_id"],
+        "path": prov["recovery_authorization_path"],
+    }
+    Path(prov["recovery_authorization_path"]).parent.mkdir(parents=True, exist_ok=True)
+    Path(prov["recovery_authorization_path"]).write_text(json.dumps({"authorization_task_id": correct["recovery_authorization_task_id"], "implementation_commit": correct["recovery_implementation_commit"], "implementation_manifest_sha256": correct["recovery_implementation_manifest"], "runtime_identity": correct["runtime_identity"]}))
+    with mock.patch("neuralmarket.research.deep_hedging.runner.verify_authorization_artifact", return_value=info),          mock.patch("neuralmarket.research.deep_hedging.runner.validate_recovery_authorization_schema", return_value=None),          mock.patch("neuralmarket.research.deep_hedging.runner.build_implementation_manifest", return_value={"implementation_manifest_sha256": correct["recovery_implementation_manifest"], "source_blobs": {}}),          mock.patch("neuralmarket.research.deep_hedging.runner.verify_implementation_manifest", return_value=None):
+        _assert_direct_internal_fails_before_mkdir(tmp_path / "q1", prov)
+
+
+def test_r_direct_wrong_auth_path(tmp_path: Path):
+    from unittest import mock
+    ds, mp = _tiny_dataset(tmp_path / "r0", n=8)
+    prov = _valid_provenance(tmp_path / "r", ds)
+    prov["recovery_authorization_path"] = str(tmp_path / "wrong_auth.json")
+    correct = _valid_provenance(tmp_path / "r_correct", ds)
+    with mock.patch("neuralmarket.research.deep_hedging.runner.verify_authorization_artifact", side_effect=RuntimeError("not tracked")),          mock.patch("neuralmarket.research.deep_hedging.runner.validate_recovery_authorization_schema", return_value=None),          mock.patch("neuralmarket.research.deep_hedging.runner.build_implementation_manifest", return_value={"implementation_manifest_sha256": correct["recovery_implementation_manifest"], "source_blobs": {}}),          mock.patch("neuralmarket.research.deep_hedging.runner.verify_implementation_manifest", return_value=None):
+        _assert_direct_internal_fails_before_mkdir(tmp_path / "r1", prov)
+
+
+def test_s_direct_wrong_implementation_commit(tmp_path: Path):
+    from unittest import mock
+    import subprocess
+    ds, mp = _tiny_dataset(tmp_path / "s0", n=8)
+    prov = _valid_provenance(tmp_path / "s", ds)
+    other_commit = subprocess.run(["git", "rev-parse", "HEAD^"], capture_output=True, text=True, check=True).stdout.strip()
+    prov["recovery_implementation_commit"] = other_commit
+    correct = _valid_provenance(tmp_path / "s_correct", ds)
+    info = {
+        "canonical_sha256": correct["recovery_authorization_canonical"],
+        "git_blob": correct["recovery_authorization_blob"],
+        "commit": correct["recovery_authorization_commit"],
+        "authorization_task_id": correct["recovery_authorization_task_id"],
+        "path": prov["recovery_authorization_path"],
+    }
+    Path(prov["recovery_authorization_path"]).parent.mkdir(parents=True, exist_ok=True)
+    Path(prov["recovery_authorization_path"]).write_text(json.dumps({"authorization_task_id": correct["recovery_authorization_task_id"], "implementation_commit": correct["recovery_implementation_commit"], "implementation_manifest_sha256": correct["recovery_implementation_manifest"], "runtime_identity": correct["runtime_identity"]}))
+    with mock.patch("neuralmarket.research.deep_hedging.runner.verify_authorization_artifact", return_value=info),          mock.patch("neuralmarket.research.deep_hedging.runner.validate_recovery_authorization_schema", return_value=None),          mock.patch("neuralmarket.research.deep_hedging.runner.build_implementation_manifest", return_value={"implementation_manifest_sha256": correct["recovery_implementation_manifest"], "source_blobs": {}}),          mock.patch("neuralmarket.research.deep_hedging.runner.verify_implementation_manifest", return_value=None):
+        _assert_direct_internal_fails_before_mkdir(tmp_path / "s1", prov)
+
+
+def test_t_direct_wrong_implementation_manifest(tmp_path: Path):
+    from unittest import mock
+    ds, mp = _tiny_dataset(tmp_path / "t0", n=8)
+    prov = _valid_provenance(tmp_path / "t", ds)
+    prov["recovery_implementation_manifest"] = "f" * 64
+    correct = _valid_provenance(tmp_path / "t_correct", ds)
+    info = {
+        "canonical_sha256": correct["recovery_authorization_canonical"],
+        "git_blob": correct["recovery_authorization_blob"],
+        "commit": correct["recovery_authorization_commit"],
+        "authorization_task_id": correct["recovery_authorization_task_id"],
+        "path": prov["recovery_authorization_path"],
+    }
+    Path(prov["recovery_authorization_path"]).parent.mkdir(parents=True, exist_ok=True)
+    Path(prov["recovery_authorization_path"]).write_text(json.dumps({"authorization_task_id": correct["recovery_authorization_task_id"], "implementation_commit": correct["recovery_implementation_commit"], "implementation_manifest_sha256": correct["recovery_implementation_manifest"], "runtime_identity": correct["runtime_identity"]}))
+    with mock.patch("neuralmarket.research.deep_hedging.runner.verify_authorization_artifact", return_value=info),          mock.patch("neuralmarket.research.deep_hedging.runner.validate_recovery_authorization_schema", return_value=None),          mock.patch("neuralmarket.research.deep_hedging.runner.build_implementation_manifest", return_value={"implementation_manifest_sha256": correct["recovery_implementation_manifest"], "source_blobs": {}}),          mock.patch("neuralmarket.research.deep_hedging.runner.verify_implementation_manifest", return_value=None):
+        _assert_direct_internal_fails_before_mkdir(tmp_path / "t1", prov)
+
+
+def test_u_direct_wrong_runtime(tmp_path: Path):
+    from unittest import mock
+    ds, mp = _tiny_dataset(tmp_path / "u0", n=8)
+    prov = _valid_provenance(tmp_path / "u", ds)
+    prov["runtime_identity"] = "f" * 64
+    correct = _valid_provenance(tmp_path / "u_correct", ds)
+    info = {
+        "canonical_sha256": correct["recovery_authorization_canonical"],
+        "git_blob": correct["recovery_authorization_blob"],
+        "commit": correct["recovery_authorization_commit"],
+        "authorization_task_id": correct["recovery_authorization_task_id"],
+        "path": prov["recovery_authorization_path"],
+    }
+    Path(prov["recovery_authorization_path"]).parent.mkdir(parents=True, exist_ok=True)
+    Path(prov["recovery_authorization_path"]).write_text(json.dumps({"authorization_task_id": correct["recovery_authorization_task_id"], "implementation_commit": correct["recovery_implementation_commit"], "implementation_manifest_sha256": correct["recovery_implementation_manifest"], "runtime_identity": correct["runtime_identity"]}))
+    with mock.patch("neuralmarket.research.deep_hedging.runner.verify_authorization_artifact", return_value=info),          mock.patch("neuralmarket.research.deep_hedging.runner.validate_recovery_authorization_schema", return_value=None),          mock.patch("neuralmarket.research.deep_hedging.runner.build_implementation_manifest", return_value={"implementation_manifest_sha256": correct["recovery_implementation_manifest"], "source_blobs": {}}),          mock.patch("neuralmarket.research.deep_hedging.runner.verify_implementation_manifest", return_value=None):
+        _assert_direct_internal_fails_before_mkdir(tmp_path / "u1", prov)
+
+
+def test_v_direct_wrong_dataset_sha(tmp_path: Path):
+    from unittest import mock
+    ds, mp = _tiny_dataset(tmp_path / "v0", n=8)
+    prov = _valid_provenance(tmp_path / "v", ds)
+    prov["dataset_sha256"] = "f" * 64
+    correct = _valid_provenance(tmp_path / "v_correct", ds)
+    info = {
+        "canonical_sha256": correct["recovery_authorization_canonical"],
+        "git_blob": correct["recovery_authorization_blob"],
+        "commit": correct["recovery_authorization_commit"],
+        "authorization_task_id": correct["recovery_authorization_task_id"],
+        "path": prov["recovery_authorization_path"],
+    }
+    Path(prov["recovery_authorization_path"]).parent.mkdir(parents=True, exist_ok=True)
+    Path(prov["recovery_authorization_path"]).write_text(json.dumps({"authorization_task_id": correct["recovery_authorization_task_id"], "implementation_commit": correct["recovery_implementation_commit"], "implementation_manifest_sha256": correct["recovery_implementation_manifest"], "runtime_identity": correct["runtime_identity"]}))
+    with mock.patch("neuralmarket.research.deep_hedging.runner.verify_authorization_artifact", return_value=info),          mock.patch("neuralmarket.research.deep_hedging.runner.validate_recovery_authorization_schema", return_value=None),          mock.patch("neuralmarket.research.deep_hedging.runner.build_implementation_manifest", return_value={"implementation_manifest_sha256": correct["recovery_implementation_manifest"], "source_blobs": {}}),          mock.patch("neuralmarket.research.deep_hedging.runner.verify_implementation_manifest", return_value=None):
+        _assert_direct_internal_fails_before_mkdir(tmp_path / "v1", prov)
+
+
+def test_w_direct_wrong_predecessor_started(tmp_path: Path):
+    from unittest import mock
+    ds, mp = _tiny_dataset(tmp_path / "w0", n=8)
+    prov = _valid_provenance(tmp_path / "w", ds)
+    prov["historical_execution_started_sha"] = "f" * 64
+    correct = _valid_provenance(tmp_path / "w_correct", ds)
+    info = {
+        "canonical_sha256": correct["recovery_authorization_canonical"],
+        "git_blob": correct["recovery_authorization_blob"],
+        "commit": correct["recovery_authorization_commit"],
+        "authorization_task_id": correct["recovery_authorization_task_id"],
+        "path": prov["recovery_authorization_path"],
+    }
+    Path(prov["recovery_authorization_path"]).parent.mkdir(parents=True, exist_ok=True)
+    Path(prov["recovery_authorization_path"]).write_text(json.dumps({"authorization_task_id": correct["recovery_authorization_task_id"], "implementation_commit": correct["recovery_implementation_commit"], "implementation_manifest_sha256": correct["recovery_implementation_manifest"], "runtime_identity": correct["runtime_identity"]}))
+    with mock.patch("neuralmarket.research.deep_hedging.runner.verify_authorization_artifact", return_value=info),          mock.patch("neuralmarket.research.deep_hedging.runner.validate_recovery_authorization_schema", return_value=None),          mock.patch("neuralmarket.research.deep_hedging.runner.build_implementation_manifest", return_value={"implementation_manifest_sha256": correct["recovery_implementation_manifest"], "source_blobs": {}}),          mock.patch("neuralmarket.research.deep_hedging.runner.verify_implementation_manifest", return_value=None):
+        _assert_direct_internal_fails_before_mkdir(tmp_path / "w1", prov)
+
+
+def test_x_direct_wrong_predecessor_checkpoint(tmp_path: Path):
+    from unittest import mock
+    ds, mp = _tiny_dataset(tmp_path / "x0", n=8)
+    prov = _valid_provenance(tmp_path / "x", ds)
+    prov["historical_checkpoint_sha"] = "f" * 64
+    correct = _valid_provenance(tmp_path / "x_correct", ds)
+    info = {
+        "canonical_sha256": correct["recovery_authorization_canonical"],
+        "git_blob": correct["recovery_authorization_blob"],
+        "commit": correct["recovery_authorization_commit"],
+        "authorization_task_id": correct["recovery_authorization_task_id"],
+        "path": prov["recovery_authorization_path"],
+    }
+    Path(prov["recovery_authorization_path"]).parent.mkdir(parents=True, exist_ok=True)
+    Path(prov["recovery_authorization_path"]).write_text(json.dumps({"authorization_task_id": correct["recovery_authorization_task_id"], "implementation_commit": correct["recovery_implementation_commit"], "implementation_manifest_sha256": correct["recovery_implementation_manifest"], "runtime_identity": correct["runtime_identity"]}))
+    with mock.patch("neuralmarket.research.deep_hedging.runner.verify_authorization_artifact", return_value=info),          mock.patch("neuralmarket.research.deep_hedging.runner.validate_recovery_authorization_schema", return_value=None),          mock.patch("neuralmarket.research.deep_hedging.runner.build_implementation_manifest", return_value={"implementation_manifest_sha256": correct["recovery_implementation_manifest"], "source_blobs": {}}),          mock.patch("neuralmarket.research.deep_hedging.runner.verify_implementation_manifest", return_value=None):
+        _assert_direct_internal_fails_before_mkdir(tmp_path / "x1", prov)
+
+
+def test_y_direct_wrong_predecessor_terminal(tmp_path: Path):
+    from unittest import mock
+    ds, mp = _tiny_dataset(tmp_path / "y0", n=8)
+    prov = _valid_provenance(tmp_path / "y", ds)
+    prov["historical_terminal_sha"] = "f" * 64
+    correct = _valid_provenance(tmp_path / "y_correct", ds)
+    info = {
+        "canonical_sha256": correct["recovery_authorization_canonical"],
+        "git_blob": correct["recovery_authorization_blob"],
+        "commit": correct["recovery_authorization_commit"],
+        "authorization_task_id": correct["recovery_authorization_task_id"],
+        "path": prov["recovery_authorization_path"],
+    }
+    Path(prov["recovery_authorization_path"]).parent.mkdir(parents=True, exist_ok=True)
+    Path(prov["recovery_authorization_path"]).write_text(json.dumps({"authorization_task_id": correct["recovery_authorization_task_id"], "implementation_commit": correct["recovery_implementation_commit"], "implementation_manifest_sha256": correct["recovery_implementation_manifest"], "runtime_identity": correct["runtime_identity"]}))
+    with mock.patch("neuralmarket.research.deep_hedging.runner.verify_authorization_artifact", return_value=info),          mock.patch("neuralmarket.research.deep_hedging.runner.validate_recovery_authorization_schema", return_value=None),          mock.patch("neuralmarket.research.deep_hedging.runner.build_implementation_manifest", return_value={"implementation_manifest_sha256": correct["recovery_implementation_manifest"], "source_blobs": {}}),          mock.patch("neuralmarket.research.deep_hedging.runner.verify_implementation_manifest", return_value=None):
+        _assert_direct_internal_fails_before_mkdir(tmp_path / "y1", prov)
+
+
+def test_z_direct_wrong_predecessor_classification(tmp_path: Path):
+    from unittest import mock
+    ds, mp = _tiny_dataset(tmp_path / "z0", n=8)
+    prov = _valid_provenance(tmp_path / "z", ds)
+    prov["historical_classification"] = "WRONG_CLASSIFICATION"
+    correct = _valid_provenance(tmp_path / "z_correct", ds)
+    info = {
+        "canonical_sha256": correct["recovery_authorization_canonical"],
+        "git_blob": correct["recovery_authorization_blob"],
+        "commit": correct["recovery_authorization_commit"],
+        "authorization_task_id": correct["recovery_authorization_task_id"],
+        "path": prov["recovery_authorization_path"],
+    }
+    Path(prov["recovery_authorization_path"]).parent.mkdir(parents=True, exist_ok=True)
+    Path(prov["recovery_authorization_path"]).write_text(json.dumps({"authorization_task_id": correct["recovery_authorization_task_id"], "implementation_commit": correct["recovery_implementation_commit"], "implementation_manifest_sha256": correct["recovery_implementation_manifest"], "runtime_identity": correct["runtime_identity"]}))
+    with mock.patch("neuralmarket.research.deep_hedging.runner.verify_authorization_artifact", return_value=info),          mock.patch("neuralmarket.research.deep_hedging.runner.validate_recovery_authorization_schema", return_value=None),          mock.patch("neuralmarket.research.deep_hedging.runner.build_implementation_manifest", return_value={"implementation_manifest_sha256": correct["recovery_implementation_manifest"], "source_blobs": {}}),          mock.patch("neuralmarket.research.deep_hedging.runner.verify_implementation_manifest", return_value=None):
+        _assert_direct_internal_fails_before_mkdir(tmp_path / "z1", prov)
+
+
+def test_za_direct_ordinary_training_preserved(tmp_path: Path):
+    ds, mp = _tiny_dataset(tmp_path / "za", n=8)
+    rp = RUN_PREFIXES["seed-01"]
+    policy_root = tmp_path / "policies_za"
+    _train_one_policy_internal(
+        member="seed-01", cost=0.0, hedger_seed=31001,
+        synthetic_dataset_path=ds, synthetic_manifest_path=mp,
+        policy_root=policy_root, run_prefix=rp,
+        max_epochs=2, min_epochs=1, patience=1, batch_size=4, device="cpu",
+        recovery_provenance=None,
+    )
+    assert (policy_root / f"{rp}_seed-01" / "c_0" / "h_31001" / "execution_started.json").exists()

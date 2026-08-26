@@ -323,6 +323,8 @@ def test_failed_recovery_cannot_retry(tmp_path: Path):
 
 
 def test_recovery_provenance_fields_emitted(tmp_path: Path):
+    from unittest import mock
+
     from neuralmarket.research.deep_hedging.generation import _generate_and_persist_synthetic_dataset_internal as gen
     from neuralmarket.research.deep_hedging.trainer import _train_one_policy_internal
 
@@ -331,24 +333,55 @@ def test_recovery_provenance_fields_emitted(tmp_path: Path):
     mp = tmp_path / "syn" / f"{rp}_seed-01" / "synthetic_manifest_v1.json"
     gen(member="seed-01", run_prefix=rp, synthetic_seed=42001, num_episodes=8, dataset_path=ds, manifest_path=mp, device="cpu", increment_provider=fake_provider, verify_contract_runtime=False)
     rec_root = tmp_path / "recovery3"
+    import hashlib
+    import json as _json
+
+    from neuralmarket.research.deep_hedging.runner import _get_trusted_predecessor_map
+
+    trusted = _get_trusted_predecessor_map()[f"seed-01:0.0:31001"]
+    dataset_sha = hashlib.sha256(ds.read_bytes()).hexdigest()
+    payload = _valid_recovery_payload()
+    auth_path = tmp_path / "auth.json"
+    auth_path.write_text(_json.dumps(payload))
+    raw = auth_path.read_bytes()
+    canon = raw.decode("utf-8").replace("\r\n", "\n").encode("utf-8")
+    canonical = hashlib.sha256(canon).hexdigest()
+    info = {
+        "canonical_sha256": canonical,
+        "git_blob": "c" * 40,
+        "commit": "a" * 40,
+        "authorization_task_id": payload["authorization_task_id"],
+        "path": str(auth_path),
+    }
     prov = {
         "recovery_protocol_path": "reports/protocol/structured_vol_v5_deep_hedging_gru_training_recovery_protocol_v1.md",
         "recovery_protocol_canonical": RECOVERY_PROTOCOL_CANONICAL,
         "recovery_protocol_blob": RECOVERY_PROTOCOL_BLOB,
-        "recovery_implementation_commit": "a34ce51718604ee1bd8fb4a527483b29f0b3b538",
-        "recovery_implementation_manifest": "5706fa069cb89358c3497a3985217d311c8b956f9da73f2ec43c3fc09783fe1d",
-        "historical_predecessor_artifact_path": "data/processed/research/hedging_policies/5bdbaabd2fb257a7_seed-01/c_0/h_31001",
-        "historical_execution_started_sha": "a" * 64,
-        "historical_checkpoint_sha": "b" * 64,
-        "historical_terminal_sha": "c" * 64,
-        "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+        "recovery_authorization_path": str(auth_path),
+        "recovery_authorization_task_id": info["authorization_task_id"],
+        "recovery_authorization_commit": info["commit"],
+        "recovery_authorization_canonical": info["canonical_sha256"],
+        "recovery_authorization_blob": info["git_blob"],
+        "recovery_implementation_commit": payload["implementation_commit"],
+        "recovery_implementation_manifest": payload["implementation_manifest_sha256"],
+        "runtime_identity": "17e3bb52d5893c4e09ecb759a925004f2e75a37d7d4faf4ece7de41f81870ada",
+        "dataset_path": str(ds),
+        "dataset_sha256": dataset_sha,
+        "historical_predecessor_artifact_path": trusted["historical_artifact_path"],
+        "historical_execution_started_sha": trusted["historical_execution_started_sha"],
+        "historical_checkpoint_sha": trusted["historical_checkpoint_sha"],
+        "historical_terminal_sha": trusted["historical_terminal_sha"],
+        "historical_classification": trusted["historical_classification"],
     }
-    _train_one_policy_internal(member="seed-01", cost=0.0, hedger_seed=31001, synthetic_dataset_path=ds, synthetic_manifest_path=mp, policy_root=rec_root, run_prefix=rp, max_epochs=1, batch_size=4, device="cpu", verify_contract_runtime=False, recovery_provenance=prov)
-    started = json.loads((rec_root / f"{rp}_seed-01/c_0/h_31001/execution_started.json").read_text())
+    with mock.patch("neuralmarket.research.deep_hedging.runner.verify_authorization_artifact", return_value=info),          mock.patch("neuralmarket.research.deep_hedging.runner.validate_recovery_authorization_schema", return_value=None),          mock.patch("neuralmarket.research.deep_hedging.runner.build_implementation_manifest", return_value={"implementation_manifest_sha256": payload["implementation_manifest_sha256"], "source_blobs": payload["implementation_source_blobs"]}),          mock.patch("neuralmarket.research.deep_hedging.runner.verify_implementation_manifest", return_value=None):
+        _train_one_policy_internal(member="seed-01", cost=0.0, hedger_seed=31001, synthetic_dataset_path=ds, synthetic_manifest_path=mp, policy_root=rec_root, run_prefix=rp, max_epochs=1, batch_size=4, device="cpu", verify_contract_runtime=False, recovery_provenance=prov)
+    started = _json.loads((rec_root / f"{rp}_seed-01/c_0/h_31001/execution_started.json").read_text())
     assert started["recovery_protocol_canonical"] == RECOVERY_PROTOCOL_CANONICAL
     assert started["historical_classification"] == "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP"
-    report = json.loads((rec_root / f"{rp}_seed-01/c_0/h_31001/training_report.json").read_text())
-    assert report["recovery_implementation_commit"] == "a34ce51718604ee1bd8fb4a527483b29f0b3b538"
+    assert started["recovery_authorization_task_id"] == payload["authorization_task_id"]
+    assert started["dataset_sha256"] == dataset_sha
+    report = _json.loads((rec_root / f"{rp}_seed-01/c_0/h_31001/training_report.json").read_text())
+    assert report["recovery_implementation_commit"] == payload["implementation_commit"]
 
 def test_same_repaired_internal_trainer_is_invoked():
     import pathlib

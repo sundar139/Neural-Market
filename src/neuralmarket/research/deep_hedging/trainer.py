@@ -50,6 +50,171 @@ def _canonical_sha(path: Path) -> str:
 def _git_blob(path: Path) -> str:
     result = subprocess.run(["git", "hash-object", str(path)], capture_output=True, text=True, check=True)
     return result.stdout.strip()
+def _validate_recovery_provenance_packet(
+    provenance: dict,
+    *,
+    member: str,
+    cost: float,
+    hedger_seed: int,
+    synthetic_dataset_path: Path,
+) -> None:
+    """Shared fail-before-write validator for recovery provenance."""
+    import re as _re
+
+    from neuralmarket.research.deep_hedging.runner import (
+        EXPECTED_RUNTIME_IDENTITY,
+        RECOVERY_PROTOCOL_BLOB,
+        RECOVERY_PROTOCOL_CANONICAL,
+        RECOVERY_PROTOCOL_PATH,
+        _get_trusted_predecessor_map,
+        build_implementation_manifest,
+        validate_recovery_authorization_schema,
+        verify_authorization_artifact,
+        verify_implementation_manifest,
+    )
+
+    _required = [
+        "recovery_authorization_path",
+        "recovery_authorization_task_id",
+        "recovery_authorization_commit",
+        "recovery_authorization_canonical",
+        "recovery_authorization_blob",
+        "recovery_implementation_commit",
+        "recovery_implementation_manifest",
+        "runtime_identity",
+        "dataset_path",
+        "dataset_sha256",
+        "historical_predecessor_artifact_path",
+        "historical_execution_started_sha",
+        "historical_checkpoint_sha",
+        "historical_terminal_sha",
+        "historical_classification",
+    ]
+    for _k in _required:
+        _v = provenance.get(_k)
+        if _v is None or (isinstance(_v, str) and not _v.strip()):
+            raise RuntimeError(f"recovery provenance fail-closed BEFORE write: required field {repr(_k)} missing or empty (got {repr(_v)})")
+        if not isinstance(_v, str):
+            raise RuntimeError(f"recovery provenance fail-closed BEFORE write: required field {repr(_k)} wrong type {type(_v).__name__}")
+    _hex40 = _re.compile(r"^[0-9a-f]{40}$")
+    _hex64 = _re.compile(r"^[0-9a-f]{64}$")
+    for _k in ("recovery_authorization_commit", "recovery_authorization_blob"):
+        _v = provenance[_k]
+        if not _hex40.match(_v):
+            raise RuntimeError(f"recovery provenance fail-closed BEFORE write: field {repr(_k)} must be 40-hex (got {repr(_v)})")
+    for _k in (
+        "recovery_authorization_canonical",
+        "recovery_implementation_manifest",
+        "runtime_identity",
+        "dataset_sha256",
+        "historical_execution_started_sha",
+        "historical_checkpoint_sha",
+        "historical_terminal_sha",
+    ):
+        _v = provenance[_k]
+        if not _hex64.match(_v):
+            raise RuntimeError(f"recovery provenance fail-closed BEFORE write: field {repr(_k)} must be 64-hex (got {repr(_v)})")
+    _imp_commit = provenance["recovery_implementation_commit"]
+    if not _hex40.match(_imp_commit):
+        raise RuntimeError(f"recovery provenance fail-closed BEFORE write: recovery_implementation_commit must be 40-hex (got {repr(_imp_commit)})")
+    if "recovery_protocol_path" in provenance:
+        _got = provenance["recovery_protocol_path"].replace("\\", "/")
+        _exp = str(RECOVERY_PROTOCOL_PATH).replace("\\", "/")
+        if _got != _exp:
+            raise RuntimeError(f"recovery provenance fail-closed: recovery_protocol_path mismatch (got {repr(provenance['recovery_protocol_path'])})")
+    if "recovery_protocol_canonical" in provenance:
+        if provenance["recovery_protocol_canonical"] != RECOVERY_PROTOCOL_CANONICAL:
+            raise RuntimeError("recovery provenance fail-closed: recovery_protocol_canonical mismatch")
+    if "recovery_protocol_blob" in provenance:
+        if provenance["recovery_protocol_blob"] != RECOVERY_PROTOCOL_BLOB:
+            raise RuntimeError("recovery provenance fail-closed: recovery_protocol_blob mismatch")
+    auth_path = Path(str(provenance["recovery_authorization_path"]))
+    try:
+        info = verify_authorization_artifact(auth_path)
+    except Exception as e:
+        raise RuntimeError(f"recovery provenance fail-closed BEFORE write: authorization artifact verification failed for {auth_path}: {e}") from e
+    payload = json.loads(auth_path.read_bytes().decode("utf-8"))
+    try:
+        validate_recovery_authorization_schema(payload)
+    except Exception as e:
+        raise RuntimeError(f"recovery provenance fail-closed: recovery authorization schema invalid: {e}") from e
+    if provenance["recovery_authorization_task_id"] != info.get("authorization_task_id"):
+        raise RuntimeError(f"recovery provenance fail-closed: recovery_authorization_task_id mismatch provenance {repr(provenance['recovery_authorization_task_id'])} vs verified {repr(info.get('authorization_task_id'))}")
+    if provenance["recovery_authorization_commit"] != info.get("commit"):
+        raise RuntimeError(f"recovery provenance fail-closed: recovery_authorization_commit mismatch provenance {repr(provenance['recovery_authorization_commit'])} vs verified {repr(info.get('commit'))}")
+    if provenance["recovery_authorization_canonical"] != info.get("canonical_sha256"):
+        raise RuntimeError(f"recovery provenance fail-closed: recovery_authorization_canonical mismatch provenance {repr(provenance['recovery_authorization_canonical'])} vs verified {repr(info.get('canonical_sha256'))}")
+    if provenance["recovery_authorization_blob"] != info.get("git_blob"):
+        raise RuntimeError(f"recovery provenance fail-closed: recovery_authorization_blob mismatch provenance {repr(provenance['recovery_authorization_blob'])} vs verified {repr(info.get('git_blob'))}")
+    _payload_task = str(payload.get("authorization_task_id") or payload.get("task_id") or "")
+    if info.get("authorization_task_id") != _payload_task:
+        raise RuntimeError(f"recovery provenance fail-closed: verified task {repr(info.get('authorization_task_id'))} vs payload task {repr(_payload_task)} mismatch")
+    _payload_impl_commit = str(payload.get("implementation_commit") or "")
+    _payload_impl_manifest = str(payload.get("implementation_manifest_sha256") or "")
+    if provenance["recovery_implementation_commit"] != _payload_impl_commit:
+        raise RuntimeError(f"recovery provenance fail-closed: recovery_implementation_commit mismatch provenance {repr(provenance['recovery_implementation_commit'])} vs payload {repr(_payload_impl_commit)}")
+    if provenance["recovery_implementation_manifest"] != _payload_impl_manifest:
+        raise RuntimeError(f"recovery provenance fail-closed: recovery_implementation_manifest mismatch provenance {repr(provenance['recovery_implementation_manifest'])} vs payload {repr(_payload_impl_manifest)}")
+    try:
+        _derived = build_implementation_manifest(implementation_commit=_payload_impl_commit)
+    except Exception as e:
+        raise RuntimeError(f"recovery provenance fail-closed: build_implementation_manifest failed for {repr(_payload_impl_commit)}: {e}") from e
+    _derived_manifest = str(_derived.get("implementation_manifest_sha256") or "")
+    if _derived_manifest != _payload_impl_manifest:
+        raise RuntimeError(f"recovery provenance fail-closed: rebuilt manifest {repr(_derived_manifest)} != payload manifest {repr(_payload_impl_manifest)}")
+    if _derived_manifest != provenance["recovery_implementation_manifest"]:
+        raise RuntimeError(f"recovery provenance fail-closed: rebuilt manifest {repr(_derived_manifest)} != provenance manifest {repr(provenance['recovery_implementation_manifest'])}")
+    _blobs = payload.get("implementation_source_blobs") or payload.get("source_blobs")
+    if _blobs:
+        try:
+            verify_implementation_manifest(authorized_commit=_payload_impl_commit, authorized_blobs=_blobs)
+        except Exception as e:
+            raise RuntimeError(f"recovery provenance fail-closed: source equality verification failed: {e}") from e
+    if provenance["runtime_identity"] != EXPECTED_RUNTIME_IDENTITY:
+        raise RuntimeError(f"recovery provenance fail-closed: runtime_identity mismatch provenance {repr(provenance['runtime_identity'])} vs expected {repr(EXPECTED_RUNTIME_IDENTITY)}")
+    if provenance["runtime_identity"] != str(payload.get("runtime_identity") or ""):
+        raise RuntimeError("recovery provenance fail-closed: runtime_identity mismatch provenance vs payload")
+    if provenance["dataset_path"] != str(synthetic_dataset_path):
+        raise RuntimeError(f"recovery provenance fail-closed: dataset_path mismatch provenance {repr(provenance['dataset_path'])} vs training path {repr(str(synthetic_dataset_path))}")
+    ds_path = Path(provenance["dataset_path"])
+    if not ds_path.exists():
+        raise RuntimeError(f"recovery provenance fail-closed: dataset_path does not exist {ds_path}")
+    _actual_sha = hashlib.sha256(ds_path.read_bytes()).hexdigest()
+    if provenance["dataset_sha256"] != _actual_sha:
+        raise RuntimeError(f"recovery provenance fail-closed: dataset_sha256 mismatch provenance {repr(provenance['dataset_sha256'])} vs actual {repr(_actual_sha)}")
+    trusted = _get_trusted_predecessor_map()
+    key_candidates = [
+        f"{member}:{cost}:{hedger_seed}",
+        f"{member}:{cost:.4f}:{hedger_seed}",
+        f"{member}_{cost}_{hedger_seed}",
+    ]
+    bps = {0.0: 0, 0.0010: 10, 0.0050: 50}.get(cost)
+    if bps is not None:
+        key_candidates.extend([f"{member}:{bps}:{hedger_seed}", f"{member}_{bps}_{hedger_seed}"])
+    expected = None
+    for _kc in key_candidates:
+        if _kc in trusted:
+            expected = trusted[_kc]
+            break
+    if expected is None:
+        for _k, _v in trusted.items():
+            if _k == f"{member}:{cost}:{hedger_seed}":
+                expected = _v
+                break
+    if expected is None:
+        raise RuntimeError(f"recovery provenance fail-closed: trusted predecessor not found for {(member, cost, hedger_seed)}")
+    _pred_map = {
+        "historical_predecessor_artifact_path": "historical_artifact_path",
+        "historical_execution_started_sha": "historical_execution_started_sha",
+        "historical_checkpoint_sha": "historical_checkpoint_sha",
+        "historical_terminal_sha": "historical_terminal_sha",
+        "historical_classification": "historical_classification",
+    }
+    for _prov_k, _trust_k in _pred_map.items():
+        if provenance[_prov_k] != expected.get(_trust_k):
+            raise RuntimeError(f"recovery provenance fail-closed: {_prov_k} mismatch provenance {repr(provenance[_prov_k])} vs trusted {repr(expected.get(_trust_k))}")
+    if provenance["historical_classification"] != "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP":
+        raise RuntimeError("recovery provenance fail-closed: historical_classification must be SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP")
 
 
 def _resolve_cost_bps(cost: float) -> int:
@@ -316,34 +481,17 @@ def _train_one_policy_internal(
     if synthetic_manifest_path is not None and synthetic_manifest_path.exists():
         synthetic_manifest_sha = hashlib.sha256(synthetic_manifest_path.read_bytes()).hexdigest()
 
-    # Fail-closed provenance verification BEFORE directory creation (Task-239)
+    # Fail-closed provenance verification BEFORE directory creation (Task-239 + hardening 241)
     if recovery_provenance is not None:
-        _rp_required = [
-            "recovery_authorization_path",
-            "recovery_authorization_task_id",
-            "recovery_authorization_commit",
-            "recovery_authorization_canonical",
-            "recovery_authorization_blob",
-            "recovery_implementation_commit",
-            "recovery_implementation_manifest",
-            "runtime_identity",
-            "dataset_path",
-            "dataset_sha256",
-            "historical_predecessor_artifact_path",
-            "historical_execution_started_sha",
-            "historical_checkpoint_sha",
-            "historical_terminal_sha",
-            "historical_classification",
-        ]
-        for _k in _rp_required:
-            _v = recovery_provenance.get(_k)
-            if _v is None or (isinstance(_v, str) and not _v.strip()):
-                raise RuntimeError(f"recovery provenance fail-closed BEFORE write: required field {repr(_k)} missing or empty (got {repr(_v)})")
-            if not isinstance(_v, str):
-                raise RuntimeError(f"recovery provenance fail-closed BEFORE write: required field {repr(_k)} wrong type {type(_v).__name__}")
-    # Ensure policy_dir exists
+        _validate_recovery_provenance_packet(
+            recovery_provenance,
+            member=member,
+            cost=cost,
+            hedger_seed=hedger_seed,
+            synthetic_dataset_path=synthetic_dataset_path,
+        )
+    # Ensure policy_dir exists AFTER provenance validation
     policy_dir.mkdir(parents=True, exist_ok=True)
-
     start_time = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     git_head = _git_head()
     execution_started = {
