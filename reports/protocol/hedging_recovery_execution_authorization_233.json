@@ -18,8 +18,8 @@
     31002,
     31003
   ],
-  "implementation_commit": "8383f1521efdc305f891aa498d8d9e02b7a24ae0",
-  "implementation_manifest_sha256": "c92324911d03b0e5f9f852fe4f1f396e70a08882276036aa6a71836a996f744a",
+  "implementation_commit": "faff32e1226f5f7d7b17f25b63c45586f924d4c6",
+  "implementation_manifest_sha256": "25d7b0efc86b4d70a948a805d76195727a84740ea0342239ca3f310a3c0a22c1",
   "implementation_source_blobs": {
     "src/neuralmarket/cli/deep_hedging.py": "dacea6bd568ba4bd4b0491e0d01280ada9d818eb",
     "src/neuralmarket/cli/main.py": "ac7aa07e3304e91894fd5717f33c40b57bc83ae4",
