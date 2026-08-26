@@ -1,0 +1,600 @@
+{
+  "artifact_roots": [
+    "data/processed/research/hedging_synthetic",
+    "data/processed/research/hedging_policies_recovery_v1"
+  ],
+  "authorization_task_id": "NM-R4-V5-DEEP-HEDGING-GRU-TRAINING-RECOVERY-EXECUTION-AUTHORIZATION-233",
+  "authorization_type": "GRU_TRAINING_RECOVERY_V1",
+  "contract_v3_blob": "eef7ad220db889166469799372759dfe1a96e35f",
+  "contract_v3_canonical": "79611b6b3be41fecf6beadbcbbd12439f434884f1d4d4a09c294a01134318d01",
+  "cost_allowlist": [
+    0.0,
+    0.001,
+    0.005
+  ],
+  "final_test_access": false,
+  "hedger_seed_allowlist": [
+    31001,
+    31002,
+    31003
+  ],
+  "implementation_commit": "778ff389a30003bb97059e6559a1f8e4e2d07542",
+  "implementation_manifest_sha256": "bcc31028c971ddbd75b548fb87789947e89a9fae05ca52532fc0f9e3e81b1196",
+  "implementation_source_blobs": {
+    "src/neuralmarket/cli/deep_hedging.py": "dacea6bd568ba4bd4b0491e0d01280ada9d818eb",
+    "src/neuralmarket/cli/main.py": "ac7aa07e3304e91894fd5717f33c40b57bc83ae4",
+    "src/neuralmarket/core/device.py": "5f7f7a1ec29407c5a1734a71a994f444cf092386",
+    "src/neuralmarket/core/runtime_identity.py": "817ba53e2474c6e8dd7ecf15d64e0766e75f73e9",
+    "src/neuralmarket/data/manifests.py": "7ec3a80a795f82bfd19020bd21358e76a300615d",
+    "src/neuralmarket/models/structured_vol_sde.py": "e828a8748216cc9d8d79593e1dd2e42a6226ab08",
+    "src/neuralmarket/research/deep_hedging/__init__.py": "bd994657eab9407ff8593b2c2ad3ede31a689f44",
+    "src/neuralmarket/research/deep_hedging/artifacts.py": "28e3254a16977970a0860f9fc438d05e3949ac30",
+    "src/neuralmarket/research/deep_hedging/cvar.py": "c03166afeb23b34d8fbf8d3d29357933eca2524a",
+    "src/neuralmarket/research/deep_hedging/generation.py": "1b8710fc77362eb59a7167b3b4575d8b93f63d12",
+    "src/neuralmarket/research/deep_hedging/hedger.py": "9a003e45687e1bbd409bde2c37ed39644be9e2ad",
+    "src/neuralmarket/research/deep_hedging/pnl.py": "122a00c996f8d4d01b89474fe98dee5ec49a393f",
+    "src/neuralmarket/research/deep_hedging/runner.py": "8e0fec84b5eb2ee14c579dc6b22b155c0ecf3f32",
+    "src/neuralmarket/research/deep_hedging/synthetic.py": "f3838634a6afc57b438d1baa2d078e37d12dacb5",
+    "src/neuralmarket/research/deep_hedging/trainer.py": "d8100a95010e73e55e7154de0998bfa8365d1fef"
+  },
+  "max_generation_invocations": 0,
+  "max_training_invocations": 45,
+  "member_allowlist": [
+    "seed-01",
+    "seed-02",
+    "seed-04",
+    "seed-05",
+    "reserve-j01"
+  ],
+  "network": false,
+  "predecessor_identities": {
+    "reserve-j01:0.001:31001": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/38c5113b27568e14_reserve-j01/c_10/h_31001",
+      "historical_checkpoint_sha": "932f66efd6fb5f4cd052add0ce79e389f67b356a1e119c4c90b64f2b3e147c07",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "2f843206a47824f971b87a15977e14667fa860c5e3c437f71321731f48f4fb66",
+      "historical_terminal_sha": "536465e4cb78b39cba6bc8190ed6908e11b6aa8113abf7d6407d7041a5b4d4aa"
+    },
+    "reserve-j01:0.001:31002": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/38c5113b27568e14_reserve-j01/c_10/h_31002",
+      "historical_checkpoint_sha": "003686fcdc7fa58dd63a9668578cdf0087ae4c915a9db20288b92f1f87c04bd7",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "3004a91feaf63a863d112dede46d3bfc5b78c34fabc22eec5acfb2dfd48ed114",
+      "historical_terminal_sha": "b55f0443f958e4aa59f9467c75b0881f54e36e8bd6d38c6d75d8850633ec440a"
+    },
+    "reserve-j01:0.001:31003": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/38c5113b27568e14_reserve-j01/c_10/h_31003",
+      "historical_checkpoint_sha": "d82abaf8612dda7efd61e9b3c95df9a4ab7f2c53304688f1aa0f9a62433336e4",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "93ed2c48f4a54e45a581fd511b01838207119e874e44c2fcdc6361fea2bf7160",
+      "historical_terminal_sha": "652e606c1d80da6a2c1119ab6835f1e895ac0e59bd73ae0febf312df0373c71f"
+    },
+    "reserve-j01:0.005:31001": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/38c5113b27568e14_reserve-j01/c_50/h_31001",
+      "historical_checkpoint_sha": "932f66efd6fb5f4cd052add0ce79e389f67b356a1e119c4c90b64f2b3e147c07",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "a0da2790bff75d1b3676cbe14d7aeef7bd78299cc11b8c99e4bfdfd1a39dbf72",
+      "historical_terminal_sha": "ff1e4a37eefcdd1171ca49cb752802dc8b359ef1c4aa4b09e08e5024e3b1e56d"
+    },
+    "reserve-j01:0.005:31002": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/38c5113b27568e14_reserve-j01/c_50/h_31002",
+      "historical_checkpoint_sha": "003686fcdc7fa58dd63a9668578cdf0087ae4c915a9db20288b92f1f87c04bd7",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "540e8d018c2c1763b2a837c5ff8c89967ab89db39afbc466d2e1015854c24721",
+      "historical_terminal_sha": "753dc90f1ad408454e8cdd0c39d677c7b060d5d14fcc3b06eec95a88f3e0e6a6"
+    },
+    "reserve-j01:0.005:31003": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/38c5113b27568e14_reserve-j01/c_50/h_31003",
+      "historical_checkpoint_sha": "d82abaf8612dda7efd61e9b3c95df9a4ab7f2c53304688f1aa0f9a62433336e4",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "eb2f28a49a91cd7ef534d5dbd644479e29469b3f8333fd856d9badb16c1d4583",
+      "historical_terminal_sha": "4c49eee75a9b4c157b8be244c9f72177fb4e8b1d88d05e507988cc8db1294b03"
+    },
+    "reserve-j01:0.0:31001": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/38c5113b27568e14_reserve-j01/c_0/h_31001",
+      "historical_checkpoint_sha": "932f66efd6fb5f4cd052add0ce79e389f67b356a1e119c4c90b64f2b3e147c07",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "c635b662a4f743a3e7e66a57eb2b467b637e52ef37d7c259ced4be9319e0e605",
+      "historical_terminal_sha": "1f61a74b7b7eb75b7180ba02837b3a0b26a4b3ef8d37ea80f76b6b92d794ead7"
+    },
+    "reserve-j01:0.0:31002": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/38c5113b27568e14_reserve-j01/c_0/h_31002",
+      "historical_checkpoint_sha": "003686fcdc7fa58dd63a9668578cdf0087ae4c915a9db20288b92f1f87c04bd7",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "5af087856f8233cc5ac83aa71be88e3213af8a9b1fea053b1465d6d90e17e226",
+      "historical_terminal_sha": "934f6fcef08ffe0f03e33fb899ed7a4c07d6d99fee04cd7ee891a2c3d0d7e861"
+    },
+    "reserve-j01:0.0:31003": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/38c5113b27568e14_reserve-j01/c_0/h_31003",
+      "historical_checkpoint_sha": "d82abaf8612dda7efd61e9b3c95df9a4ab7f2c53304688f1aa0f9a62433336e4",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "5e2e38f464003be0a79d960476da2ceb973e2543c73dd96bc4a7b7587b6ac998",
+      "historical_terminal_sha": "27adcde281c954c7e30d8b064aa763d0d9c0b465b62ff0eec9538257b76a2e55"
+    },
+    "seed-01:0.001:31001": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/5bdbaabd2fb257a7_seed-01/c_10/h_31001",
+      "historical_checkpoint_sha": "932f66efd6fb5f4cd052add0ce79e389f67b356a1e119c4c90b64f2b3e147c07",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "d444897bbf887f6150af30c8c801b52268d089187238d64b956a50d90d26b482",
+      "historical_terminal_sha": "d02ba366454280dfc103571eed7443e5ee6f4d0cd28f055ad9b3a07f2d6996cf"
+    },
+    "seed-01:0.001:31002": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/5bdbaabd2fb257a7_seed-01/c_10/h_31002",
+      "historical_checkpoint_sha": "003686fcdc7fa58dd63a9668578cdf0087ae4c915a9db20288b92f1f87c04bd7",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "89da5df21514de1c8fb2b597d8c57232e24b75ed4d538859d2ade7cc1959cd51",
+      "historical_terminal_sha": "2680da2da6de095d1152d14a19c415bc3de45df8bd55a0dbab94a427d714cc83"
+    },
+    "seed-01:0.001:31003": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/5bdbaabd2fb257a7_seed-01/c_10/h_31003",
+      "historical_checkpoint_sha": "d82abaf8612dda7efd61e9b3c95df9a4ab7f2c53304688f1aa0f9a62433336e4",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "b179bd8917d67d93a05d0f90ef5eec9f0fb5d82fcc8c3ba76de6ad6d6e578318",
+      "historical_terminal_sha": "a4d93f135035969f7d758e6b5f2fd5abf9def3457334e2bca255c62968d6fb38"
+    },
+    "seed-01:0.005:31001": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/5bdbaabd2fb257a7_seed-01/c_50/h_31001",
+      "historical_checkpoint_sha": "932f66efd6fb5f4cd052add0ce79e389f67b356a1e119c4c90b64f2b3e147c07",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "0f9f69dc8cb6c0b3aded7247afa5634f08f7995ae0b19bfed52931d9af20bb11",
+      "historical_terminal_sha": "7c1afa60d72c9f6b63f412a3693e0f3a462b70d58fdc103bb28795d260937fa2"
+    },
+    "seed-01:0.005:31002": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/5bdbaabd2fb257a7_seed-01/c_50/h_31002",
+      "historical_checkpoint_sha": "003686fcdc7fa58dd63a9668578cdf0087ae4c915a9db20288b92f1f87c04bd7",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "308380bac5cf25339033d648d9f6c770376bd0ec8da529d30d802b2a7a75114d",
+      "historical_terminal_sha": "b01bc9ac728a1650c52963ff6525b2a33c1fe2a29fecd1372a941081832e0130"
+    },
+    "seed-01:0.005:31003": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/5bdbaabd2fb257a7_seed-01/c_50/h_31003",
+      "historical_checkpoint_sha": "d82abaf8612dda7efd61e9b3c95df9a4ab7f2c53304688f1aa0f9a62433336e4",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "2ab4be1010284bf5d361ed99342e8ea7910481de976e1898b277c45fe3046a81",
+      "historical_terminal_sha": "5af3440531af34ffbdff77e5585e9d00c5debb6ebc171fe7243024c647cf3e31"
+    },
+    "seed-01:0.0:31001": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/5bdbaabd2fb257a7_seed-01/c_0/h_31001",
+      "historical_checkpoint_sha": "932f66efd6fb5f4cd052add0ce79e389f67b356a1e119c4c90b64f2b3e147c07",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "dfa226ac70be4933e35f920b74c550b8448e523a93994dfeddd5c3c912be52b6",
+      "historical_terminal_sha": "baed534188efe7e12c966c18fe4537ce0cf0bd52fff704140791a7d2e43e811f"
+    },
+    "seed-01:0.0:31002": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/5bdbaabd2fb257a7_seed-01/c_0/h_31002",
+      "historical_checkpoint_sha": "003686fcdc7fa58dd63a9668578cdf0087ae4c915a9db20288b92f1f87c04bd7",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "e2223dae78997d1d1a1c6c600bb4275d4ca44881b1a96b804457a2696f57f822",
+      "historical_terminal_sha": "73713976335eb83086c0bfc60627f68dfceb04388c419d7193905e7f64164b4d"
+    },
+    "seed-01:0.0:31003": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/5bdbaabd2fb257a7_seed-01/c_0/h_31003",
+      "historical_checkpoint_sha": "d82abaf8612dda7efd61e9b3c95df9a4ab7f2c53304688f1aa0f9a62433336e4",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "88d6ba67d8cf7577a431da4f911cdc12e4cc5eb805848b9509ec8796cc188867",
+      "historical_terminal_sha": "6b4598afd8f2bc6f0b9fdc6354e0be30fecf6b02f1cc567ec7097cefe0639be9"
+    },
+    "seed-02:0.001:31001": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/62c7406cb3a2c642_seed-02/c_10/h_31001",
+      "historical_checkpoint_sha": "932f66efd6fb5f4cd052add0ce79e389f67b356a1e119c4c90b64f2b3e147c07",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "de968282de048f471247c1d46960108ce8ebeb75e1d0c5896e261c44cd75e410",
+      "historical_terminal_sha": "5825b5e0cedd429a195f5b433496e648c8601dba136bb1de6a07c0a1e20bcf04"
+    },
+    "seed-02:0.001:31002": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/62c7406cb3a2c642_seed-02/c_10/h_31002",
+      "historical_checkpoint_sha": "003686fcdc7fa58dd63a9668578cdf0087ae4c915a9db20288b92f1f87c04bd7",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "a5762809b3fc1d8c4b5440b3b9d5f9384cee22daeb586ed18437cec8a0573abb",
+      "historical_terminal_sha": "c527b4cbe494b83bb28a5604e0ee92d2ca89bb4bb6204fca8f8586ebeac12cb4"
+    },
+    "seed-02:0.001:31003": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/62c7406cb3a2c642_seed-02/c_10/h_31003",
+      "historical_checkpoint_sha": "d82abaf8612dda7efd61e9b3c95df9a4ab7f2c53304688f1aa0f9a62433336e4",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "63fb81aa511f343023290119f95bd316982cb8bf171b32e1f5b8f80bbc9fb0dd",
+      "historical_terminal_sha": "63f24be30c5ae4bcf87df32ceae29563451e84b1db7cd4f799cb6cded663c555"
+    },
+    "seed-02:0.005:31001": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/62c7406cb3a2c642_seed-02/c_50/h_31001",
+      "historical_checkpoint_sha": "932f66efd6fb5f4cd052add0ce79e389f67b356a1e119c4c90b64f2b3e147c07",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "3fc1d4afe3793b33316bf7c41d1da4e58d7f5744dd49c53defc60482a4bc176f",
+      "historical_terminal_sha": "18fe128e64ddd3cef268c8040c7a2e0f72fe388952908caa389e63b50974a2ed"
+    },
+    "seed-02:0.005:31002": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/62c7406cb3a2c642_seed-02/c_50/h_31002",
+      "historical_checkpoint_sha": "003686fcdc7fa58dd63a9668578cdf0087ae4c915a9db20288b92f1f87c04bd7",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "7784a52b3ab1bfe23df4c5d1becf23ff6f7cf8a70d2d7f4195f610a6cbe14990",
+      "historical_terminal_sha": "7f4c77817f7a9e50fa616d81c707b06d7520de42ef29591f96fb4eddb4aff060"
+    },
+    "seed-02:0.005:31003": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/62c7406cb3a2c642_seed-02/c_50/h_31003",
+      "historical_checkpoint_sha": "d82abaf8612dda7efd61e9b3c95df9a4ab7f2c53304688f1aa0f9a62433336e4",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "aa0d4de9beeacfefc9fa7200158149426a8af4939df7022fae536db800f5ab8a",
+      "historical_terminal_sha": "a19e690a84fadc8d30fa9356bee72905dedef68c431c96ade93fedac7c02dd77"
+    },
+    "seed-02:0.0:31001": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/62c7406cb3a2c642_seed-02/c_0/h_31001",
+      "historical_checkpoint_sha": "932f66efd6fb5f4cd052add0ce79e389f67b356a1e119c4c90b64f2b3e147c07",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "679a95540959b9bc3164a360ab46ed55650bc2c89a1e295f0355b9f0597dbb68",
+      "historical_terminal_sha": "536ef62db79e9b08b333798c622c31537308003e8c31ca93eead57a3ffc20102"
+    },
+    "seed-02:0.0:31002": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/62c7406cb3a2c642_seed-02/c_0/h_31002",
+      "historical_checkpoint_sha": "003686fcdc7fa58dd63a9668578cdf0087ae4c915a9db20288b92f1f87c04bd7",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "a1ac7e4b7277f2483f786199527be03bbdd335aa538b3eadd15335cc7913a694",
+      "historical_terminal_sha": "d96df3f0b8776a36b69b3cc7e61806ddbb08af40ae051cad9cb1356409a514aa"
+    },
+    "seed-02:0.0:31003": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/62c7406cb3a2c642_seed-02/c_0/h_31003",
+      "historical_checkpoint_sha": "d82abaf8612dda7efd61e9b3c95df9a4ab7f2c53304688f1aa0f9a62433336e4",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "d9652dbc81a132dfe79692ca371a6dd3e50a50a27b4fc23bc61ec4b3ed217870",
+      "historical_terminal_sha": "96fdc62e43e5ceaed584fce8bff763f94b129ee5b5e670f13f5000691ce71041"
+    },
+    "seed-04:0.001:31001": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/77e7de9efabb7ce3_seed-04/c_10/h_31001",
+      "historical_checkpoint_sha": "932f66efd6fb5f4cd052add0ce79e389f67b356a1e119c4c90b64f2b3e147c07",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "7a3ecc14ea3a366d12eb97e1fca2bac98c2f6d597e08db37ba65e5df1faa960c",
+      "historical_terminal_sha": "dc52902cb70294150e7791efbe8ff54062ae48e76a3bb102720394ec649d33f0"
+    },
+    "seed-04:0.001:31002": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/77e7de9efabb7ce3_seed-04/c_10/h_31002",
+      "historical_checkpoint_sha": "003686fcdc7fa58dd63a9668578cdf0087ae4c915a9db20288b92f1f87c04bd7",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "a42da29f41a2211ceb9d149d902fad80087ed37bfa78d4e777cfe2594e22886a",
+      "historical_terminal_sha": "5227493aaf2768eb4ffe620c0f68a39b158cb538e32268891da2b3c42730c3dc"
+    },
+    "seed-04:0.001:31003": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/77e7de9efabb7ce3_seed-04/c_10/h_31003",
+      "historical_checkpoint_sha": "d82abaf8612dda7efd61e9b3c95df9a4ab7f2c53304688f1aa0f9a62433336e4",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "1f32c4b80f8516b447aeaf7cb51a4f89f10350015596290b586e707e1b9872dd",
+      "historical_terminal_sha": "448685040bb18e502220cb07550b144501ad2f88a1a89b69bb9e35103224f485"
+    },
+    "seed-04:0.005:31001": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/77e7de9efabb7ce3_seed-04/c_50/h_31001",
+      "historical_checkpoint_sha": "932f66efd6fb5f4cd052add0ce79e389f67b356a1e119c4c90b64f2b3e147c07",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "8f317c4aa8da36b56c9c501d9d16deabb4ec0ab283fd9d3a830393dd1d5b0757",
+      "historical_terminal_sha": "363f6542ed5147d08420cee689091a8a0b200f41a4cccc9627f9594a81044946"
+    },
+    "seed-04:0.005:31002": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/77e7de9efabb7ce3_seed-04/c_50/h_31002",
+      "historical_checkpoint_sha": "003686fcdc7fa58dd63a9668578cdf0087ae4c915a9db20288b92f1f87c04bd7",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "4c1a179b2a84e585eb39be3ee6d30f471a6e619f9aa89fe60081d79b4506edf8",
+      "historical_terminal_sha": "af69ba127cb7cbf363d52af7cf7f50b00b5286d8878eb7360525185969116ebf"
+    },
+    "seed-04:0.005:31003": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/77e7de9efabb7ce3_seed-04/c_50/h_31003",
+      "historical_checkpoint_sha": "d82abaf8612dda7efd61e9b3c95df9a4ab7f2c53304688f1aa0f9a62433336e4",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "f3c2750b0f1d2b1e0dd0ffb37ee9355a38a4c5e072ad17c4e9d2187948ffb468",
+      "historical_terminal_sha": "64e83253b768b40d96462ab0b7e90f70ae248e08b527dca4df9922e928c6f659"
+    },
+    "seed-04:0.0:31001": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/77e7de9efabb7ce3_seed-04/c_0/h_31001",
+      "historical_checkpoint_sha": "932f66efd6fb5f4cd052add0ce79e389f67b356a1e119c4c90b64f2b3e147c07",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "7b3d2dd1324e8746c6407a6da37a28abaf18c1ddbca06ec0fc9711ab833c71d6",
+      "historical_terminal_sha": "6a9c7c0af19d5f0a09f96dfa053c77836c10b7c5be3b84fa3694937b417d1e9e"
+    },
+    "seed-04:0.0:31002": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/77e7de9efabb7ce3_seed-04/c_0/h_31002",
+      "historical_checkpoint_sha": "003686fcdc7fa58dd63a9668578cdf0087ae4c915a9db20288b92f1f87c04bd7",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "857b188474e436e8c3ee925d879a31690150d9b210754228d3b6f76807da2de4",
+      "historical_terminal_sha": "8a9f5342e1e82332171e5a9226dfdad83aa936cd755d95e18684e77173af8d7e"
+    },
+    "seed-04:0.0:31003": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/77e7de9efabb7ce3_seed-04/c_0/h_31003",
+      "historical_checkpoint_sha": "d82abaf8612dda7efd61e9b3c95df9a4ab7f2c53304688f1aa0f9a62433336e4",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "879e7786cbed2771a652daf608be36dde4a864a472fce3ddf20f45e152c511f9",
+      "historical_terminal_sha": "1270d5523a8ed6a672101e1babcad1bebde066fd9ce4f2da04eeb4c28c5ced4d"
+    },
+    "seed-05:0.001:31001": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/1e8aa171993a1aba_seed-05/c_10/h_31001",
+      "historical_checkpoint_sha": "932f66efd6fb5f4cd052add0ce79e389f67b356a1e119c4c90b64f2b3e147c07",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "40c430555d8aa44cd212110d17c1dabbe82b3c8196a559c1909ba5c1bf024bf6",
+      "historical_terminal_sha": "b64d7147f28a72113d75a7d861e802a48ab2a680141c5516b282a3c9df0a8da2"
+    },
+    "seed-05:0.001:31002": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/1e8aa171993a1aba_seed-05/c_10/h_31002",
+      "historical_checkpoint_sha": "003686fcdc7fa58dd63a9668578cdf0087ae4c915a9db20288b92f1f87c04bd7",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "6eaaf28d1223fbbdbcebaec4c8f82ef87b9c100198985f59a9c29c86e3f7f18d",
+      "historical_terminal_sha": "db6174572d7aa91f630934db1a18ee62f4f75559690d35b0de59cc626f4d722e"
+    },
+    "seed-05:0.001:31003": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/1e8aa171993a1aba_seed-05/c_10/h_31003",
+      "historical_checkpoint_sha": "d82abaf8612dda7efd61e9b3c95df9a4ab7f2c53304688f1aa0f9a62433336e4",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "1d29c50cd47a870e881d13f124f5274d28d0117c518f18b5c7b6a9a516ff91a6",
+      "historical_terminal_sha": "e5e2d291c9e8f8e47c288edaacc3e8731eb4dd6adab66fd226b064bc704d1ff2"
+    },
+    "seed-05:0.005:31001": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/1e8aa171993a1aba_seed-05/c_50/h_31001",
+      "historical_checkpoint_sha": "932f66efd6fb5f4cd052add0ce79e389f67b356a1e119c4c90b64f2b3e147c07",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "94a7f320778ea5c861d08b684fb562c5c2a86feaf3b5ea6272fb1754ff54510d",
+      "historical_terminal_sha": "2206bdb31fccd1d233f450aee22cb1c684928b337f9041a945f26cc7febf0c89"
+    },
+    "seed-05:0.005:31002": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/1e8aa171993a1aba_seed-05/c_50/h_31002",
+      "historical_checkpoint_sha": "003686fcdc7fa58dd63a9668578cdf0087ae4c915a9db20288b92f1f87c04bd7",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "97247863b507f4eb06429666afed1d9856f44d0793ca90fa6b4c83f98db7d4ff",
+      "historical_terminal_sha": "a1b48afd0b1f4c7e535bae96cf776da7297cdb968befc2455887c310bdc2b1aa"
+    },
+    "seed-05:0.005:31003": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/1e8aa171993a1aba_seed-05/c_50/h_31003",
+      "historical_checkpoint_sha": "d82abaf8612dda7efd61e9b3c95df9a4ab7f2c53304688f1aa0f9a62433336e4",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "92570f1d54ab13b83016319cdbc85989164d3b08ada0bceb3238c92f63302960",
+      "historical_terminal_sha": "4063a55571e899bffd1a61d39366c2cf578a19b5d3a592d5dee95df94560060f"
+    },
+    "seed-05:0.0:31001": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/1e8aa171993a1aba_seed-05/c_0/h_31001",
+      "historical_checkpoint_sha": "932f66efd6fb5f4cd052add0ce79e389f67b356a1e119c4c90b64f2b3e147c07",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "612a652309e502108bb32f3d94786493bad348d7789383faef5b1de74aa94ecf",
+      "historical_terminal_sha": "f41cadb78567bab45d26c6a10341813e26ae330a0732625dd8a989418cd1bb96"
+    },
+    "seed-05:0.0:31002": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/1e8aa171993a1aba_seed-05/c_0/h_31002",
+      "historical_checkpoint_sha": "003686fcdc7fa58dd63a9668578cdf0087ae4c915a9db20288b92f1f87c04bd7",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "266cb84f23c2b7446a1a2d7daf4bd4d57876558b99299f93a360d1da1e06cef0",
+      "historical_terminal_sha": "3768f25dfbe6220643f97bc41fe4daec0e9ab4bba7480897dddd7515e3efc5f1"
+    },
+    "seed-05:0.0:31003": {
+      "historical_artifact_path": "data/processed/research/hedging_policies/1e8aa171993a1aba_seed-05/c_0/h_31003",
+      "historical_checkpoint_sha": "d82abaf8612dda7efd61e9b3c95df9a4ab7f2c53304688f1aa0f9a62433336e4",
+      "historical_classification": "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP",
+      "historical_execution_started_sha": "8ab0040fb501245ab4bd7fad1b9c29cfa3e9b31ec6399b72e2b5a343efb6cfbc",
+      "historical_terminal_sha": "60d2ce04ce5608dc80b7223276b7a7554570f4df67828e355a6143e1d553197c"
+    }
+  },
+  "recovery_protocol_blob": "6fcb39c29827d0d35ce3c777298fb75a81d00cb4",
+  "recovery_protocol_canonical": "4bf228ad508da7a71a07d659d383a5601e0a50540bea248dfccbfbeda9ce6be8",
+  "recovery_protocol_path": "reports\\protocol\\structured_vol_v5_deep_hedging_gru_training_recovery_protocol_v1.md",
+  "recovery_root": "data/processed/research/hedging_policies_recovery_v1",
+  "recovery_tuples": [
+    {
+      "cost": 0.0,
+      "hedger_seed": 31001,
+      "member": "seed-01"
+    },
+    {
+      "cost": 0.0,
+      "hedger_seed": 31002,
+      "member": "seed-01"
+    },
+    {
+      "cost": 0.0,
+      "hedger_seed": 31003,
+      "member": "seed-01"
+    },
+    {
+      "cost": 0.001,
+      "hedger_seed": 31001,
+      "member": "seed-01"
+    },
+    {
+      "cost": 0.001,
+      "hedger_seed": 31002,
+      "member": "seed-01"
+    },
+    {
+      "cost": 0.001,
+      "hedger_seed": 31003,
+      "member": "seed-01"
+    },
+    {
+      "cost": 0.005,
+      "hedger_seed": 31001,
+      "member": "seed-01"
+    },
+    {
+      "cost": 0.005,
+      "hedger_seed": 31002,
+      "member": "seed-01"
+    },
+    {
+      "cost": 0.005,
+      "hedger_seed": 31003,
+      "member": "seed-01"
+    },
+    {
+      "cost": 0.0,
+      "hedger_seed": 31001,
+      "member": "seed-02"
+    },
+    {
+      "cost": 0.0,
+      "hedger_seed": 31002,
+      "member": "seed-02"
+    },
+    {
+      "cost": 0.0,
+      "hedger_seed": 31003,
+      "member": "seed-02"
+    },
+    {
+      "cost": 0.001,
+      "hedger_seed": 31001,
+      "member": "seed-02"
+    },
+    {
+      "cost": 0.001,
+      "hedger_seed": 31002,
+      "member": "seed-02"
+    },
+    {
+      "cost": 0.001,
+      "hedger_seed": 31003,
+      "member": "seed-02"
+    },
+    {
+      "cost": 0.005,
+      "hedger_seed": 31001,
+      "member": "seed-02"
+    },
+    {
+      "cost": 0.005,
+      "hedger_seed": 31002,
+      "member": "seed-02"
+    },
+    {
+      "cost": 0.005,
+      "hedger_seed": 31003,
+      "member": "seed-02"
+    },
+    {
+      "cost": 0.0,
+      "hedger_seed": 31001,
+      "member": "seed-04"
+    },
+    {
+      "cost": 0.0,
+      "hedger_seed": 31002,
+      "member": "seed-04"
+    },
+    {
+      "cost": 0.0,
+      "hedger_seed": 31003,
+      "member": "seed-04"
+    },
+    {
+      "cost": 0.001,
+      "hedger_seed": 31001,
+      "member": "seed-04"
+    },
+    {
+      "cost": 0.001,
+      "hedger_seed": 31002,
+      "member": "seed-04"
+    },
+    {
+      "cost": 0.001,
+      "hedger_seed": 31003,
+      "member": "seed-04"
+    },
+    {
+      "cost": 0.005,
+      "hedger_seed": 31001,
+      "member": "seed-04"
+    },
+    {
+      "cost": 0.005,
+      "hedger_seed": 31002,
+      "member": "seed-04"
+    },
+    {
+      "cost": 0.005,
+      "hedger_seed": 31003,
+      "member": "seed-04"
+    },
+    {
+      "cost": 0.0,
+      "hedger_seed": 31001,
+      "member": "seed-05"
+    },
+    {
+      "cost": 0.0,
+      "hedger_seed": 31002,
+      "member": "seed-05"
+    },
+    {
+      "cost": 0.0,
+      "hedger_seed": 31003,
+      "member": "seed-05"
+    },
+    {
+      "cost": 0.001,
+      "hedger_seed": 31001,
+      "member": "seed-05"
+    },
+    {
+      "cost": 0.001,
+      "hedger_seed": 31002,
+      "member": "seed-05"
+    },
+    {
+      "cost": 0.001,
+      "hedger_seed": 31003,
+      "member": "seed-05"
+    },
+    {
+      "cost": 0.005,
+      "hedger_seed": 31001,
+      "member": "seed-05"
+    },
+    {
+      "cost": 0.005,
+      "hedger_seed": 31002,
+      "member": "seed-05"
+    },
+    {
+      "cost": 0.005,
+      "hedger_seed": 31003,
+      "member": "seed-05"
+    },
+    {
+      "cost": 0.0,
+      "hedger_seed": 31001,
+      "member": "reserve-j01"
+    },
+    {
+      "cost": 0.0,
+      "hedger_seed": 31002,
+      "member": "reserve-j01"
+    },
+    {
+      "cost": 0.0,
+      "hedger_seed": 31003,
+      "member": "reserve-j01"
+    },
+    {
+      "cost": 0.001,
+      "hedger_seed": 31001,
+      "member": "reserve-j01"
+    },
+    {
+      "cost": 0.001,
+      "hedger_seed": 31002,
+      "member": "reserve-j01"
+    },
+    {
+      "cost": 0.001,
+      "hedger_seed": 31003,
+      "member": "reserve-j01"
+    },
+    {
+      "cost": 0.005,
+      "hedger_seed": 31001,
+      "member": "reserve-j01"
+    },
+    {
+      "cost": 0.005,
+      "hedger_seed": 31002,
+      "member": "reserve-j01"
+    },
+    {
+      "cost": 0.005,
+      "hedger_seed": 31003,
+      "member": "reserve-j01"
+    }
+  ],
+  "runtime_identity": "17e3bb52d5893c4e09ecb759a925004f2e75a37d7d4faf4ece7de41f81870ada",
+  "schema_version": "hedging-execution-authorization-v1"
+}
