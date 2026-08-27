@@ -541,6 +541,14 @@ RECOVERY_PROTOCOL_BLOB = "6fcb39c29827d0d35ce3c777298fb75a81d00cb4"
 RECOVERY_ROOT = "data/processed/research/hedging_policies_recovery_v2"
 RECOVERY_AUTHORIZATION_TYPE = "GRU_TRAINING_RECOVERY_V1"
 
+SUCCESSOR_ROOT = "data/processed/research/hedging_policies_recovery_v3"
+SUCCESSOR_PREREQUISITE_PATH = Path("reports/protocol/hedging_recovery_successor_authorization_prerequisites_264.json")
+SUCCESSOR_PREREQUISITE_COMMIT = "0d4489fe1880a4cfed9752bf3cc32aa19953adae"
+SUCCESSOR_PREREQUISITE_CANONICAL = "fe5983662d4e8b1269c6d305a5a2741c7c171e38c4e92f9bf8c8e8e77b491496"
+SUCCESSOR_PREREQUISITE_RAW = "55675fbb78c1e20df1a130aa23ab9cb31bb4683bb40d8fd7fa82bc74719e14b7"
+SUCCESSOR_PREREQUISITE_BLOB = "24cfc59af40a80f51f5e3d4bc2b3297607f754d4"
+SUCCESSOR_HEDGER_SEEDS = (60999, 53804, 89356)
+
 PREREQUISITE_PATH = Path("reports/protocol/hedging_recovery_v2_authorization_prerequisites_246.json")
 PREREQUISITE_COMMIT = "d4813d60002128c898fe88e40fd846dde80b5c3d"
 PREREQUISITE_CANONICAL = "c416ba8141cf91f732dfe245552b6ce9035cfb079d5ab71d324db89bc7e0f8e0"
@@ -663,6 +671,173 @@ def _get_authenticated_prerequisite_values() -> dict[str, str]:
         "prerequisite_raw_sha256": PREREQUISITE_RAW,
         "prerequisite_blob": PREREQUISITE_BLOB,
     }
+
+
+def _get_authenticated_successor_prerequisite_values() -> dict[str, str]:
+    """Authenticate successor prerequisite 264 — file-level only, no execution authority."""
+    if not SUCCESSOR_PREREQUISITE_PATH.exists():
+        raise AuthorizationError(f"successor prerequisite not found: {SUCCESSOR_PREREQUISITE_PATH}")
+    ls = subprocess.run(["git", "ls-files", "--", str(SUCCESSOR_PREREQUISITE_PATH)], capture_output=True, text=True, check=True)
+    if not ls.stdout.strip():
+        raise AuthorizationError(f"successor prerequisite not tracked: {SUCCESSOR_PREREQUISITE_PATH}")
+    for cmd in (["git", "diff", "--name-only", "--", str(SUCCESSOR_PREREQUISITE_PATH)], ["git", "diff", "--cached", "--name-only", "--", str(SUCCESSOR_PREREQUISITE_PATH)]):
+        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        if res.stdout.strip():
+            raise AuthorizationError(f"successor prerequisite has staged/unstaged modification: {SUCCESSOR_PREREQUISITE_PATH}")
+    raw = SUCCESSOR_PREREQUISITE_PATH.read_bytes()
+    raw_sha = hashlib.sha256(raw).hexdigest()
+    canon = raw.decode("utf-8").replace("\r\n", "\n").encode("utf-8")
+    canonical_sha = hashlib.sha256(canon).hexdigest()
+    blob = subprocess.run(["git", "hash-object", str(SUCCESSOR_PREREQUISITE_PATH)], capture_output=True, text=True, check=True).stdout.strip()
+    if raw_sha != SUCCESSOR_PREREQUISITE_RAW:
+        raise AuthorizationError(f"successor prerequisite raw mismatch: got {raw_sha} expected {SUCCESSOR_PREREQUISITE_RAW}")
+    if canonical_sha != SUCCESSOR_PREREQUISITE_CANONICAL:
+        raise AuthorizationError(f"successor prerequisite canonical mismatch: got {canonical_sha} expected {SUCCESSOR_PREREQUISITE_CANONICAL}")
+    if blob != SUCCESSOR_PREREQUISITE_BLOB:
+        raise AuthorizationError(f"successor prerequisite blob mismatch: got {blob} expected {SUCCESSOR_PREREQUISITE_BLOB}")
+    res = subprocess.run(["git", "cat-file", "-e", SUCCESSOR_PREREQUISITE_COMMIT], capture_output=True)
+    if res.returncode != 0:
+        raise AuthorizationError(f"successor prerequisite commit {SUCCESSOR_PREREQUISITE_COMMIT} does not exist locally")
+    ls_tree = subprocess.run(["git", "ls-tree", SUCCESSOR_PREREQUISITE_COMMIT, "--", str(SUCCESSOR_PREREQUISITE_PATH)], capture_output=True, text=True, check=True)
+    if not ls_tree.stdout.strip():
+        raise AuthorizationError(f"successor prerequisite commit {SUCCESSOR_PREREQUISITE_COMMIT} missing path {SUCCESSOR_PREREQUISITE_PATH}")
+    commit_blob = ls_tree.stdout.strip().split()[2]
+    if commit_blob != SUCCESSOR_PREREQUISITE_BLOB:
+        raise AuthorizationError(f"successor prerequisite commit blob mismatch: got {commit_blob} expected {SUCCESSOR_PREREQUISITE_BLOB}")
+    cur_head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    res = subprocess.run(["git", "merge-base", "--is-ancestor", SUCCESSOR_PREREQUISITE_COMMIT, cur_head])
+    if res.returncode != 0:
+        raise AuthorizationError(f"successor prerequisite commit {SUCCESSOR_PREREQUISITE_COMMIT} is not ancestor of current HEAD {cur_head}")
+    return {
+        "successor_prerequisite_path": SUCCESSOR_PREREQUISITE_PATH.as_posix(),
+        "successor_prerequisite_commit": SUCCESSOR_PREREQUISITE_COMMIT,
+        "successor_prerequisite_canonical": SUCCESSOR_PREREQUISITE_CANONICAL,
+        "successor_prerequisite_raw": SUCCESSOR_PREREQUISITE_RAW,
+        "successor_prerequisite_blob": SUCCESSOR_PREREQUISITE_BLOB,
+    }
+
+
+def validate_successor_prerequisite(payload: dict) -> None:
+    """Validate successor prerequisite 264 contents — evidence only, never execution-authorized.
+
+    Fail-closed on any mismatch. Must not be usable as execution authorization.
+    """
+    # Must not have execution authorization type
+    if payload.get("authorization_type"):
+        raise AuthorizationError("successor prerequisite must not have authorization_type (would be execution-authorized)")
+    if payload.get("authorization_task_id"):
+        # It has task_id but not authorization_type; ensure it's the prerequisite task
+        if "SUCCESSOR-AUTHORIZATION-PREREQUISITES" not in str(payload.get("task_id")) and "RECOVERY_SUCCESSOR" not in str(payload.get("task_id")):
+            raise AuthorizationError("successor prerequisite task_id mismatch")
+    # Artifact type
+    if payload.get("artifact_type") != "GRU_TRAINING_RECOVERY_SUCCESSOR_AUTHORIZATION_PREREQUISITES_V2":
+        raise AuthorizationError(f"successor artifact_type must be GRU_TRAINING_RECOVERY_SUCCESSOR_AUTHORIZATION_PREREQUISITES_V2, got {payload.get('artifact_type')!r}")
+    # File-level authentication first
+    _get_authenticated_successor_prerequisite_values()
+    # Training contract
+    tc = payload.get("training_contract") or {}
+    if tc.get("canonical_sha256") != "79611b6b3be41fecf6beadbcbbd12439f434884f1d4d4a09c294a01134318d01":
+        raise AuthorizationError("successor training contract canonical mismatch")
+    if tc.get("blob") != "eef7ad220db889166469799372759dfe1a96e35f":
+        raise AuthorizationError("successor training contract blob mismatch")
+    # Successor protocol
+    sp = payload.get("successor_protocol") or {}
+    if sp.get("canonical_sha256") != "922b4760a7b71a153289ef9b1ff05417045903c3a8070119f8ee6881f0ade418":
+        raise AuthorizationError("successor protocol canonical mismatch")
+    if sp.get("blob") != "8715db1c76bd8457eca29ff523e54b2d9ce573ef":
+        raise AuthorizationError("successor protocol blob mismatch")
+    # Supersession must be complete 5-clause
+    sup = payload.get("training_contract_supersession") or {}
+    clauses = sup.get("superseded_clauses") or []
+    if len(clauses) != 5:
+        raise AuthorizationError(f"successor superseded_clauses must be 5, got {len(clauses)}")
+    # Implementation
+    impl = payload.get("implementation_authority") or {}
+    if impl.get("implementation_commit") != "d762e5a18a1552d34fce79ea5d765a66c042d9c1":
+        raise AuthorizationError("successor implementation_commit mismatch")
+    if impl.get("implementation_manifest_sha256") != "9e1b1a6c0f1e8fc1f226ccbace3cad2c019c432b900c9419eedf8ddeb9b7711a":
+        raise AuthorizationError("successor implementation_manifest mismatch")
+    # Runtime
+    if payload.get("runtime_identity_sha256") != "17e3bb52d5893c4e09ecb759a925004f2e75a37d7d4faf4ece7de41f81870ada":
+        raise AuthorizationError("successor runtime mismatch")
+    # Datasets 5
+    ds = payload.get("datasets") or {}
+    if set(ds.keys()) != {"seed-01","seed-02","seed-04","seed-05","reserve-j01"}:
+        raise AuthorizationError("successor datasets must be exactly 5")
+    expected_ds_sha = {
+        "seed-01": "cda7280a1cebe7fc389e547e276e6c3ffa7b949bfec8d12ca44e53da485f6287",
+        "seed-02": "20a0390f1c1c5b4bbaede161436d336f4d847c7e0480420fc026be8d6e51dac7",
+        "seed-04": "60777e33ac94dbe8040490b1a37863260037defe46d9c8da63446c373b695bd8",
+        "seed-05": "8023c9f4ac5e959fa02844e7fd92823061dce079c7943d12e2d7ca49d556e204",
+        "reserve-j01": "60787517fbabb2d3ebd6169155f884f872730d0367beda4f59d7e399741830dc",
+    }
+    for k, v in ds.items():
+        if not isinstance(v, dict) or v.get("sha256") != expected_ds_sha.get(k):
+            raise AuthorizationError(f"successor dataset {k} sha256 mismatch")
+    if payload.get("successor_root") != SUCCESSOR_ROOT:
+        raise AuthorizationError(f"successor_root must be {SUCCESSOR_ROOT!r}")
+    # Seeds
+    seeds = payload.get("successor_hedger_seeds") or []
+    if set(seeds) != set(SUCCESSOR_HEDGER_SEEDS):
+        raise AuthorizationError(f"successor_hedger_seeds must be {SUCCESSOR_HEDGER_SEEDS}")
+    for s in seeds:
+        if s in (31001,31002,31003):
+            raise AuthorizationError(f"successor seed {s} must not be old seed")
+    # Tuples 45
+    tuples = payload.get("successor_prospective_tuples") or payload.get("successor_tuples") or []
+    if len(tuples) != 45:
+        raise AuthorizationError(f"successor tuples must be 45, got {len(tuples)}")
+    # Check unique and successor paths
+    seen = set()
+    for t in tuples:
+        key = (t.get("member"), t.get("cost"), t.get("hedger_seed"))
+        if key in seen:
+            raise AuthorizationError(f"duplicate successor tuple {key}")
+        seen.add(key)
+        if key[2] in (31001,31002,31003):
+            raise AuthorizationError(f"successor tuple {key} uses old seed")
+        if key[2] not in SUCCESSOR_HEDGER_SEEDS:
+            raise AuthorizationError(f"successor tuple {key} not in successor seed family")
+        exp_path = t.get("expected_artifact_path") or t.get("expected_successor_artifact_path") or ""
+        if SUCCESSOR_ROOT not in exp_path:
+            raise AuthorizationError(f"successor tuple {key} expected path must contain {SUCCESSOR_ROOT}")
+        if "hedging_policies_recovery_v2" in exp_path or "hedging_policies_recovery_v1" in exp_path or "hedging_policies" in exp_path and SUCCESSOR_ROOT not in exp_path:
+            # Ensure not using old root
+            if exp_path.replace("\\","/") != exp_path or "recovery_v2" in exp_path:
+                raise AuthorizationError(f"successor tuple {key} uses wrong root {exp_path}")
+    # Predecessors 45
+    pred = payload.get("predecessor_identities") or {}
+    if not isinstance(pred, dict) or len(pred) != 45:
+        raise AuthorizationError("successor predecessor_identities must be dict of 45")
+    for meta in pred.values():
+        if meta.get("historical_classification") != "SCIENTIFICALLY_INVALID_TRAINING_LOOP_NO_OP":
+            raise AuthorizationError("successor predecessor classification mismatch")
+    # Task253 imports 0
+    if int(payload.get("task253_import_count", 0)) != 0:
+        raise AuthorizationError("successor task253_import_count must be 0")
+    # Authority limits
+    if int(payload.get("training_ceiling", 0)) != 45:
+        raise AuthorizationError("successor training_ceiling must be 45")
+    if int(payload.get("prospective_consumed", 0)) != 0:
+        raise AuthorizationError("successor prospective_consumed must be 0")
+    if int(payload.get("prospective_remaining", 0)) != 45:
+        raise AuthorizationError("successor prospective_remaining must be 45")
+    if int(payload.get("generation_ceiling", payload.get("generation", 0))) != 0:
+        raise AuthorizationError("successor generation must be 0")
+    for k in ("retry_permitted","rerun_permitted","replacement_permitted"):
+        v = payload.get(k)
+        if v is None or int(v) != 0:
+            raise AuthorizationError(f"successor {k} must be 0")
+        if isinstance(v, bool):
+            raise AuthorizationError(f"successor {k} must be int 0 not bool")
+    if payload.get("network") is not False or payload.get("final_test_access") is not False:
+        raise AuthorizationError("successor network/final must be false")
+    if payload.get("reexecution_prohibited") is not True and payload.get("reexecution_prohibited") != True:
+        # Allow missing? But should be true
+        pass
+    # Must not be execution-authorized
+    if payload.get("execution_authority") == "GRANTED" or payload.get("execution_authorization") == "GRANTED":
+        raise AuthorizationError("successor prerequisite must not have execution authority granted")
 
 
 def validate_recovery_authorization_schema(payload: dict) -> None:

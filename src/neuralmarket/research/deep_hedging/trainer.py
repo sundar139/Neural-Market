@@ -1009,6 +1009,8 @@ def train_one_policy(
 
 
 RECOVERY_ROOT_PATH = Path("data/processed/research/hedging_policies_recovery_v2")
+SUCCESSOR_ROOT_PATH = Path("data/processed/research/hedging_policies_recovery_v3")
+SUCCESSOR_HEDGER_SEEDS = (60999, 53804, 89356)
 RECOVERY_PROTOCOL_PATH = Path("reports/protocol/structured_vol_v5_deep_hedging_gru_training_recovery_protocol_v1.md")
 RECOVERY_PROTOCOL_CANONICAL = "4bf228ad508da7a71a07d659d383a5601e0a50540bea248dfccbfbeda9ce6be8"
 RECOVERY_PROTOCOL_BLOB = "6fcb39c29827d0d35ce3c777298fb75a81d00cb4"
