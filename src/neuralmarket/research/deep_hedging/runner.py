@@ -1205,9 +1205,14 @@ def validate_successor_authorization_schema(payload: dict) -> None:
                     "expected_artifact_path": expected_artifact_path,
                 }
                 expected_paths.add(expected_artifact_path)
-    tuples = payload.get("successor_tuples") or payload.get("successor_prospective_tuples") or payload.get("tuples") or []
-    if len(tuples) != 45:
-        raise AuthorizationError(f"successor tuples must be 45, got {len(tuples)}")
+    _raw_tuples = payload.get("successor_tuples")
+    if _raw_tuples is None:
+        _raw_tuples = payload.get("successor_prospective_tuples")
+    if _raw_tuples is None:
+        _raw_tuples = payload.get("tuples")
+    tuples = _raw_tuples if _raw_tuples is not None else []
+    if not isinstance(tuples, list) or len(tuples) != 45:
+        raise AuthorizationError(f"successor tuples must be list of 45, got {type(tuples).__name__} {len(tuples) if isinstance(tuples, list) else repr(tuples)}")
     seen_keys: set[tuple[str, float, int]] = set()
     seen_paths: set[str] = set()
     for t in tuples:
@@ -1338,6 +1343,157 @@ def validate_successor_authorization_schema(payload: dict) -> None:
         # authorization_type already checked, but ensure not granting via wrong field
         pass
 
+
+def _get_successor_ordered_tuples(payload: dict) -> list[dict]:
+    """Return frozen deterministic order of 45 successor tuples (as in prerequisite)."""
+    tuples = payload.get("successor_tuples") or payload.get("successor_prospective_tuples") or []
+    if not isinstance(tuples, list) or len(tuples) != 45:
+        raise AuthorizationError("successor tuples must be list of 45")
+    return tuples
+
+
+def check_successor_campaign_state(
+    *,
+    payload: dict,
+    member: str,
+    cost: float,
+    hedger_seed: int,
+    policy_root: Path | None = None,
+) -> int:
+    """Enforce 45-tuple deterministic order, one invocation per tuple, whole-campaign stop.
+
+    Returns ordinal of requested tuple. Fail-closed if:
+    - tuple not in exact 45
+    - duplicate already consumed
+    - previous ordinal not completed successfully
+    - campaign already stopped due to failure/nonterminal
+    - tuple skipping
+    Tests use tmp_path; real execution uses SUCCESSOR_ROOT_PATH.
+    """
+    from neuralmarket.research.deep_hedging.artifacts import RUN_PREFIXES
+
+    ordered = _get_successor_ordered_tuples(payload)
+    # Find ordinal
+    ordinal = None
+    for idx, t in enumerate(ordered):
+        if str(t.get("member")) == str(member) and float(t.get("cost")) == float(cost) and int(t.get("hedger_seed")) == int(hedger_seed):  # type: ignore[arg-type]
+            ordinal = idx
+            break
+    if ordinal is None:
+        raise AuthorizationError(f"successor tuple {(member, cost, hedger_seed)} not in frozen 45 order")
+    if policy_root is None:
+        from neuralmarket.research.deep_hedging.trainer import SUCCESSOR_ROOT_PATH
+        policy_root = SUCCESSOR_ROOT_PATH
+    policy_root = Path(policy_root)
+    # Check previous ordinals completed successfully
+    for idx in range(ordinal):
+        prev = ordered[idx]
+        rp = RUN_PREFIXES[prev["member"]]
+        bps = prev["cost_bps"]
+        prev_dir = policy_root / f"{rp}_{prev['member']}/c_{bps}/h_{prev['hedger_seed']}"
+        # Success requires terminal_manifest.json exists
+        terminal = prev_dir / "terminal_manifest.json"
+        started = prev_dir / "execution_started.json"
+        failed = prev_dir / "execution_failed.json"
+        nonterminal = prev_dir / "nonterminal.json"
+        exit_code = prev_dir / "training_exit_code.txt"
+        if failed.exists() or nonterminal.exists():
+            raise AuthorizationError(f"successor campaign stopped: previous ordinal {idx} {prev['member'], prev['cost'], prev['hedger_seed']} failed/nonterminal")
+        if exit_code.exists():
+            try:
+                code = int(exit_code.read_text().strip())
+                if code != 0:
+                    raise AuthorizationError(f"successor campaign stopped: previous ordinal {idx} exit code {code}")
+            except ValueError:
+                raise AuthorizationError(f"successor campaign stopped: previous ordinal {idx} bad exit code")
+        if not terminal.exists():
+            # If started exists but no terminal, it's nonterminal/interrupted
+            if started.exists():
+                raise AuthorizationError(f"successor campaign stopped: previous ordinal {idx} nonterminal (started without terminal)")
+            raise AuthorizationError(f"successor tuple ordinal {idx} not yet completed — cannot skip to ordinal {ordinal}")
+    # Check current not already consumed
+    cur = ordered[ordinal]
+    rp = RUN_PREFIXES[cur["member"]]
+    bps = cur["cost_bps"]
+    cur_dir = policy_root / f"{rp}_{cur['member']}/c_{bps}/h_{cur['hedger_seed']}"
+    if (cur_dir / "execution_started.json").exists() or (cur_dir / "checkpoint.pt").exists() or (cur_dir / "terminal_manifest.json").exists():
+        raise AuthorizationError(f"successor tuple {(member, cost, hedger_seed)} already consumed at {cur_dir}")
+    # Check v1/v2 path blocking — ensure we are not using wrong root
+    # The cur_dir must be under SUCCESSOR_ROOT, not recovery_v1/v2
+    cur_posix = cur_dir.as_posix()
+    if "hedging_policies_recovery_v1" in cur_posix or "hedging_policies_recovery_v2" in cur_posix:
+        raise AuthorizationError(f"successor path must not be v1/v2: {cur_posix}")
+    if cur_posix.startswith("data/processed/research/hedging_policies/") and not cur_posix.startswith("data/processed/research/hedging_policies_recovery_v3/"):
+        raise AuthorizationError(f"successor path must be recovery_v3, got {cur_posix}")
+    return ordinal
+
+
+def gate_successor_execution(
+    *,
+    authorization_path: Path,
+    member: str,
+    cost: float,
+    hedger_seed: int,
+    policy_root: Path | None = None,
+) -> dict:
+    """Production successor authorization consumption gate — fail-closed before trainer.
+
+    Reads authorization artifact from explicit path, authenticates exact bytes,
+    validates successor schema before any side effect, verifies campaign state,
+    and resolves exact recovery_v3 tuple/path. Returns validated context for
+    the existing trainer. No caller-supplied dict may substitute for bytes.
+    """
+    if not isinstance(authorization_path, Path):
+        raise AuthorizationError("authorization_path must be Path")
+    if not authorization_path.exists():
+        raise AuthorizationError(f"authorization artifact not found: {authorization_path}")
+    # Reject Task276 prerequisite freeze artifact used as authorization
+    prereq_freeze = Path("reports/protocol/hedging_recovery_successor_execution_authorization_prerequisites_276.json")
+    if authorization_path.resolve() == prereq_freeze.resolve() or authorization_path.as_posix() == prereq_freeze.as_posix():
+        raise AuthorizationError("Task276 prerequisite freeze artifact must not be used as execution authorization")
+    # Also reject the 264 prerequisite
+    if authorization_path.resolve() == SUCCESSOR_PREREQUISITE_PATH.resolve():
+        raise AuthorizationError("prerequisite264 must not be used as execution authorization")
+    raw = authorization_path.read_bytes()
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception as e:
+        raise AuthorizationError(f"authorization artifact not valid JSON: {e}") from e
+    # Schema validator before any side effect
+    validate_successor_authorization_schema(payload)
+    # Additional gates: Task276 prerequisite as auth already rejected above; also check old auths
+    task_id = str(payload.get("authorization_task_id") or payload.get("task_id") or "")
+    if task_id in ("NM-R4-V5-DEEP-HEDGING-GRU-TRAINING-RECOVERY-EXECUTION-AUTHORIZATION-248", "NM-R4-V5-DEEP-HEDGING-GRU-TRAINING-RECOVERY-EXECUTION-AUTHORIZATION-251"):
+        raise AuthorizationError(f"old authorization {task_id} rejected for successor")
+    # Verify current implementation/source binding already done in validator, but also ensure no v1/v2 path confusion
+    # Resolve campaign config and verify tuple membership via campaign state
+    ordinal = check_successor_campaign_state(payload=payload, member=member, cost=cost, hedger_seed=hedger_seed, policy_root=policy_root)
+    # Resolve exact recovery_v3 path and verify it matches expected artifact path
+    ordered = _get_successor_ordered_tuples(payload)
+    expected_path = None
+    for t in ordered:
+        if str(t.get("member")) == str(member) and float(t.get("cost")) == float(cost) and int(t.get("hedger_seed")) == int(hedger_seed):  # type: ignore[arg-type]
+            expected_path = t.get("expected_artifact_path")
+            break
+    if expected_path is None:
+        raise AuthorizationError(f"successor tuple {(member, cost, hedger_seed)} not found")
+    # Ensure path is under canonical recovery_v3 root
+    if not str(expected_path).replace("\\", "/").startswith("data/processed/research/hedging_policies_recovery_v3/"):
+        raise AuthorizationError(f"successor expected path must be recovery_v3, got {expected_path}")
+    if "hedging_policies_recovery_v1" in str(expected_path) or "hedging_policies_recovery_v2" in str(expected_path):
+        raise AuthorizationError(f"successor path must not be v1/v2: {expected_path}")
+    # Verify artifact collision already checked in campaign state, but double-check
+    from neuralmarket.research.deep_hedging.trainer import SUCCESSOR_ROOT_PATH as _TRAINER_ROOT
+    resolved = Path(str(expected_path))
+    if not resolved.as_posix().startswith(_TRAINER_ROOT.as_posix() + "/"):
+        raise AuthorizationError(f"resolved path not under {_TRAINER_ROOT.as_posix()}")
+    # All gates passed — return context for trainer (without executing)
+    return {
+        "payload": payload,
+        "ordinal": ordinal,
+        "expected_artifact_path": resolved,
+        "policy_root": Path(policy_root) if policy_root is not None else _TRAINER_ROOT,
+    }
 
 def validate_recovery_authorization_schema(payload: dict) -> None:
     """Validate recovery authorization — fail-closed, distinct from historical.

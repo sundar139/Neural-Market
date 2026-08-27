@@ -254,6 +254,97 @@ def train_policy_recovery(
         typer.echo(f"recovery training failed: {e}", err=True)
         raise typer.Exit(code=1) from e
 
+@app.command("train-policy-successor")
+def train_policy_successor(
+    member: str = Option(..., "--member", help="Member ID"),
+    cost: float = Option(..., "--cost", help="Cost level (0.0, 0.0010, 0.0050)"),
+    hedger_seed: int = Option(..., "--hedger-seed", help="Successor hedger seed (60999, 53804, 89356)"),
+    authorization: Path = Option(..., "--authorization", help="Tracked committed SUCCESSOR execution authorization artifact"),
+    execute: bool = Option(False, "--execute", help="actually execute"),
+) -> None:
+    """Train one GRU hedger policy for one authorized SUCCESSOR tuple (recovery_v3)."""
+    if not execute:
+        typer.echo(f"DRY RUN: would train SUCCESSOR policy for {(member, cost, hedger_seed)}")
+        raise typer.Exit(code=0)
+    # Validate successor allowlists strictly
+    if member not in MEMBERS:
+        typer.echo(f"member {member} not in allowlist", err=True)
+        raise typer.Exit(code=2)
+    if cost not in COST_LEVELS:
+        typer.echo(f"cost {cost} not in allowlist {COST_LEVELS}", err=True)
+        raise typer.Exit(code=2)
+    # Successor hedger seeds are 60999/53804/89356, not historical
+    from neuralmarket.research.deep_hedging.trainer import SUCCESSOR_HEDGER_SEEDS as _SUCC_SEEDS
+
+    if hedger_seed not in _SUCC_SEEDS:
+        typer.echo(f"hedger_seed {hedger_seed} not in successor allowlist {_SUCC_SEEDS}", err=True)
+        raise typer.Exit(code=2)
+    # Successor authorization must be validated before any side effect — use gate
+    from neuralmarket.research.deep_hedging.runner import (
+        gate_successor_execution,
+        validate_successor_authorization_schema,
+    )
+
+    # Gate will read artifact bytes, validate schema, check campaign state, etc.
+    try:
+        gate_successor_execution(
+            authorization_path=authorization,
+            member=member,
+            cost=cost,
+            hedger_seed=hedger_seed,
+        )
+    except Exception as e:
+        typer.echo(f"successor authorization gate failed: {e}", err=True)
+        raise typer.Exit(code=2) from e
+    # Verify artifact is tracked and clean for real execution (fail-closed)
+    try:
+        info = verify_authorization_artifact(authorization)
+    except Exception as e:
+        typer.echo(f"successor authorization artifact invalid: {e}", err=True)
+        raise typer.Exit(code=2) from e
+    payload = json.loads(authorization.read_bytes().decode("utf-8"))
+    try:
+        validate_successor_authorization_schema(payload)
+    except Exception as e:
+        typer.echo(f"successor authorization invalid: {e}", err=True)
+        raise typer.Exit(code=2) from e
+    # Preflight common (clean tree, etc.)
+    _preflight_common(authorization, payload)
+    # Resolve successor artifact path strictly under recovery_v3 (no arbitrary root, no env override)
+    from neuralmarket.research.deep_hedging.trainer import SUCCESSOR_ROOT_PATH
+
+    run_prefix = RUN_PREFIXES[member]
+    cost_bps = {0.0: 0, 0.0010: 10, 0.0050: 50}[cost]
+    policy_dir = SUCCESSOR_ROOT_PATH / f"{run_prefix}_{member}/c_{cost_bps}/h_{hedger_seed}"
+    started = policy_dir / "execution_started.json"
+    checkpoint = policy_dir / "checkpoint.pt"
+    if started.exists() or checkpoint.exists():
+        typer.echo(f"CONSUMED or OVERWRITE_REFUSED at {policy_dir} (successor)", err=True)
+        raise typer.Exit(code=2)
+    # Ensure not using v1/v2 path
+    if "hedging_policies_recovery_v1" in policy_dir.as_posix() or "hedging_policies_recovery_v2" in policy_dir.as_posix():
+        typer.echo(f"successor path must not be v1/v2: {policy_dir}", err=True)
+        raise typer.Exit(code=2)
+    dataset_path = Path(f"data/processed/research/hedging_synthetic/{run_prefix}_{member}/synthetic_episodes_v1.parquet")
+    manifest_path = Path(f"data/processed/research/hedging_synthetic/{run_prefix}_{member}/synthetic_manifest_v1.json")
+    if not dataset_path.exists() or not manifest_path.exists():
+        typer.echo(f"synthetic dataset not found for {member} at {dataset_path}", err=True)
+        raise typer.Exit(code=2)
+    from neuralmarket.research.deep_hedging.trainer import train_one_policy_successor
+
+    try:
+        result = train_one_policy_successor(
+            member=member,
+            cost=cost,
+            hedger_seed=hedger_seed,
+            authorization_path=authorization,
+        )
+        typer.echo(f"trained successor {result}")
+    except Exception as e:
+        typer.echo(f"successor training failed: {e}", err=True)
+        raise typer.Exit(code=1) from e
+
+
 
 if __name__ == "__main__":
     app()
