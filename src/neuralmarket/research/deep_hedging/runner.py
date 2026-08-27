@@ -1056,15 +1056,48 @@ def validate_successor_authorization_schema(payload: dict) -> None:
         raise AuthorizationError(f"successor contract_v3_canonical mismatch: got {tc_canonical!r}")
     if tc_blob != EXPECTED_CONTRACT_V3_BLOB:
         raise AuthorizationError(f"successor contract_v3_blob mismatch: got {tc_blob!r}")
-    # Supersession — 5-clause check via prerequisite's supersession if present in payload
-    if "training_contract_supersession" in payload:
-        sup = payload.get("training_contract_supersession") or {}
-        clauses = sup.get("superseded_clauses") or []
-        if len(clauses) != 5:
-            raise AuthorizationError(f"successor superseded_clauses must be 5, got {len(clauses)}")
-    elif "successor_supersession_commit" in payload:
-        # alternative binding: check commit equals Amendment128 prerequisite commit?
-        pass
+    # Supersession — mandatory exact binding to prerequisite264 (single source of truth)
+    if "training_contract_supersession" not in payload:
+        raise AuthorizationError("successor training_contract_supersession missing — mandatory field")
+    sup = payload.get("training_contract_supersession")
+    if sup is None:
+        raise AuthorizationError("successor training_contract_supersession must not be None")
+    if not isinstance(sup, dict):
+        raise AuthorizationError(f"successor training_contract_supersession must be dict, got {type(sup).__name__}")
+    if not sup:
+        raise AuthorizationError("successor training_contract_supersession must not be empty")
+    if "successor_supersession_commit" in payload:
+        raise AuthorizationError("successor_supersession_commit decoy not accepted — use training_contract_supersession")
+    # Authenticated prerequisite264 supersession is the single source of truth
+    try:
+        expected_sup = json.loads(SUCCESSOR_PREREQUISITE_PATH.read_bytes().decode("utf-8")).get("training_contract_supersession")
+    except Exception as e:
+        raise AuthorizationError(f"failed to load prerequisite264 supersession: {e}") from e
+    if expected_sup is None:
+        raise AuthorizationError("prerequisite264 training_contract_supersession not found")
+    # Exact field-for-field equality (canonical, order-sensitive for clause list)
+    if sup != expected_sup:
+        # Provide targeted diagnostics for adversarial tests while remaining fail-closed
+        # Check clause count first
+        exp_clauses = (expected_sup or {}).get("superseded_clauses") if isinstance(expected_sup, dict) else None
+        got_clauses = sup.get("superseded_clauses") if isinstance(sup, dict) else None
+        if not isinstance(got_clauses, list):
+            raise AuthorizationError(f"successor superseded_clauses must be list of 5, got {type(got_clauses).__name__}")
+        if len(got_clauses) != 5:
+            raise AuthorizationError(f"successor superseded_clauses must be 5, got {len(got_clauses)}")
+        # Check each clause type/content
+        for idx, c in enumerate(got_clauses):
+            if c is None:
+                raise AuthorizationError(f"successor superseded_clauses[{idx}] must not be None")
+            if not isinstance(c, dict):
+                raise AuthorizationError(f"successor superseded_clauses[{idx}] must be dict, got {type(c).__name__}")
+            if not c:
+                raise AuthorizationError(f"successor superseded_clauses[{idx}] must not be empty")
+        # Check top-level keys equality
+        if set(sup.keys()) != set(expected_sup.keys()):
+            raise AuthorizationError(f"successor training_contract_supersession keys mismatch: got {sorted(sup.keys())} expected {sorted(expected_sup.keys())}")
+        # Deep exact mismatch
+        raise AuthorizationError("successor training_contract_supersession mismatch vs prerequisite264 — exact field-for-field equality required")
     # Implementation / source authentication — fail-close chain (reuse v2 strongest mechanism)
     impl_commit = str(payload.get("implementation_commit") or "")
     impl_manifest = str(payload.get("implementation_manifest_sha256") or payload.get("implementation_manifest") or "")

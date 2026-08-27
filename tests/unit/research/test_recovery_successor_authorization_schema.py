@@ -33,11 +33,10 @@ def _valid_payload():
     auth = _get_authenticated_successor_prerequisite_values()
     trusted = _get_trusted_predecessor_map()
     manifest = build_implementation_manifest()
-    # Load frozen datasets and tuples from prerequisite file for exactness
     prereq = json.loads(SUCCESSOR_PREREQUISITE_PATH.read_bytes().decode("utf-8"))
     datasets = prereq["datasets"]
-    # Use successor_prospective_tuples as exact 45
     tuples = copy.deepcopy(prereq["successor_prospective_tuples"])
+    supersession = copy.deepcopy(prereq["training_contract_supersession"])
     return {
         "schema_version": "hedging-successor-authorization-v1",
         "authorization_task_id": "NM-R4-V5-DEEP-HEDGING-GRU-TRAINING-RECOVERY-SUCCESSOR-EXECUTION-AUTHORIZATION-270",
@@ -57,6 +56,7 @@ def _valid_payload():
         "implementation_manifest_sha256": manifest["implementation_manifest_sha256"],
         "implementation_source_blobs": manifest["source_blobs"],
         "runtime_identity": EXPECTED_RUNTIME_IDENTITY,
+        "training_contract_supersession": supersession,
         "datasets": copy.deepcopy(datasets),
         "successor_root": SUCCESSOR_ROOT,
         "successor_hedger_seeds": list(SUCCESSOR_HEDGER_SEEDS),
@@ -412,3 +412,165 @@ def test_missing_field_rejected():
     del p["training_ceiling"]
     with pytest.raises(AuthorizationError):
         validate_successor_authorization_schema(p)
+def test_supersession_missing_rejected():
+    p = _valid_payload()
+    del p["training_contract_supersession"]
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
+
+def test_supersession_none_rejected():
+    p = _valid_payload()
+    p["training_contract_supersession"] = None
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
+
+def test_supersession_wrong_type_rejected():
+    p = _valid_payload()
+    p["training_contract_supersession"] = "wrong"
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
+
+def test_supersession_empty_rejected():
+    p = _valid_payload()
+    p["training_contract_supersession"] = {}
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
+
+def test_supersession_five_nulls_rejected():
+    p = _valid_payload()
+    p["training_contract_supersession"] = {"superseded_clauses": [None, None, None, None, None]}
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
+
+def test_supersession_five_empty_maps_rejected():
+    p = _valid_payload()
+    p["training_contract_supersession"] = {"superseded_clauses": [{}, {}, {}, {}, {}]}
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
+
+def test_supersession_five_arbitrary_strings_rejected():
+    p = _valid_payload()
+    p["training_contract_supersession"] = {"superseded_clauses": ["a", "b", "c", "d", "e"]}
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
+
+def test_supersession_four_clauses_rejected():
+    p = _valid_payload()
+    p["training_contract_supersession"]["superseded_clauses"] = p["training_contract_supersession"]["superseded_clauses"][:4]
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
+
+def test_supersession_six_clauses_rejected():
+    p = _valid_payload()
+    p["training_contract_supersession"]["superseded_clauses"] = p["training_contract_supersession"]["superseded_clauses"] + [copy.deepcopy(p["training_contract_supersession"]["superseded_clauses"][0])]
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
+
+def test_supersession_wrong_location_rejected():
+    p = _valid_payload()
+    p["training_contract_supersession"]["superseded_clauses"][0]["location"] = "wrong:location"
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
+
+def test_supersession_wrong_clause_text_rejected():
+    p = _valid_payload()
+    p["training_contract_supersession"]["superseded_clauses"][0]["clause"] = "wrong clause text"
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
+
+def test_supersession_wrong_classification_rejected():
+    p = _valid_payload()
+    p["training_contract_supersession"]["superseded_clauses"][0]["classification"] = "WRONG"
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
+
+def test_supersession_wrong_historical_family_rejected():
+    p = _valid_payload()
+    p["training_contract_supersession"]["historical_hedger_seed_family"] = [1, 2, 3]
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
+
+def test_supersession_wrong_successor_family_rejected():
+    p = _valid_payload()
+    p["training_contract_supersession"]["successor_hedger_seed_family"] = [1, 2, 3]
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
+
+def test_supersession_wrong_scope_rejected():
+    p = _valid_payload()
+    p["training_contract_supersession"]["supersession_scope"] = "wrong scope"
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
+
+def test_supersession_wrong_derivation_rejected():
+    p = _valid_payload()
+    p["training_contract_supersession"]["successor_seed_source"] = "WRONG_DERIVATION"
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
+
+def test_supersession_wrong_audit_rejected():
+    p = _valid_payload()
+    p["training_contract_supersession"]["successor_seed_audit"] = "WRONG_AUDIT"
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
+
+def test_supersession_swapped_clauses_rejected():
+    p = _valid_payload()
+    clauses = p["training_contract_supersession"]["superseded_clauses"]
+    clauses[0], clauses[1] = clauses[1], clauses[0]
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
+
+def test_supersession_missing_other_family_rejected():
+    p = _valid_payload()
+    # Remove or corrupt OTHER_SEED_FAMILY
+    if "other_seed_family_occurrence" in p["training_contract_supersession"]:
+        p["training_contract_supersession"]["other_seed_family_occurrence"]["classification"] = "WRONG"
+    else:
+        p["training_contract_supersession"]["other_seed_family_occurrence"] = {"classification": "WRONG"}
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
+
+def test_supersession_missing_example_only_rejected():
+    p = _valid_payload()
+    if "example_only_occurrence" in p["training_contract_supersession"]:
+        p["training_contract_supersession"]["example_only_occurrence"]["classification"] = "WRONG"
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
+
+def test_supersession_decoy_commit_rejected():
+    p = _valid_payload()
+    del p["training_contract_supersession"]
+    p["successor_supersession_commit"] = "deadbeef"
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
+
+def test_supersession_legacy_field_rejected():
+    p = _valid_payload()
+    # Try legacy fallback name
+    p["successor_supersession_commit"] = "deadbeef"
+    # Keep correct supersession too — but decoy alone should cause rejection per validator
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
