@@ -1017,6 +1017,38 @@ RECOVERY_PROTOCOL_BLOB = "6fcb39c29827d0d35ce3c777298fb75a81d00cb4"
 RECOVERY_SOURCE_COMMIT = "5a9e9c59c8f24bd8dcaadb1fa4ec3fbf2faa287d"
 
 
+def resolve_successor_artifact_path(member: str, cost: float, hedger_seed: int) -> Path:
+    """Production successor artifact-path resolver — load-bearing SUCCESSOR_ROOT_PATH.
+
+    Reads authenticated successor prerequisite via the production seam in runner,
+    validates that the requested tuple is in the frozen 45-universe, and resolves
+    the artifact directory strictly under SUCCESSOR_ROOT_PATH
+    (data/processed/research/hedging_policies_recovery_v3). Rejects historical,
+    recovery_v1, recovery_v2, arbitrary, or env-override roots. No execution.
+    """
+    from neuralmarket.research.deep_hedging.runner import get_successor_campaign_config
+
+    cfg = get_successor_campaign_config()
+    # Ensure cfg root is exactly our SUCCESSOR_ROOT_PATH (load-bearing check)
+    cfg_root = cfg.get("successor_root")
+    if cfg_root != SUCCESSOR_ROOT_PATH:
+        raise RuntimeError(f"successor root mismatch: cfg {cfg_root!r} != trainer {SUCCESSOR_ROOT_PATH!r}")
+    # Find tuple
+    tuples = cfg.get("successor_tuples") or []
+    for t in tuples:  # type: ignore[union-attr]
+        if str(t.get("member")) == str(member) and float(t.get("cost")) == float(cost) and int(t.get("hedger_seed")) == int(hedger_seed):  # type: ignore[arg-type]
+            p = Path(str(t.get("expected_artifact_path")))
+            if not p.as_posix().startswith(SUCCESSOR_ROOT_PATH.as_posix() + "/"):
+                raise RuntimeError(f"resolved successor path not under {SUCCESSOR_ROOT_PATH.as_posix()!r}: {p.as_posix()!r}")
+            if "hedging_policies_recovery_v2" in p.as_posix() or "hedging_policies_recovery_v1" in p.as_posix():
+                raise RuntimeError(f"successor path uses wrong recovery root {p.as_posix()!r}")
+            if p.as_posix().startswith("data/processed/research/hedging_policies/") and not p.as_posix().startswith(SUCCESSOR_ROOT_PATH.as_posix() + "/"):
+                raise RuntimeError(f"successor path uses historical root {p.as_posix()!r}")
+            return p
+    raise RuntimeError(f"successor tuple {(member, cost, hedger_seed)} not in validated successor universe")
+
+
+
 def train_one_policy_recovery(
     *,
     member: str,
