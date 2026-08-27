@@ -1015,8 +1015,8 @@ def validate_successor_authorization_schema(payload: dict) -> None:
     if task_id in ("NM-R4-V5-DEEP-HEDGING-GRU-TRAINING-RECOVERY-EXECUTION-AUTHORIZATION-248", "NM-R4-V5-DEEP-HEDGING-GRU-TRAINING-RECOVERY-EXECUTION-AUTHORIZATION-251"):
         raise AuthorizationError(f"old recovery authorization {task_id!r} must not be accepted as successor")
     # Successor protocol binding
-    if payload.get("successor_protocol_path") != str(SUCCESSOR_PROTOCOL_PATH):
-        raise AuthorizationError(f"successor_protocol_path must be {str(SUCCESSOR_PROTOCOL_PATH)!r}, got {payload.get('successor_protocol_path')!r}")
+    if payload.get("successor_protocol_path") != SUCCESSOR_PROTOCOL_PATH.as_posix():
+        raise AuthorizationError(f"successor_protocol_path must be {SUCCESSOR_PROTOCOL_PATH.as_posix()!r}, got {payload.get('successor_protocol_path')!r}")
     if payload.get("successor_protocol_commit") != SUCCESSOR_PROTOCOL_COMMIT:
         raise AuthorizationError(f"successor_protocol_commit mismatch: got {payload.get('successor_protocol_commit')!r}")
     if payload.get("successor_protocol_canonical") != SUCCESSOR_PROTOCOL_CANONICAL:

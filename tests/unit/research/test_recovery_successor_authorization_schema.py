@@ -41,7 +41,7 @@ def _valid_payload():
         "schema_version": "hedging-successor-authorization-v1",
         "authorization_task_id": "NM-R4-V5-DEEP-HEDGING-GRU-TRAINING-RECOVERY-SUCCESSOR-EXECUTION-AUTHORIZATION-270",
         "authorization_type": SUCCESSOR_AUTHORIZATION_TYPE,
-        "successor_protocol_path": str(SUCCESSOR_PROTOCOL_PATH),
+        "successor_protocol_path": SUCCESSOR_PROTOCOL_PATH.as_posix(),
         "successor_protocol_commit": SUCCESSOR_PROTOCOL_COMMIT,
         "successor_protocol_canonical": SUCCESSOR_PROTOCOL_CANONICAL,
         "successor_protocol_blob": SUCCESSOR_PROTOCOL_BLOB,
@@ -571,6 +571,99 @@ def test_supersession_legacy_field_rejected():
     # Try legacy fallback name
     p["successor_supersession_commit"] = "deadbeef"
     # Keep correct supersession too — but decoy alone should cause rejection per validator
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
+
+def test_protocol_canonical_posix_passes():
+    p = _valid_payload()
+    # Ensure canonical forward-slash passes
+    assert p["successor_protocol_path"] == SUCCESSOR_PROTOCOL_PATH.as_posix()
+    validate_successor_authorization_schema(p)
+
+
+def test_protocol_backslash_rejected():
+    p = _valid_payload()
+    p["successor_protocol_path"] = str(SUCCESSOR_PROTOCOL_PATH)  # Windows backslash on win32
+    # On Windows str() is backslash, which differs from canonical POSIX
+    if p["successor_protocol_path"] != SUCCESSOR_PROTOCOL_PATH.as_posix():
+        with pytest.raises(AuthorizationError):
+            validate_successor_authorization_schema(p)
+    else:
+        pytest.skip("platform uses POSIX already — backslash equals POSIX")
+
+
+def test_protocol_pathlib_native_str_rejected_when_differs():
+    p = _valid_payload()
+    # Use native Path str — on Windows this is backslash, should be rejected
+    native = str(SUCCESSOR_PROTOCOL_PATH)
+    if native != SUCCESSOR_PROTOCOL_PATH.as_posix():
+        p["successor_protocol_path"] = native
+        with pytest.raises(AuthorizationError):
+            validate_successor_authorization_schema(p)
+    else:
+        pytest.skip("native str equals POSIX — no difference on this platform")
+
+
+def test_protocol_absolute_windows_rejected():
+    p = _valid_payload()
+    p["successor_protocol_path"] = "C:\\reports\\protocol\\structured_vol_v5_deep_hedging_gru_training_recovery_successor_protocol_v1.md"
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
+
+def test_protocol_absolute_posix_rejected():
+    p = _valid_payload()
+    p["successor_protocol_path"] = "/reports/protocol/structured_vol_v5_deep_hedging_gru_training_recovery_successor_protocol_v1.md"
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
+
+def test_protocol_dot_prefix_rejected():
+    p = _valid_payload()
+    p["successor_protocol_path"] = "./reports/protocol/structured_vol_v5_deep_hedging_gru_training_recovery_successor_protocol_v1.md"
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
+
+def test_protocol_duplicate_separator_rejected():
+    p = _valid_payload()
+    p["successor_protocol_path"] = "reports//protocol/structured_vol_v5_deep_hedging_gru_training_recovery_successor_protocol_v1.md"
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
+
+def test_protocol_parent_traversal_rejected():
+    p = _valid_payload()
+    p["successor_protocol_path"] = "reports/protocol/../protocol/structured_vol_v5_deep_hedging_gru_training_recovery_successor_protocol_v1.md"
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
+
+def test_protocol_wrong_filename_rejected():
+    p = _valid_payload()
+    p["successor_protocol_path"] = "reports/protocol/wrong_protocol.md"
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
+
+def test_protocol_commit_still_required():
+    p = _valid_payload()
+    p["successor_protocol_commit"] = "0" * 40
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
+
+def test_protocol_canonical_still_required():
+    p = _valid_payload()
+    p["successor_protocol_canonical"] = "0" * 64
+    with pytest.raises(AuthorizationError):
+        validate_successor_authorization_schema(p)
+
+
+def test_protocol_blob_still_required():
+    p = _valid_payload()
+    p["successor_protocol_blob"] = "0" * 40
     with pytest.raises(AuthorizationError):
         validate_successor_authorization_schema(p)
 
