@@ -1101,7 +1101,11 @@ def _train_one_policy_successor_with_root(
     pred_map = payload.get("predecessor_identities") or {}
     pred_meta = None
     for k, v in pred_map.items():
-        if member in k and str(cost) in k:
+        try:
+            mk, ck, sk = k.split(":")
+        except ValueError:
+            continue
+        if mk == member and float(ck) == float(cost):
             pred_meta = v
             break
     if pred_meta is None:
@@ -1109,7 +1113,11 @@ def _train_one_policy_successor_with_root(
 
         trusted = _get_trusted_predecessor_map()
         for tk, tv in trusted.items():
-            if tk.startswith(f"{member}:{cost}:"):
+            try:
+                mk2, ck2, sk2 = tk.split(":")
+            except ValueError:
+                continue
+            if mk2 == member and float(ck2) == float(cost):
                 pred_meta = tv
                 break
     if pred_meta is None:
@@ -1227,7 +1235,11 @@ def train_one_policy_successor(
     pred_map = payload.get("predecessor_identities") or {}
     pred_meta = None
     for k, v in pred_map.items():
-        if member in k and str(cost) in k:
+        try:
+            mk, ck, sk = k.split(":")
+        except ValueError:
+            continue
+        if mk == member and float(ck) == float(cost):
             pred_meta = v
             break
     if pred_meta is None:
@@ -1235,14 +1247,17 @@ def train_one_policy_successor(
 
         trusted = _get_trusted_predecessor_map()
         for tk, tv in trusted.items():
-            if tk.startswith(f"{member}:{cost}:"):
+            try:
+                mk2, ck2, sk2 = tk.split(":")
+            except ValueError:
+                continue
+            if mk2 == member and float(ck2) == float(cost):
                 pred_meta = tv
                 break
     if pred_meta is None:
         raise RuntimeError(f"predecessor mapping missing for tuple {(member, cost, hedger_seed)}")
     successor_provenance = {
         "successor_protocol_path": str(SUCCESSOR_PROTOCOL_PATH),
-        "successor_authorization_path": str(authorization_path),
         "successor_authorization_task_id": str(payload.get("authorization_task_id") or ""),
         "successor_implementation_commit": _payload_impl_commit,
         "successor_implementation_manifest": _payload_impl_manifest,

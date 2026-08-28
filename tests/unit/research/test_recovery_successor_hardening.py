@@ -305,20 +305,16 @@ def test_two_concurrent_same_ordinal_claims_one_winner_one_loser(tmp_path: Path)
     payload = _valid_payload()
     auth_path = _write_auth(tmp_path, payload)
     first = payload["successor_tuples"][0]
-    # Use private helper with mocked internal to avoid real training, but need real claim file creation
-    # We'll directly test the atomic claim primitive via trainer's claim file
-    # Simulate two threads both trying to claim same ordinal 0 via _train_one_policy_successor_with_root
-    # Mock the internal trainer to avoid dataset/model work but keep claim file creation
+    # Fix: hoist mock.patch outside threads to avoid leaking MagicMock across threads
+    # Previously patch inside each thread caused second patch to capture first thread's MagicMock as original and restore it, leaking mock
     results = []
 
     def attempt():
         try:
-            with mock.patch("neuralmarket.research.deep_hedging.runner.verify_authorization_artifact", return_value=_mock_verify_ok()):
-                with mock.patch("neuralmarket.research.deep_hedging.trainer._train_one_policy_internal", return_value={"ok": True}):
-                    from neuralmarket.research.deep_hedging.trainer import _train_one_policy_successor_with_root
+            from neuralmarket.research.deep_hedging.trainer import _train_one_policy_successor_with_root
 
-                    _train_one_policy_successor_with_root(member=first["member"], cost=first["cost"], hedger_seed=first["hedger_seed"], authorization_path=auth_path, policy_root=tmp_path)
-                    results.append("success")
+            _train_one_policy_successor_with_root(member=first["member"], cost=first["cost"], hedger_seed=first["hedger_seed"], authorization_path=auth_path, policy_root=tmp_path)
+            results.append("success")
         except FileExistsError:
             results.append("failed")
         except Exception as e:
@@ -326,22 +322,24 @@ def test_two_concurrent_same_ordinal_claims_one_winner_one_loser(tmp_path: Path)
 
     # Ensure clean
     from neuralmarket.research.deep_hedging.artifacts import RUN_PREFIXES
+
     rp = RUN_PREFIXES[first["member"]]
     dir_path = tmp_path / f"{rp}_{first['member']}/c_{first['cost_bps']}/h_{first['hedger_seed']}"
     if dir_path.exists():
         import shutil
+
         shutil.rmtree(dir_path)
 
-    t1 = threading.Thread(target=attempt)
-    t2 = threading.Thread(target=attempt)
-    t1.start()
-    t2.start()
-    t1.join()
-    t2.join()
+    with mock.patch("neuralmarket.research.deep_hedging.runner.verify_authorization_artifact", return_value=_mock_verify_ok()):
+        with mock.patch("neuralmarket.research.deep_hedging.trainer._train_one_policy_internal", return_value={"ok": True}):
+            t1 = threading.Thread(target=attempt)
+            t2 = threading.Thread(target=attempt)
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
     assert results.count("success") == 1
     assert results.count("failed") == 1
-
-
 def test_same_ordinal_sequential_second_rejected(tmp_path: Path):
     payload = _valid_payload()
     auth_path = _write_auth(tmp_path, payload)
@@ -447,3 +445,81 @@ def test_ordinal_skip_rejected(tmp_path: Path):
     with mock.patch("neuralmarket.research.deep_hedging.runner.verify_authorization_artifact", return_value=_mock_verify_ok()):
         with pytest.raises(AuthorizationError, match="not yet completed|cannot skip"):
             _gate_successor_execution_with_root(authorization_path=auth_path, member=third["member"], cost=third["cost"], hedger_seed=third["hedger_seed"], policy_root=tmp_path)
+
+
+def test_predecessor_binding_exact_with_reordered_payload(tmp_path: Path):
+    """Regression for blocker 1: reordered predecessor_identities must not bind wrong predecessor."""
+    payload = _valid_payload()
+    # Reorder predecessor_identities to put c_10/c_50 before c_0 for seed-01, forcing substring bug to pick wrong
+    keys = list(payload["predecessor_identities"].keys())
+    # Move all seed-01 c_0 keys to end
+    zero_keys = [k for k in keys if "seed-01:0.0:" in k]
+    reordered = {}
+    for k in keys:
+        if k not in zero_keys:
+            reordered[k] = payload["predecessor_identities"][k]
+    for k in zero_keys:
+        reordered[k] = payload["predecessor_identities"][k]
+    payload["predecessor_identities"] = reordered
+    # This reordered payload must still pass schema validation (set equality, not order)
+    from neuralmarket.research.deep_hedging.runner import validate_successor_authorization_schema
+
+    # Should still pass validation because set is same, only order changed
+    validate_successor_authorization_schema(payload)
+    auth_path = _write_auth(tmp_path, payload)
+    # Now test that trainer binds correct predecessor (c_0) not wrong c_10, even with reordered map
+    with mock.patch("neuralmarket.research.deep_hedging.runner.verify_authorization_artifact", return_value=_mock_verify_ok()):
+        captured = {}
+
+        def fake_internal(**kwargs):
+            captured["prov"] = kwargs.get("recovery_provenance")
+            return {"ok": True}
+
+        with mock.patch("neuralmarket.research.deep_hedging.trainer._train_one_policy_internal", side_effect=fake_internal):
+            from neuralmarket.research.deep_hedging.trainer import _train_one_policy_successor_with_root
+
+            _train_one_policy_successor_with_root(member="seed-01", cost=0.0, hedger_seed=60999, authorization_path=auth_path, policy_root=tmp_path)
+            hist_path = captured["prov"]["historical_predecessor_artifact_path"]
+            # Must be c_0, not c_10 or c_50, proving exact member/cost match
+            assert "c_0" in hist_path, f"expected c_0 in {hist_path}"
+            assert "c_10" not in hist_path, f"should not be c_10, got {hist_path}"
+            assert "c_50" not in hist_path
+            # Also verify that buggy substring would have picked c_10
+            buggy = None
+            for k in reordered:
+                if "seed-01" in k and "0.0" in k:
+                    buggy = k
+                    break
+            assert buggy is not None
+            # buggy first match would be c_10 if reordered, proving the old bug would have been wrong
+            assert ":0.001:" in buggy or ":0.005:" in buggy or buggy.split(":")[1] != "0.0" or "c_10" in reordered[buggy]["historical_artifact_path"]
+
+
+def test_predecessor_binding_positive_control(tmp_path: Path):
+    """Positive control: correctly ordered payload binds correct predecessor."""
+    payload = _valid_payload()
+    auth_path = _write_auth(tmp_path, payload)
+    with mock.patch("neuralmarket.research.deep_hedging.runner.verify_authorization_artifact", return_value=_mock_verify_ok()):
+        # Need to complete ordinals 0,1,2 before testing ordinal 3 (seed-01,0.001,60999)
+        from neuralmarket.research.deep_hedging.artifacts import RUN_PREFIXES
+
+        for idx in range(3):
+            t = payload["successor_tuples"][idx]
+            rp = RUN_PREFIXES[t["member"]]
+            d = tmp_path / f"{rp}_{t['member']}/c_{t['cost_bps']}/h_{t['hedger_seed']}"
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "execution_started.json").write_text("{}")
+            (d / "terminal_manifest.json").write_text("{}")
+        captured = {}
+
+        def fake_internal(**kwargs):
+            captured["prov"] = kwargs.get("recovery_provenance")
+            return {"ok": True}
+
+        with mock.patch("neuralmarket.research.deep_hedging.trainer._train_one_policy_internal", side_effect=fake_internal):
+            from neuralmarket.research.deep_hedging.trainer import _train_one_policy_successor_with_root
+
+            _train_one_policy_successor_with_root(member="seed-01", cost=0.001, hedger_seed=60999, authorization_path=auth_path, policy_root=tmp_path)
+            hist_path = captured["prov"]["historical_predecessor_artifact_path"]
+            assert "c_10" in hist_path
+            assert "seed-01" in hist_path
