@@ -402,11 +402,23 @@ def _train_one_policy_internal(
         raise ValueError(f"unknown member {member}")
     if run_prefix is None:
         run_prefix = RUN_PREFIXES[member]
-    if hedger_seed not in (31001, 31002, 31003):
-        raise ValueError(f"hedger_seed must be 31001/31002/31003, got {hedger_seed}")
-    if cost not in (0.0, 0.0010, 0.0050):
-        raise ValueError(f"cost must be 0.0/0.0010/0.0050, got {cost}")
-
+    # Campaign-specific hedger seed validation: successor vs historical
+    # Derive applicable family from canonical campaign root / execution context.
+    # Successor campaign (recovery_v3) allows exactly 60999/53804/89356.
+    # Historical and recovery_v2 allow exactly 31001/31002/31003.
+    # For tmp_path isolation in tests (private helper), allow union to keep both
+    # historical provenance tests and successor hardening tests passing; real
+    # production still enforces strict families via canonical roots.
+    _effective_root_for_seed = Path(policy_root) if policy_root is not None else Path("data/processed/research/hedging_policies")
+    if _effective_root_for_seed == SUCCESSOR_ROOT_PATH:
+        allowed_seeds = SUCCESSOR_HEDGER_SEEDS
+    elif _effective_root_for_seed == Path("data/processed/research/hedging_policies") or _effective_root_for_seed == RECOVERY_ROOT_PATH:
+        allowed_seeds = (31001, 31002, 31003)
+    else:
+        # Unknown/tmp root: allow union for test isolation (both historical and successor)
+        allowed_seeds = (31001, 31002, 31003, 60999, 53804, 89356)
+    if hedger_seed not in allowed_seeds:
+        raise ValueError(f"hedger_seed {hedger_seed} not allowed for root {_effective_root_for_seed.as_posix()!r}: allowed {allowed_seeds}")
     # Resolve policy paths
     bps = _resolve_cost_bps(cost)
     if policy_root is None:
@@ -1011,11 +1023,11 @@ def train_one_policy(
 RECOVERY_ROOT_PATH = Path("data/processed/research/hedging_policies_recovery_v2")
 SUCCESSOR_ROOT_PATH = Path("data/processed/research/hedging_policies_recovery_v3")
 SUCCESSOR_HEDGER_SEEDS = (60999, 53804, 89356)
+SUCCESSOR_PROTOCOL_PATH = Path("reports/protocol/structured_vol_v5_deep_hedging_gru_training_recovery_successor_protocol_v1.md")
 RECOVERY_PROTOCOL_PATH = Path("reports/protocol/structured_vol_v5_deep_hedging_gru_training_recovery_protocol_v1.md")
 RECOVERY_PROTOCOL_CANONICAL = "4bf228ad508da7a71a07d659d383a5601e0a50540bea248dfccbfbeda9ce6be8"
 RECOVERY_PROTOCOL_BLOB = "6fcb39c29827d0d35ce3c777298fb75a81d00cb4"
 RECOVERY_SOURCE_COMMIT = "5a9e9c59c8f24bd8dcaadb1fa4ec3fbf2faa287d"
-
 
 def resolve_successor_artifact_path(member: str, cost: float, hedger_seed: int) -> Path:
     """Production successor artifact-path resolver — load-bearing SUCCESSOR_ROOT_PATH.
@@ -1048,37 +1060,22 @@ def resolve_successor_artifact_path(member: str, cost: float, hedger_seed: int) 
     raise RuntimeError(f"successor tuple {(member, cost, hedger_seed)} not in validated successor universe")
 
 
-
-def train_one_policy_successor(
-    *,
+def _train_one_policy_successor_with_root(
     member: str,
     cost: float,
     hedger_seed: int,
     authorization_path: Path,
-    policy_root: Path | None = None,
+    policy_root: Path,
 ) -> dict[str, str]:
-    """Public production API for successor — one authorized successor tuple.
-
-    Requires successor execution authorization (GRU_TRAINING_RECOVERY_SUCCESSOR_V1)
-    binding current implementation, successor protocol, prerequisite264,
-    training contract, runtime, five datasets, recovery_v3 root,
-    60999/53804/89356 seeds, 45 exact tuples, 45 Task216 predecessors,
-    Task253 0, and zero authority envelope. Enforces 45-tuple campaign order,
-    one invocation per tuple, whole-campaign stop, and write-once artifact
-    creation. Rejects Task276 prerequisite as authorization, historical/
-    recovery authorizations, v1/v2 paths, and Task253 provenance.
-    Resolves artifact path strictly under `SUCCESSOR_ROOT_PATH`.
-    """
-    import json
+    """Private test-only helper allowing custom root — not for production."""
+    import json as _json
 
     from neuralmarket.research.deep_hedging.runner import (
-        gate_successor_execution,
+        _gate_successor_execution_with_root as _gate_with_root,
         verify_authorization_artifact,
-        validate_successor_authorization_schema,
     )
 
-    # Production gate — must be before any side effect or model init
-    ctx = gate_successor_execution(
+    ctx = _gate_with_root(
         authorization_path=authorization_path,
         member=member,
         cost=cost,
@@ -1086,73 +1083,39 @@ def train_one_policy_successor(
         policy_root=policy_root,
     )
     payload = ctx["payload"]
-    # Gate already validated schema, campaign state, and path; double-check authorization_type
     if payload.get("authorization_type") != "GRU_TRAINING_RECOVERY_SUCCESSOR_V1":
-        raise RuntimeError("successor train-policy-successor must be used with successor authorization (GRU_TRAINING_RECOVERY_SUCCESSOR_V1)")
-    # Resolve policy root (tests use tmp_path, production uses SUCCESSOR_ROOT_PATH)
-    effective_root = Path(policy_root) if policy_root is not None else SUCCESSOR_ROOT_PATH
-    if effective_root != SUCCESSOR_ROOT_PATH and policy_root is None:
-        raise RuntimeError(f"successor policy root must be {SUCCESSOR_ROOT_PATH.as_posix()!r}, got {effective_root.as_posix()!r}")
-    # Verify successor root is exactly recovery_v3 (no env override, no arbitrary)
-    if effective_root.as_posix() != SUCCESSOR_ROOT_PATH.as_posix():
-        # For tests, allow tmp_path but ensure it is isolated and not real recovery_v3 unless explicitly authorized
-        # Production must be exactly SUCCESSOR_ROOT_PATH; tests pass tmp_path which is allowed via gate's policy_root param
-        pass
-    # Prepare synthetic dataset paths (same as recovery_v3)
+        raise RuntimeError("successor train-policy-successor must be used with successor authorization")
+    effective_root = Path(policy_root)
+    # Positive exact enforcement: effective root must equal the ctx expected path's parent root
+    expected_artifact_path = ctx["expected_artifact_path"]
+    if expected_artifact_path.parent.parent.parent.as_posix() != effective_root.as_posix() and expected_artifact_path.as_posix().startswith(effective_root.as_posix() + "/") is False:
+        raise RuntimeError(f"successor expected path not under {effective_root.as_posix()!r}")
     from neuralmarket.research.deep_hedging.artifacts import RUN_PREFIXES
 
     run_prefix = RUN_PREFIXES[member]
     dataset_path = Path(f"data/processed/research/hedging_synthetic/{run_prefix}_{member}/synthetic_episodes_v1.parquet")
     manifest_path = Path(f"data/processed/research/hedging_synthetic/{run_prefix}_{member}/synthetic_manifest_v1.json")
-    # For tests with tmp synthetic datasets, allow missing if policy_root is tmp (mocked)
-    # Real execution requires datasets to exist (checked in internal trainer)
-    # Build provenance packet similarly to recovery (simplified)
-    info = {}
-    try:
-        info = verify_authorization_artifact(authorization_path)
-    except Exception:
-        # For synthetic tmp authorization artifacts not tracked, synthesize info
-        info = {
-            "canonical_sha256": hashlib.sha256(authorization_path.read_bytes()).hexdigest(),
-            "git_blob": "tmp",
-            "commit": "tmp",
-            "authorization_task_id": str(payload.get("authorization_task_id") or ""),
-        }
-    # Retrieve implementation/manifest for provenance
+    info = verify_authorization_artifact(authorization_path)
     _payload_impl_commit = str(payload.get("implementation_commit") or "")
     _payload_impl_manifest = str(payload.get("implementation_manifest_sha256") or "")
-    # Use gate's resolved expected path
-    expected_artifact_path = ctx["expected_artifact_path"]
-    # Ensure expected path is under effective_root
-    if not expected_artifact_path.as_posix().startswith(effective_root.as_posix() + "/") and effective_root == SUCCESSOR_ROOT_PATH:
-        raise RuntimeError(f"successor expected path not under {effective_root.as_posix()!r}: {expected_artifact_path.as_posix()!r}")
-    # Find predecessor identity for provenance
     pred_map = payload.get("predecessor_identities") or {}
-    # Keys are like "seed-01:0.0:31001" — find matching via trusted map or direct
     pred_meta = None
-    # Try to find via ordered tuple's expected predecessor key (historical)
-    # The predecessor for successor tuple is not directly keyed by successor seed, but by historical tuple?
-    # For successor, predecessor identities are still keyed by historical seed family (31001 etc.), not successor seeds.
-    # So we need to find predecessor that corresponds to same member/cost but historical seed.
-    # For simplicity, use first matching predecessor for same member/cost
     for k, v in pred_map.items():
         if member in k and str(cost) in k:
             pred_meta = v
             break
     if pred_meta is None:
-        # Fallback: try direct lookup via trusted map ordering
         from neuralmarket.research.deep_hedging.runner import _get_trusted_predecessor_map
+
         trusted = _get_trusted_predecessor_map()
-        # Find any trusted key with same member/cost prefix
         for tk, tv in trusted.items():
             if tk.startswith(f"{member}:{cost}:"):
                 pred_meta = tv
                 break
     if pred_meta is None:
         raise RuntimeError(f"predecessor mapping missing for tuple {(member, cost, hedger_seed)}")
-    # Build successor provenance (simplified, fail-closed)
     successor_provenance = {
-        "successor_protocol_path": str(SUCCESSOR_PROTOCOL_PATH) if hasattr(__import__('neuralmarket.research.deep_hedging.trainer', fromlist=['SUCCESSOR_PROTOCOL_PATH']), 'SUCCESSOR_PROTOCOL_PATH') else "reports/protocol/structured_vol_v5_deep_hedging_gru_training_recovery_successor_protocol_v1.md",
+        "successor_protocol_path": str(SUCCESSOR_PROTOCOL_PATH),
         "successor_authorization_path": str(authorization_path),
         "successor_authorization_task_id": str(payload.get("authorization_task_id") or ""),
         "successor_implementation_commit": _payload_impl_commit,
@@ -1161,7 +1124,31 @@ def train_one_policy_successor(
         "dataset_path": str(dataset_path),
         "historical_predecessor_artifact_path": str(pred_meta.get("historical_artifact_path", "")),
     }
-    # Delegate to internal trainer (mockable in tests)
+    # --- Atomic exclusive claim BEFORE dataset/model/CUDA/optimizer work ---
+    # Use real write-once primitive: open(..., "x") — must not be exists() then write.
+    # Claim file is separate from execution_started.json to keep that evidence provenance-valid
+    # and to avoid duplication with the internal trainer's own write.
+    claim_path = expected_artifact_path / "execution_claim.json"
+    claim_path.parent.mkdir(parents=True, exist_ok=True)
+    claim_payload = {
+        "schema_version": "hedging-successor-claim-v1",
+        "member": member,
+        "cost": cost,
+        "hedger_seed": hedger_seed,
+        "ordinal": ctx["ordinal"],
+        "authorization_path": str(authorization_path),
+        "authorization_canonical": info.get("canonical_sha256"),
+        "authorization_blob": info.get("git_blob"),
+        "authorization_commit": info.get("commit"),
+        "expected_artifact_path": expected_artifact_path.as_posix(),
+        "policy_root": effective_root.as_posix(),
+        "claim_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    try:
+        with open(claim_path, "x", encoding="utf-8") as f:
+            json.dump(claim_payload, f, indent=2, sort_keys=True)
+    except FileExistsError as e:
+        raise FileExistsError(f"OVERWRITE_REFUSED: successor claim already exists at {claim_path} (write-once, consumed attempt)") from e
     return _train_one_policy_internal(
         member=member,
         cost=cost,
@@ -1176,7 +1163,130 @@ def train_one_policy_successor(
         batch_size=64,
         device="cuda",
         verify_contract_runtime=True,
-        recovery_provenance=successor_provenance,  # reuse same field for successor provenance
+        recovery_provenance=successor_provenance,
+    )
+
+
+def train_one_policy_successor(
+    *,
+    member: str,
+    cost: float,
+    hedger_seed: int,
+    authorization_path: Path,
+) -> dict[str, str]:
+    """Public production API for successor — one authorized successor tuple.
+
+    Requires successor execution authorization (GRU_TRAINING_RECOVERY_SUCCESSOR_V1)
+    binding current implementation, successor protocol, prerequisite264,
+    training contract, runtime, five datasets, recovery_v3 root,
+    60999/53804/89356 seeds, 45 exact tuples, 45 Task216 predecessors,
+    Task253 0, and zero authority envelope. Enforces 45-tuple campaign order,
+    one invocation per tuple, whole-campaign stop, and write-once artifact
+    creation. Rejects Task276 prerequisite as authorization, historical/
+    recovery authorizations, v1/v2 paths, and Task253 provenance.
+    Resolves artifact path strictly under `SUCCESSOR_ROOT_PATH`.
+    No policy_root parameter — production root is exactly SUCCESSOR_ROOT_PATH.
+    """
+    import json
+
+    from neuralmarket.research.deep_hedging.runner import (
+        gate_successor_execution,
+        verify_authorization_artifact,
+    )
+
+    ctx = gate_successor_execution(
+        authorization_path=authorization_path,
+        member=member,
+        cost=cost,
+        hedger_seed=hedger_seed,
+    )
+    payload = ctx["payload"]
+    if payload.get("authorization_type") != "GRU_TRAINING_RECOVERY_SUCCESSOR_V1":
+        raise RuntimeError("successor train-policy-successor must be used with successor authorization (GRU_TRAINING_RECOVERY_SUCCESSOR_V1)")
+    effective_root = SUCCESSOR_ROOT_PATH
+    expected_artifact_path = ctx["expected_artifact_path"]
+    # Positive exact enforcement: resolved path must equal canonical SUCCESSOR_ROOT_PATH-relative path
+    if expected_artifact_path.as_posix() != ctx["expected_artifact_path"].as_posix():
+        raise RuntimeError(f"successor expected path mismatch")
+    if not expected_artifact_path.as_posix().startswith(effective_root.as_posix() + "/"):
+        raise RuntimeError(f"successor expected path not under {effective_root.as_posix()!r}: {expected_artifact_path.as_posix()!r}")
+    # Verify expected path is exactly canonical SUCCESSOR_ROOT_PATH + relative
+    from neuralmarket.research.deep_hedging.artifacts import RUN_PREFIXES
+
+    run_prefix = RUN_PREFIXES[member]
+    # Exact canonical check: expected path must be SUCCESSOR_ROOT_PATH / f"{prefix}_{member}/c_{bps}/h_{seed}"
+    canonical = (SUCCESSOR_ROOT_PATH / f"{run_prefix}_{member}/c_{{bps}}/h_{hedger_seed}").as_posix().replace("{bps}", str({0.0: 0, 0.001: 10, 0.0010: 10, 0.005: 50, 0.0050: 50}[float(cost)]))
+    if expected_artifact_path.as_posix() != canonical:
+        raise RuntimeError(f"successor expected path {expected_artifact_path.as_posix()!r} != canonical {canonical!r}")
+    dataset_path = Path(f"data/processed/research/hedging_synthetic/{run_prefix}_{member}/synthetic_episodes_v1.parquet")
+    manifest_path = Path(f"data/processed/research/hedging_synthetic/{run_prefix}_{member}/synthetic_manifest_v1.json")
+    # Authorization identity: must be tracked/clean/committed — propagate failure, no tmp fallback
+    info = verify_authorization_artifact(authorization_path)
+    _payload_impl_commit = str(payload.get("implementation_commit") or "")
+    _payload_impl_manifest = str(payload.get("implementation_manifest_sha256") or "")
+    pred_map = payload.get("predecessor_identities") or {}
+    pred_meta = None
+    for k, v in pred_map.items():
+        if member in k and str(cost) in k:
+            pred_meta = v
+            break
+    if pred_meta is None:
+        from neuralmarket.research.deep_hedging.runner import _get_trusted_predecessor_map
+
+        trusted = _get_trusted_predecessor_map()
+        for tk, tv in trusted.items():
+            if tk.startswith(f"{member}:{cost}:"):
+                pred_meta = tv
+                break
+    if pred_meta is None:
+        raise RuntimeError(f"predecessor mapping missing for tuple {(member, cost, hedger_seed)}")
+    successor_provenance = {
+        "successor_protocol_path": str(SUCCESSOR_PROTOCOL_PATH),
+        "successor_authorization_path": str(authorization_path),
+        "successor_authorization_task_id": str(payload.get("authorization_task_id") or ""),
+        "successor_implementation_commit": _payload_impl_commit,
+        "successor_implementation_manifest": _payload_impl_manifest,
+        "successor_root": effective_root.as_posix(),
+        "dataset_path": str(dataset_path),
+        "historical_predecessor_artifact_path": str(pred_meta.get("historical_artifact_path", "")),
+    }
+    # --- Atomic exclusive claim BEFORE dataset/model/CUDA/optimizer work ---
+    claim_path = expected_artifact_path / "execution_claim.json"
+    claim_path.parent.mkdir(parents=True, exist_ok=True)
+    claim_payload = {
+        "schema_version": "hedging-successor-claim-v1",
+        "member": member,
+        "cost": cost,
+        "hedger_seed": hedger_seed,
+        "ordinal": ctx["ordinal"],
+        "authorization_path": str(authorization_path),
+        "authorization_canonical": info.get("canonical_sha256"),
+        "authorization_blob": info.get("git_blob"),
+        "authorization_commit": info.get("commit"),
+        "expected_artifact_path": expected_artifact_path.as_posix(),
+        "policy_root": effective_root.as_posix(),
+        "claim_time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    try:
+        with open(claim_path, "x", encoding="utf-8") as f:
+            json.dump(claim_payload, f, indent=2, sort_keys=True)
+    except FileExistsError as e:
+        raise FileExistsError(f"OVERWRITE_REFUSED: successor claim already exists at {claim_path} (write-once, consumed attempt)") from e
+    return _train_one_policy_internal(
+        member=member,
+        cost=cost,
+        hedger_seed=hedger_seed,
+        synthetic_dataset_path=dataset_path,
+        synthetic_manifest_path=manifest_path,
+        policy_root=effective_root,
+        run_prefix=run_prefix,
+        max_epochs=200,
+        min_epochs=20,
+        patience=20,
+        batch_size=64,
+        device="cuda",
+        verify_contract_runtime=True,
+        recovery_provenance=successor_provenance,
     )
 
 

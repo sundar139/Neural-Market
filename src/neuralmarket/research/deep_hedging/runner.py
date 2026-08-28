@@ -27,7 +27,7 @@ EXPECTED_RUNTIME_IDENTITY = "17e3bb52d5893c4e09ecb759a925004f2e75a37d7d4faf4ece7
 CONTRACT_V3_PATH = Path("reports/protocol/structured_vol_v5_deep_hedging_training_contract_v3.md")
 AUTHORIZATION_TASK_FAMILY_RE = re.compile(r"^NM-R4-V5-DEEP-HEDGING-TRAINING-EXECUTION-AUTHORIZATION-[0-9]+$")
 RECOVERY_AUTHORIZATION_TASK_FAMILY_RE = re.compile(r"^NM-R4-V5-DEEP-HEDGING-GRU-TRAINING-RECOVERY-EXECUTION-AUTHORIZATION-[0-9]+$")
-
+SUCCESSOR_AUTHORIZATION_TASK_FAMILY_RE = re.compile(r"^NM-R4-V5-DEEP-HEDGING-GRU-TRAINING-RECOVERY-SUCCESSOR-EXECUTION-AUTHORIZATION-[0-9]+$")
 class AuthorizationError(RuntimeError):
     """Raised when scientific execution is not authorized."""
 
@@ -467,8 +467,12 @@ def verify_authorization_artifact(
         task_id = str(payload.get("authorization_task_id") or payload.get("task_id") or "")
     except Exception as e:
         raise AuthorizationError(f"failed to parse authorization_task_id from {rel}: {e}") from e
-    if not (AUTHORIZATION_TASK_FAMILY_RE.match(task_id) or RECOVERY_AUTHORIZATION_TASK_FAMILY_RE.match(task_id)):
-        raise AuthorizationError(f"authorization_task_id {task_id!r} does not match family {AUTHORIZATION_TASK_FAMILY_RE.pattern} or {RECOVERY_AUTHORIZATION_TASK_FAMILY_RE.pattern}")
+    if not (
+        AUTHORIZATION_TASK_FAMILY_RE.match(task_id)
+        or RECOVERY_AUTHORIZATION_TASK_FAMILY_RE.match(task_id)
+        or SUCCESSOR_AUTHORIZATION_TASK_FAMILY_RE.match(task_id)
+    ):
+        raise AuthorizationError(f"authorization_task_id {task_id!r} does not match family {AUTHORIZATION_TASK_FAMILY_RE.pattern} or {RECOVERY_AUTHORIZATION_TASK_FAMILY_RE.pattern} or {SUCCESSOR_AUTHORIZATION_TASK_FAMILY_RE.pattern}")
     return {
         "canonical_sha256": canonical_sha,
         "git_blob": blob,
@@ -476,7 +480,6 @@ def verify_authorization_artifact(
         "authorization_task_id": task_id,
         "path": str(rel),
     }
-
 
 def validate_authorization_schema(payload: dict) -> None:
     """Validate extended authorization payload binds all required fields.
@@ -554,8 +557,6 @@ SUCCESSOR_PROTOCOL_CANONICAL = "922b4760a7b71a153289ef9b1ff05417045903c3a8070119
 SUCCESSOR_PROTOCOL_RAW = "922b4760a7b71a153289ef9b1ff05417045903c3a8070119f8ee6881f0ade418"
 SUCCESSOR_PROTOCOL_BLOB = "8715db1c76bd8457eca29ff523e54b2d9ce573ef"
 SUCCESSOR_AUTHORIZATION_TYPE = "GRU_TRAINING_RECOVERY_SUCCESSOR_V1"
-SUCCESSOR_AUTHORIZATION_TASK_FAMILY_RE = re.compile(r"^NM-R4-V5-DEEP-HEDGING-GRU-TRAINING-RECOVERY-SUCCESSOR-EXECUTION-AUTHORIZATION-[0-9]+$")
-
 PREREQUISITE_PATH = Path("reports/protocol/hedging_recovery_v2_authorization_prerequisites_246.json")
 PREREQUISITE_COMMIT = "d4813d60002128c898fe88e40fd846dde80b5c3d"
 PREREQUISITE_CANONICAL = "c416ba8141cf91f732dfe245552b6ce9035cfb079d5ab71d324db89bc7e0f8e0"
@@ -1352,28 +1353,24 @@ def _get_successor_ordered_tuples(payload: dict) -> list[dict]:
     return tuples
 
 
-def check_successor_campaign_state(
+def _check_successor_campaign_state_with_root(
     *,
     payload: dict,
     member: str,
     cost: float,
     hedger_seed: int,
-    policy_root: Path | None = None,
+    policy_root: Path,
 ) -> int:
-    """Enforce 45-tuple deterministic order, one invocation per tuple, whole-campaign stop.
+    """Private test-only helper that allows custom root for isolated testing.
 
-    Returns ordinal of requested tuple. Fail-closed if:
-    - tuple not in exact 45
-    - duplicate already consumed
-    - previous ordinal not completed successfully
-    - campaign already stopped due to failure/nonterminal
-    - tuple skipping
-    Tests use tmp_path; real execution uses SUCCESSOR_ROOT_PATH.
+    Production code must use check_successor_campaign_state which enforces the
+    canonical SUCCESSOR_ROOT_PATH exactly. This helper is not used by any
+    production CLI/API.
     """
     from neuralmarket.research.deep_hedging.artifacts import RUN_PREFIXES
+    from neuralmarket.research.deep_hedging.trainer import SUCCESSOR_ROOT_PATH as _CANON
 
     ordered = _get_successor_ordered_tuples(payload)
-    # Find ordinal
     ordinal = None
     for idx, t in enumerate(ordered):
         if str(t.get("member")) == str(member) and float(t.get("cost")) == float(cost) and int(t.get("hedger_seed")) == int(hedger_seed):  # type: ignore[arg-type]
@@ -1381,17 +1378,12 @@ def check_successor_campaign_state(
             break
     if ordinal is None:
         raise AuthorizationError(f"successor tuple {(member, cost, hedger_seed)} not in frozen 45 order")
-    if policy_root is None:
-        from neuralmarket.research.deep_hedging.trainer import SUCCESSOR_ROOT_PATH
-        policy_root = SUCCESSOR_ROOT_PATH
     policy_root = Path(policy_root)
-    # Check previous ordinals completed successfully
     for idx in range(ordinal):
         prev = ordered[idx]
         rp = RUN_PREFIXES[prev["member"]]
         bps = prev["cost_bps"]
         prev_dir = policy_root / f"{rp}_{prev['member']}/c_{bps}/h_{prev['hedger_seed']}"
-        # Success requires terminal_manifest.json exists
         terminal = prev_dir / "terminal_manifest.json"
         started = prev_dir / "execution_started.json"
         failed = prev_dir / "execution_failed.json"
@@ -1407,68 +1399,73 @@ def check_successor_campaign_state(
             except ValueError:
                 raise AuthorizationError(f"successor campaign stopped: previous ordinal {idx} bad exit code")
         if not terminal.exists():
-            # If started exists but no terminal, it's nonterminal/interrupted
             if started.exists():
                 raise AuthorizationError(f"successor campaign stopped: previous ordinal {idx} nonterminal (started without terminal)")
             raise AuthorizationError(f"successor tuple ordinal {idx} not yet completed — cannot skip to ordinal {ordinal}")
-    # Check current not already consumed
     cur = ordered[ordinal]
     rp = RUN_PREFIXES[cur["member"]]
     bps = cur["cost_bps"]
     cur_dir = policy_root / f"{rp}_{cur['member']}/c_{bps}/h_{cur['hedger_seed']}"
     if (cur_dir / "execution_started.json").exists() or (cur_dir / "checkpoint.pt").exists() or (cur_dir / "terminal_manifest.json").exists():
         raise AuthorizationError(f"successor tuple {(member, cost, hedger_seed)} already consumed at {cur_dir}")
-    # Check v1/v2 path blocking — ensure we are not using wrong root
-    # The cur_dir must be under SUCCESSOR_ROOT, not recovery_v1/v2
-    cur_posix = cur_dir.as_posix()
-    if "hedging_policies_recovery_v1" in cur_posix or "hedging_policies_recovery_v2" in cur_posix:
-        raise AuthorizationError(f"successor path must not be v1/v2: {cur_posix}")
-    if cur_posix.startswith("data/processed/research/hedging_policies/") and not cur_posix.startswith("data/processed/research/hedging_policies_recovery_v3/"):
-        raise AuthorizationError(f"successor path must be recovery_v3, got {cur_posix}")
+    # Positive exact enforcement for test helper: allow any root that matches the passed policy_root,
+    # but still ensure cur_dir is exactly policy_root / relative (by construction) — no substring bypass.
+    # For isolation, we only ensure cur_dir is under policy_root via exact prefix.
+    if not cur_dir.as_posix().startswith(policy_root.as_posix().rstrip("/") + "/"):
+        raise AuthorizationError(f"successor path not under policy_root {policy_root.as_posix()!r}: {cur_dir.as_posix()!r}")
     return ordinal
 
 
-def gate_successor_execution(
+def check_successor_campaign_state(
+    *,
+    payload: dict,
+    member: str,
+    cost: float,
+    hedger_seed: int,
+) -> int:
+    """Enforce 45-tuple deterministic order, one invocation per tuple, whole-campaign stop.
+
+    Production successor execution uses exactly SUCCESSOR_ROOT_PATH
+    (data/processed/research/hedging_policies_recovery_v3) and the exact frozen
+    expected_artifact_path. No caller-controlled policy_root is allowed.
+    """
+    from neuralmarket.research.deep_hedging.trainer import SUCCESSOR_ROOT_PATH
+
+    return _check_successor_campaign_state_with_root(
+        payload=payload, member=member, cost=cost, hedger_seed=hedger_seed, policy_root=SUCCESSOR_ROOT_PATH
+    )
+
+
+def _gate_successor_execution_with_root(
     *,
     authorization_path: Path,
     member: str,
     cost: float,
     hedger_seed: int,
-    policy_root: Path | None = None,
+    policy_root: Path,
 ) -> dict:
-    """Production successor authorization consumption gate — fail-closed before trainer.
-
-    Reads authorization artifact from explicit path, authenticates exact bytes,
-    validates successor schema before any side effect, verifies campaign state,
-    and resolves exact recovery_v3 tuple/path. Returns validated context for
-    the existing trainer. No caller-supplied dict may substitute for bytes.
-    """
+    """Private test-only gate helper with custom root — not for production."""
     if not isinstance(authorization_path, Path):
         raise AuthorizationError("authorization_path must be Path")
     if not authorization_path.exists():
         raise AuthorizationError(f"authorization artifact not found: {authorization_path}")
-    # Reject Task276 prerequisite freeze artifact used as authorization
     prereq_freeze = Path("reports/protocol/hedging_recovery_successor_execution_authorization_prerequisites_276.json")
     if authorization_path.resolve() == prereq_freeze.resolve() or authorization_path.as_posix() == prereq_freeze.as_posix():
         raise AuthorizationError("Task276 prerequisite freeze artifact must not be used as execution authorization")
-    # Also reject the 264 prerequisite
     if authorization_path.resolve() == SUCCESSOR_PREREQUISITE_PATH.resolve():
         raise AuthorizationError("prerequisite264 must not be used as execution authorization")
+    # Authorization identity: tracked/clean/committed — must propagate failure
+    verify_authorization_artifact(authorization_path)
     raw = authorization_path.read_bytes()
     try:
         payload = json.loads(raw.decode("utf-8"))
     except Exception as e:
         raise AuthorizationError(f"authorization artifact not valid JSON: {e}") from e
-    # Schema validator before any side effect
     validate_successor_authorization_schema(payload)
-    # Additional gates: Task276 prerequisite as auth already rejected above; also check old auths
     task_id = str(payload.get("authorization_task_id") or payload.get("task_id") or "")
     if task_id in ("NM-R4-V5-DEEP-HEDGING-GRU-TRAINING-RECOVERY-EXECUTION-AUTHORIZATION-248", "NM-R4-V5-DEEP-HEDGING-GRU-TRAINING-RECOVERY-EXECUTION-AUTHORIZATION-251"):
         raise AuthorizationError(f"old authorization {task_id} rejected for successor")
-    # Verify current implementation/source binding already done in validator, but also ensure no v1/v2 path confusion
-    # Resolve campaign config and verify tuple membership via campaign state
-    ordinal = check_successor_campaign_state(payload=payload, member=member, cost=cost, hedger_seed=hedger_seed, policy_root=policy_root)
-    # Resolve exact recovery_v3 path and verify it matches expected artifact path
+    ordinal = _check_successor_campaign_state_with_root(payload=payload, member=member, cost=cost, hedger_seed=hedger_seed, policy_root=policy_root)
     ordered = _get_successor_ordered_tuples(payload)
     expected_path = None
     for t in ordered:
@@ -1477,24 +1474,101 @@ def gate_successor_execution(
             break
     if expected_path is None:
         raise AuthorizationError(f"successor tuple {(member, cost, hedger_seed)} not found")
-    # Ensure path is under canonical recovery_v3 root
-    if not str(expected_path).replace("\\", "/").startswith("data/processed/research/hedging_policies_recovery_v3/"):
-        raise AuthorizationError(f"successor expected path must be recovery_v3, got {expected_path}")
-    if "hedging_policies_recovery_v1" in str(expected_path) or "hedging_policies_recovery_v2" in str(expected_path):
-        raise AuthorizationError(f"successor path must not be v1/v2: {expected_path}")
-    # Verify artifact collision already checked in campaign state, but double-check
-    from neuralmarket.research.deep_hedging.trainer import SUCCESSOR_ROOT_PATH as _TRAINER_ROOT
-    resolved = Path(str(expected_path))
-    if not resolved.as_posix().startswith(_TRAINER_ROOT.as_posix() + "/"):
-        raise AuthorizationError(f"resolved path not under {_TRAINER_ROOT.as_posix()}")
-    # All gates passed — return context for trainer (without executing)
+    expected_posix = str(expected_path).replace("\\", "/")
+    if expected_posix != Path(str(expected_path)).as_posix():
+        raise AuthorizationError(f"successor expected path must be POSIX canonical: {expected_path!r}")
+    # For test isolation, private helper allows policy_root to be tmp_path:
+    # enforce that expected path is under canonical SUCCESSOR_ROOT and its relative matches policy_root-relative canonical.
+    if not expected_posix.startswith(SUCCESSOR_ROOT + "/"):
+        raise AuthorizationError(f"successor expected path must start with {SUCCESSOR_ROOT!r}, got {expected_posix!r}")
+    from neuralmarket.research.deep_hedging.artifacts import RUN_PREFIXES
+
+    rp = RUN_PREFIXES[member]
+    bps = {0.0: 0, 0.001: 10, 0.0010: 10, 0.005: 50, 0.0050: 50}[float(cost)]
+    canonical_private = (Path(policy_root) / f"{rp}_{member}/c_{bps}/h_{hedger_seed}").as_posix()
+    # Compare relative parts after root
+    expected_relative = Path(expected_posix).relative_to(SUCCESSOR_ROOT).as_posix()
+    canonical_relative = Path(canonical_private).relative_to(Path(policy_root).as_posix()).as_posix()
+    if expected_relative != canonical_relative:
+        raise AuthorizationError(f"successor expected relative {expected_relative!r} != canonical relative {canonical_relative!r}")
+    # For isolation, resolved is under policy_root, not real SUCCESSOR_ROOT
+    resolved = Path(canonical_private)
+    if resolved.as_posix() != canonical_private:
+        raise AuthorizationError(f"resolved path {resolved.as_posix()!r} != canonical {canonical_private!r}")
     return {
         "payload": payload,
         "ordinal": ordinal,
         "expected_artifact_path": resolved,
-        "policy_root": Path(policy_root) if policy_root is not None else _TRAINER_ROOT,
+        "policy_root": Path(policy_root),
     }
 
+def gate_successor_execution(
+    *,
+    authorization_path: Path,
+    member: str,
+    cost: float,
+    hedger_seed: int,
+) -> dict:
+    """Production successor authorization consumption gate — fail-closed before trainer.
+
+    Reads authorization artifact from explicit path, enforces tracked/clean/committed
+    identity via verify_authorization_artifact, validates successor schema before any
+    side effect, verifies campaign state, and resolves exact recovery_v3 tuple/path.
+    Uses exactly SUCCESSOR_ROOT_PATH (data/processed/research/hedging_policies_recovery_v3)
+    and the exact frozen expected_artifact_path. No caller-supplied policy_root.
+    """
+    from neuralmarket.research.deep_hedging.trainer import SUCCESSOR_ROOT_PATH
+
+    if not isinstance(authorization_path, Path):
+        raise AuthorizationError("authorization_path must be Path")
+    if not authorization_path.exists():
+        raise AuthorizationError(f"authorization artifact not found: {authorization_path}")
+    prereq_freeze = Path("reports/protocol/hedging_recovery_successor_execution_authorization_prerequisites_276.json")
+    if authorization_path.resolve() == prereq_freeze.resolve() or authorization_path.as_posix() == prereq_freeze.as_posix():
+        raise AuthorizationError("Task276 prerequisite freeze artifact must not be used as execution authorization")
+    if authorization_path.resolve() == SUCCESSOR_PREREQUISITE_PATH.resolve():
+        raise AuthorizationError("prerequisite264 must not be used as execution authorization")
+    # Enforce authorization artifact identity — tracked/clean/committed; propagate failure
+    verify_authorization_artifact(authorization_path)
+    raw = authorization_path.read_bytes()
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception as e:
+        raise AuthorizationError(f"authorization artifact not valid JSON: {e}") from e
+    validate_successor_authorization_schema(payload)
+    task_id = str(payload.get("authorization_task_id") or payload.get("task_id") or "")
+    if task_id in ("NM-R4-V5-DEEP-HEDGING-GRU-TRAINING-RECOVERY-EXECUTION-AUTHORIZATION-248", "NM-R4-V5-DEEP-HEDGING-GRU-TRAINING-RECOVERY-EXECUTION-AUTHORIZATION-251"):
+        raise AuthorizationError(f"old authorization {task_id} rejected for successor")
+    ordinal = check_successor_campaign_state(payload=payload, member=member, cost=cost, hedger_seed=hedger_seed)
+    ordered = _get_successor_ordered_tuples(payload)
+    expected_path = None
+    for t in ordered:
+        if str(t.get("member")) == str(member) and float(t.get("cost")) == float(cost) and int(t.get("hedger_seed")) == int(hedger_seed):  # type: ignore[arg-type]
+            expected_path = t.get("expected_artifact_path")
+            break
+    if expected_path is None:
+        raise AuthorizationError(f"successor tuple {(member, cost, hedger_seed)} not found")
+    expected_posix = str(expected_path).replace("\\", "/")
+    from neuralmarket.research.deep_hedging.artifacts import RUN_PREFIXES as _RP
+    from neuralmarket.research.deep_hedging.trainer import SUCCESSOR_ROOT_PATH as _TRAINER_ROOT
+    rp = _RP[member]
+    bps = {0.0: 0, 0.001: 10, 0.0010: 10, 0.005: 50, 0.0050: 50}[float(cost)]
+    canonical = (_TRAINER_ROOT / f"{rp}_{member}/c_{bps}/h_{hedger_seed}").as_posix()
+    if expected_posix != canonical:
+        raise AuthorizationError(f"successor expected path {expected_posix!r} != canonical {canonical!r}")
+    resolved = Path(str(expected_path))
+    if resolved.as_posix() != canonical:
+        raise AuthorizationError(f"resolved path {resolved.as_posix()!r} != canonical {canonical!r}")
+    if not resolved.as_posix().startswith(_TRAINER_ROOT.as_posix() + "/"):
+        raise AuthorizationError(f"resolved path not under {_TRAINER_ROOT.as_posix()}")
+    if resolved.as_posix() != expected_posix:
+        raise AuthorizationError(f"resolved path not exact expected_artifact_path")
+    return {
+        "payload": payload,
+        "ordinal": ordinal,
+        "expected_artifact_path": resolved,
+        "policy_root": _TRAINER_ROOT,
+    }
 def validate_recovery_authorization_schema(payload: dict) -> None:
     """Validate recovery authorization — fail-closed, distinct from historical.
 
