@@ -762,7 +762,7 @@ def _verify_final_prerequisite_from_authorization(payload: dict) -> dict[str, st
     # Optional but if present must be validated
     # Path must be repository-relative, not absolute, no traversal
     raw_path = str(payload["successor_final_prerequisite_path"])
-    if Path(raw_path).is_absolute():
+    if Path(raw_path).is_absolute() or raw_path.startswith("/") or raw_path.startswith("\\") or (len(raw_path) >= 2 and raw_path[1] == ":"):
         raise AuthorizationError(f"final prerequisite path must be repository-relative, got absolute {raw_path!r}")
     if ".." in Path(raw_path).parts:
         raise AuthorizationError(f"final prerequisite path must not contain traversal, got {raw_path!r}")
