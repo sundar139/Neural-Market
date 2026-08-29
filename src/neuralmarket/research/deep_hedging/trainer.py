@@ -1023,12 +1023,12 @@ def train_one_policy(
 RECOVERY_ROOT_PATH = Path("data/processed/research/hedging_policies_recovery_v2")
 SUCCESSOR_ROOT_PATH = Path("data/processed/research/hedging_policies_recovery_v3")
 SUCCESSOR_HEDGER_SEEDS = (60999, 53804, 89356)
+SUCCESSOR_TO_HISTORICAL_SEED = {60999: 31001, 53804: 31002, 89356: 31003}
 SUCCESSOR_PROTOCOL_PATH = Path("reports/protocol/structured_vol_v5_deep_hedging_gru_training_recovery_successor_protocol_v1.md")
 RECOVERY_PROTOCOL_PATH = Path("reports/protocol/structured_vol_v5_deep_hedging_gru_training_recovery_protocol_v1.md")
 RECOVERY_PROTOCOL_CANONICAL = "4bf228ad508da7a71a07d659d383a5601e0a50540bea248dfccbfbeda9ce6be8"
 RECOVERY_PROTOCOL_BLOB = "6fcb39c29827d0d35ce3c777298fb75a81d00cb4"
 RECOVERY_SOURCE_COMMIT = "5a9e9c59c8f24bd8dcaadb1fa4ec3fbf2faa287d"
-
 def resolve_successor_artifact_path(member: str, cost: float, hedger_seed: int) -> Path:
     """Production successor artifact-path resolver — load-bearing SUCCESSOR_ROOT_PATH.
 
@@ -1100,12 +1100,15 @@ def _train_one_policy_successor_with_root(
     _payload_impl_manifest = str(payload.get("implementation_manifest_sha256") or "")
     pred_map = payload.get("predecessor_identities") or {}
     pred_meta = None
+    required_hist_seed = SUCCESSOR_TO_HISTORICAL_SEED.get(hedger_seed)
+    if required_hist_seed is None:
+        raise RuntimeError(f"successor hedger_seed {hedger_seed} has no mapped historical seed in {SUCCESSOR_TO_HISTORICAL_SEED}")
     for k, v in pred_map.items():
         try:
             mk, ck, sk = k.split(":")
         except ValueError:
             continue
-        if mk == member and float(ck) == float(cost):
+        if mk == member and float(ck) == float(cost) and int(sk) == required_hist_seed:
             pred_meta = v
             break
     if pred_meta is None:
@@ -1117,7 +1120,7 @@ def _train_one_policy_successor_with_root(
                 mk2, ck2, sk2 = tk.split(":")
             except ValueError:
                 continue
-            if mk2 == member and float(ck2) == float(cost):
+            if mk2 == member and float(ck2) == float(cost) and int(sk2) == required_hist_seed:
                 pred_meta = tv
                 break
     if pred_meta is None:
@@ -1234,12 +1237,15 @@ def train_one_policy_successor(
     _payload_impl_manifest = str(payload.get("implementation_manifest_sha256") or "")
     pred_map = payload.get("predecessor_identities") or {}
     pred_meta = None
+    required_hist_seed = SUCCESSOR_TO_HISTORICAL_SEED.get(hedger_seed)
+    if required_hist_seed is None:
+        raise RuntimeError(f"successor hedger_seed {hedger_seed} has no mapped historical seed in {SUCCESSOR_TO_HISTORICAL_SEED}")
     for k, v in pred_map.items():
         try:
             mk, ck, sk = k.split(":")
         except ValueError:
             continue
-        if mk == member and float(ck) == float(cost):
+        if mk == member and float(ck) == float(cost) and int(sk) == required_hist_seed:
             pred_meta = v
             break
     if pred_meta is None:
@@ -1251,13 +1257,14 @@ def train_one_policy_successor(
                 mk2, ck2, sk2 = tk.split(":")
             except ValueError:
                 continue
-            if mk2 == member and float(ck2) == float(cost):
+            if mk2 == member and float(ck2) == float(cost) and int(sk2) == required_hist_seed:
                 pred_meta = tv
                 break
     if pred_meta is None:
         raise RuntimeError(f"predecessor mapping missing for tuple {(member, cost, hedger_seed)}")
     successor_provenance = {
         "successor_protocol_path": str(SUCCESSOR_PROTOCOL_PATH),
+        "successor_authorization_path": str(authorization_path),
         "successor_authorization_task_id": str(payload.get("authorization_task_id") or ""),
         "successor_implementation_commit": _payload_impl_commit,
         "successor_implementation_manifest": _payload_impl_manifest,
@@ -1270,8 +1277,6 @@ def train_one_policy_successor(
     claim_path.parent.mkdir(parents=True, exist_ok=True)
     claim_payload = {
         "schema_version": "hedging-successor-claim-v1",
-        "member": member,
-        "cost": cost,
         "hedger_seed": hedger_seed,
         "ordinal": ctx["ordinal"],
         "authorization_path": str(authorization_path),
