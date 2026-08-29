@@ -20,15 +20,35 @@ from neuralmarket.research.deep_hedging.runner import (
     _get_authenticated_successor_prerequisite_values,
     validate_recovery_authorization_schema,
 )
-from neuralmarket.research.deep_hedging.trainer import SUCCESSOR_ROOT_PATH
 
+def _mock_verify_final_prereq2(payload):
+    required = ["successor_final_prerequisite_path", "successor_final_prerequisite_commit", "successor_final_prerequisite_canonical", "successor_final_prerequisite_blob"]
+    for field in required:
+        if field not in payload or not payload[field]:
+            from neuralmarket.research.deep_hedging.runner import AuthorizationError
+            raise AuthorizationError(f"authorization missing required final prerequisite field: {field}")
+    import pathlib
+    raw_path = str(payload["successor_final_prerequisite_path"])
+    if pathlib.Path(raw_path).is_absolute() or ".." in pathlib.Path(raw_path).parts:
+        from neuralmarket.research.deep_hedging.runner import AuthorizationError
+        raise AuthorizationError(f"final prerequisite path invalid: {raw_path!r}")
+    artifact_type = str(payload.get("successor_final_prerequisite_artifact_type") or "")
+    if artifact_type and artifact_type != "GRU_TRAINING_RECOVERY_SUCCESSOR_FINAL_EXECUTION_AUTHORIZATION_PREREQUISITES_V1":
+        from neuralmarket.research.deep_hedging.runner import AuthorizationError
+        raise AuthorizationError(f"final prerequisite artifact_type must be GRU_TRAINING_RECOVERY_SUCCESSOR_FINAL_EXECUTION_AUTHORIZATION_PREREQUISITES_V1, got {artifact_type!r}")
+    task_id = str(payload.get("successor_final_prerequisite_task_id") or "")
+    if task_id and not task_id.startswith("NM-R4-V5-DEEP-HEDGING-GRU-TRAINING-RECOVERY-SUCCESSOR-FINAL-AUTHORIZATION-PREREQUISITE-FREEZE-"):
+        from neuralmarket.research.deep_hedging.runner import AuthorizationError
+        raise AuthorizationError(f"final prerequisite task_id {task_id!r} does not match family")
+    return {"path": payload.get("successor_final_prerequisite_path"), "commit": payload.get("successor_final_prerequisite_commit"), "canonical": payload.get("successor_final_prerequisite_canonical"), "blob": payload.get("successor_final_prerequisite_blob"), "task_id": payload.get("successor_final_prerequisite_task_id"), "artifact_type": payload.get("successor_final_prerequisite_artifact_type")}
+
+from neuralmarket.research.deep_hedging.trainer import SUCCESSOR_ROOT_PATH
 
 def test_successor_root_is_v3():
     assert SUCCESSOR_ROOT == "data/processed/research/hedging_policies_recovery_v3"
     assert SUCCESSOR_ROOT_PATH.as_posix() == SUCCESSOR_ROOT
     assert SUCCESSOR_ROOT_PATH != Path("data/processed/research/hedging_policies_recovery_v2")
     assert SUCCESSOR_ROOT_PATH != Path("data/processed/research/hedging_policies")
-
 
 def test_successor_root_not_created(tmp_path: Path):
     # Tests must use tmp_path, not create real recovery_v3
@@ -40,17 +60,14 @@ def test_successor_root_not_created(tmp_path: Path):
     assert dummy.exists()
     assert not SUCCESSOR_ROOT_PATH.exists()
 
-
 def _valid_successor_payload():
     auth_path = Path("reports/protocol/hedging_recovery_successor_authorization_prerequisites_264.json")
     payload = json.loads(auth_path.read_bytes().decode())
     return payload
 
-
 def test_valid_successor_prerequisite_passes():
     payload = _valid_successor_payload()
     validate_successor_prerequisite(payload)
-
 
 def test_wrong_prerequisite_path_rejected():
     payload = _valid_successor_payload()
@@ -60,7 +77,6 @@ def test_wrong_prerequisite_path_rejected():
     p["artifact_type"] = "WRONG"
     with pytest.raises(AuthorizationError):
         validate_successor_prerequisite(p)
-
 
 def test_wrong_prerequisite_commit_via_file_tamper():
     # This tests file-level authentication: if file is tampered, _get_authenticated... should fail
@@ -72,14 +88,12 @@ def test_wrong_prerequisite_commit_via_file_tamper():
     with pytest.raises(AuthorizationError):
         validate_successor_prerequisite(p)
 
-
 def test_wrong_canonical_rejected():
     payload = _valid_successor_payload()
     p = copy.deepcopy(payload)
     p["successor_protocol"]["canonical_sha256"] = "0" * 64
     with pytest.raises(AuthorizationError):
         validate_successor_prerequisite(p)
-
 
 def test_wrong_blob_rejected():
     payload = _valid_successor_payload()
@@ -88,14 +102,12 @@ def test_wrong_blob_rejected():
     with pytest.raises(AuthorizationError):
         validate_successor_prerequisite(p)
 
-
 def test_wrong_artifact_type_rejected():
     payload = _valid_successor_payload()
     p = copy.deepcopy(payload)
     p["artifact_type"] = "GRU_TRAINING_RECOVERY_V2_AUTHORIZATION_PREREQUISITES_V1"
     with pytest.raises(AuthorizationError):
         validate_successor_prerequisite(p)
-
 
 def test_old_seed_rejected():
     payload = _valid_successor_payload()
@@ -104,14 +116,12 @@ def test_old_seed_rejected():
     with pytest.raises(AuthorizationError):
         validate_successor_prerequisite(p)
 
-
 def test_unknown_seed_rejected():
     payload = _valid_successor_payload()
     p = copy.deepcopy(payload)
     p["successor_hedger_seeds"] = [99999, 88888, 77777]
     with pytest.raises(AuthorizationError):
         validate_successor_prerequisite(p)
-
 
 def test_missing_tuple_rejected():
     payload = _valid_successor_payload()
@@ -120,14 +130,12 @@ def test_missing_tuple_rejected():
     with pytest.raises(AuthorizationError):
         validate_successor_prerequisite(p)
 
-
 def test_extra_tuple_rejected():
     payload = _valid_successor_payload()
     p = copy.deepcopy(payload)
     p["successor_prospective_tuples"] = p["successor_prospective_tuples"] + [p["successor_prospective_tuples"][0]]
     with pytest.raises(AuthorizationError):
         validate_successor_prerequisite(p)
-
 
 def test_duplicate_tuple_rejected():
     payload = _valid_successor_payload()
@@ -136,14 +144,12 @@ def test_duplicate_tuple_rejected():
     with pytest.raises(AuthorizationError):
         validate_successor_prerequisite(p)
 
-
 def test_tuple_field_drift_rejected():
     payload = _valid_successor_payload()
     p = copy.deepcopy(payload)
     p["successor_prospective_tuples"][0]["hedger_seed"] = 31001
     with pytest.raises(AuthorizationError):
         validate_successor_prerequisite(p)
-
 
 def test_wrong_dataset_sha_rejected():
     payload = _valid_successor_payload()
@@ -153,14 +159,12 @@ def test_wrong_dataset_sha_rejected():
     with pytest.raises(AuthorizationError):
         validate_successor_prerequisite(p)
 
-
 def test_wrong_expected_root_rejected():
     payload = _valid_successor_payload()
     p = copy.deepcopy(payload)
     p["successor_prospective_tuples"][0]["expected_artifact_path"] = p["successor_prospective_tuples"][0]["expected_artifact_path"].replace("hedging_policies_recovery_v3", "hedging_policies_recovery_v2")
     with pytest.raises(AuthorizationError):
         validate_successor_prerequisite(p)
-
 
 def test_wrong_predecessor_rejected():
     payload = _valid_successor_payload()
@@ -170,14 +174,12 @@ def test_wrong_predecessor_rejected():
     with pytest.raises(AuthorizationError):
         validate_successor_prerequisite(p)
 
-
 def test_task253_import_rejected():
     payload = _valid_successor_payload()
     p = copy.deepcopy(payload)
     p["task253_import_count"] = 1
     with pytest.raises(AuthorizationError):
         validate_successor_prerequisite(p)
-
 
 def test_historical_root_rejected():
     payload = _valid_successor_payload()
@@ -186,14 +188,12 @@ def test_historical_root_rejected():
     with pytest.raises(AuthorizationError):
         validate_successor_prerequisite(p)
 
-
 def test_v1_root_rejected():
     payload = _valid_successor_payload()
     p = copy.deepcopy(payload)
     p["successor_root"] = "data/processed/research/hedging_policies_recovery_v1"
     with pytest.raises(AuthorizationError):
         validate_successor_prerequisite(p)
-
 
 def test_v2_root_rejected():
     payload = _valid_successor_payload()
@@ -202,14 +202,12 @@ def test_v2_root_rejected():
     with pytest.raises(AuthorizationError):
         validate_successor_prerequisite(p)
 
-
 def test_arbitrary_root_rejected():
     payload = _valid_successor_payload()
     p = copy.deepcopy(payload)
     p["successor_root"] = "data/processed/research/hedging_policies_recovery_v3_custom"
     with pytest.raises(AuthorizationError):
         validate_successor_prerequisite(p)
-
 
 def test_retry_not_zero_rejected():
     payload = _valid_successor_payload()
@@ -218,14 +216,12 @@ def test_retry_not_zero_rejected():
     with pytest.raises(AuthorizationError):
         validate_successor_prerequisite(p)
 
-
 def test_rerun_not_zero_rejected():
     payload = _valid_successor_payload()
     p = copy.deepcopy(payload)
     p["rerun_permitted"] = 1
     with pytest.raises(AuthorizationError):
         validate_successor_prerequisite(p)
-
 
 def test_replacement_not_zero_rejected():
     payload = _valid_successor_payload()
@@ -234,14 +230,12 @@ def test_replacement_not_zero_rejected():
     with pytest.raises(AuthorizationError):
         validate_successor_prerequisite(p)
 
-
 def test_generation_not_zero_rejected():
     payload = _valid_successor_payload()
     p = copy.deepcopy(payload)
     p["generation_ceiling"] = 1
     with pytest.raises(AuthorizationError):
         validate_successor_prerequisite(p)
-
 
 def test_network_true_rejected():
     payload = _valid_successor_payload()
@@ -250,14 +244,12 @@ def test_network_true_rejected():
     with pytest.raises(AuthorizationError):
         validate_successor_prerequisite(p)
 
-
 def test_final_true_rejected():
     payload = _valid_successor_payload()
     p = copy.deepcopy(payload)
     p["final_test_access"] = True
     with pytest.raises(AuthorizationError):
         validate_successor_prerequisite(p)
-
 
 def test_prerequisite_cannot_be_used_as_authorization():
     payload = _valid_successor_payload()
@@ -267,7 +259,6 @@ def test_prerequisite_cannot_be_used_as_authorization():
     # Also ensure that even with mocked file, it fails due to missing authorization_type
     # The prerequisite has no authorization_type, so recovery schema should reject
     assert "authorization_type" not in payload
-
 
 def test_no_recovery_v3_created(tmp_path: Path):
     # Ensure test does not create real recovery_v3

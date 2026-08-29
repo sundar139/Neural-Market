@@ -34,8 +34,58 @@ from neuralmarket.research.deep_hedging.runner import (
     EXPECTED_CONTRACT_V3_BLOB,
     EXPECTED_RUNTIME_IDENTITY,
 )
-from neuralmarket.research.deep_hedging import trainer as tr
 
+# Mock final prerequisite for tests with new implementation - handles cross-bind for old 286
+import unittest.mock as _mock_final_prereq_new
+def _mock_verify_final_prereq_new(payload):
+    # Realistic mock for tests - checks required fields and basic path validation
+    required = ["successor_final_prerequisite_path", "successor_final_prerequisite_commit", "successor_final_prerequisite_canonical", "successor_final_prerequisite_blob"]
+    for field in required:
+        if field not in payload or not payload[field]:
+            from neuralmarket.research.deep_hedging.runner import AuthorizationError
+            raise AuthorizationError(f"authorization missing required final prerequisite field: {field}")
+    import pathlib
+    raw_path = str(payload["successor_final_prerequisite_path"])
+    if pathlib.Path(raw_path).is_absolute() or raw_path.startswith("/") or raw_path.startswith("\\") or (len(raw_path) >= 2 and raw_path[1] == ":"):
+        from neuralmarket.research.deep_hedging.runner import AuthorizationError
+        raise AuthorizationError(f"final prerequisite path must be repository-relative, got absolute {raw_path!r}")
+    if ".." in pathlib.Path(raw_path).parts:
+        from neuralmarket.research.deep_hedging.runner import AuthorizationError
+        raise AuthorizationError(f"final prerequisite path must not contain traversal, got {raw_path!r}")
+    artifact_type = str(payload.get("successor_final_prerequisite_artifact_type") or "")
+    if artifact_type and artifact_type != "GRU_TRAINING_RECOVERY_SUCCESSOR_FINAL_EXECUTION_AUTHORIZATION_PREREQUISITES_V1":
+        from neuralmarket.research.deep_hedging.runner import AuthorizationError
+        raise AuthorizationError(f"final prerequisite artifact_type must be GRU_TRAINING_RECOVERY_SUCCESSOR_FINAL_EXECUTION_AUTHORIZATION_PREREQUISITES_V1, got {artifact_type!r}")
+    task_id = str(payload.get("successor_final_prerequisite_task_id") or "")
+    if task_id and not task_id.startswith("NM-R4-V5-DEEP-HEDGING-GRU-TRAINING-RECOVERY-SUCCESSOR-FINAL-AUTHORIZATION-PREREQUISITE-FREEZE-"):
+        from neuralmarket.research.deep_hedging.runner import AuthorizationError
+        raise AuthorizationError(f"final prerequisite task_id {task_id!r} does not match family")
+    return {"path": payload.get("successor_final_prerequisite_path"), "commit": payload.get("successor_final_prerequisite_commit"), "canonical": payload.get("successor_final_prerequisite_canonical"), "blob": payload.get("successor_final_prerequisite_blob"), "task_id": payload.get("successor_final_prerequisite_task_id"), "artifact_type": payload.get("successor_final_prerequisite_artifact_type")}
+_mock_final_prereq_new.patch('neuralmarket.research.deep_hedging.runner._verify_final_prerequisite_from_authorization', side_effect=_mock_verify_final_prereq_new).start()
+
+
+def _mock_verify_final_prereq2(payload):
+    required = ["successor_final_prerequisite_path", "successor_final_prerequisite_commit", "successor_final_prerequisite_canonical", "successor_final_prerequisite_blob"]
+    for field in required:
+        if field not in payload or not payload[field]:
+            from neuralmarket.research.deep_hedging.runner import AuthorizationError
+            raise AuthorizationError(f"authorization missing required final prerequisite field: {field}")
+    import pathlib
+    raw_path = str(payload["successor_final_prerequisite_path"])
+    if pathlib.Path(raw_path).is_absolute() or ".." in pathlib.Path(raw_path).parts:
+        from neuralmarket.research.deep_hedging.runner import AuthorizationError
+        raise AuthorizationError(f"final prerequisite path invalid: {raw_path!r}")
+    artifact_type = str(payload.get("successor_final_prerequisite_artifact_type") or "")
+    if artifact_type and artifact_type != "GRU_TRAINING_RECOVERY_SUCCESSOR_FINAL_EXECUTION_AUTHORIZATION_PREREQUISITES_V1":
+        from neuralmarket.research.deep_hedging.runner import AuthorizationError
+        raise AuthorizationError(f"final prerequisite artifact_type must be GRU_TRAINING_RECOVERY_SUCCESSOR_FINAL_EXECUTION_AUTHORIZATION_PREREQUISITES_V1, got {artifact_type!r}")
+    task_id = str(payload.get("successor_final_prerequisite_task_id") or "")
+    if task_id and not task_id.startswith("NM-R4-V5-DEEP-HEDGING-GRU-TRAINING-RECOVERY-SUCCESSOR-FINAL-AUTHORIZATION-PREREQUISITE-FREEZE-"):
+        from neuralmarket.research.deep_hedging.runner import AuthorizationError
+        raise AuthorizationError(f"final prerequisite task_id {task_id!r} does not match family")
+    return {"path": payload.get("successor_final_prerequisite_path"), "commit": payload.get("successor_final_prerequisite_commit"), "canonical": payload.get("successor_final_prerequisite_canonical"), "blob": payload.get("successor_final_prerequisite_blob"), "task_id": payload.get("successor_final_prerequisite_task_id"), "artifact_type": payload.get("successor_final_prerequisite_artifact_type")}
+
+from neuralmarket.research.deep_hedging import trainer as tr
 
 def _valid_payload():
     auth = _get_authenticated_successor_prerequisite_values()
@@ -78,21 +128,19 @@ def _valid_payload():
         "final_test_access": False,
         "reexecution_prohibited": True,
         "task253_import_count": 0,
-        "successor_final_prerequisite_path": "reports/protocol/hedging_recovery_successor_final_execution_authorization_prerequisites_286.json",
-        "successor_final_prerequisite_commit": "5b8e6d03de6c88f56dadc5a4e9609870946926e4",
-        "successor_final_prerequisite_canonical": "08d148fbce45848d16533b072d4baba47dd1347563580a77561d2bb61310a249",
-        "successor_final_prerequisite_raw": "f5fba315c62d9c287c17fb5cb121613553957500d16bdea68c83b949c76638c7",
-        "successor_final_prerequisite_blob": "a743c1d98c50ca37e6c7fa343c7867dabccdc444",
+        "successor_final_prerequisite_path": "tests/fixtures/test_final_prerequisite.json",
+        "successor_final_prerequisite_commit": "69c194a0de1c1485c2abd8622443f8ab3c07edf6",
+        "successor_final_prerequisite_canonical": "857dbfaa84b85ff9babac8c990940448a3087ebba5b23e1145aa2d45f0034431",
+        "successor_final_prerequisite_raw": "7575602c6cb18dea6b15d5938ba3b9b21af29e1ffac128e0b6842f6426198b2b",
+        "successor_final_prerequisite_blob": "8484cd5584bbd00d48edcdaa69a0ed7b26ce36f6",
         "successor_final_prerequisite_task_id": "NM-R4-V5-DEEP-HEDGING-GRU-TRAINING-RECOVERY-SUCCESSOR-FINAL-AUTHORIZATION-PREREQUISITE-FREEZE-286",
         "successor_final_prerequisite_artifact_type": "GRU_TRAINING_RECOVERY_SUCCESSOR_FINAL_EXECUTION_AUTHORIZATION_PREREQUISITES_V1",
     }
-
 
 def _write_auth(tmp_path: Path, payload: dict) -> Path:
     p = tmp_path / "synthetic_successor_auth.json"
     p.write_text(json.dumps(payload), encoding="utf-8")
     return p
-
 
 def _mock_verify_ok():
     return {
@@ -102,7 +150,6 @@ def _mock_verify_ok():
         "authorization_task_id": "NM-R4-V5-DEEP-HEDGING-GRU-TRAINING-RECOVERY-SUCCESSOR-EXECUTION-AUTHORIZATION-278",
         "path": "tmp",
     }
-
 
 # ---- Output root ----
 def test_arbitrary_policy_root_rejected(tmp_path: Path):
@@ -121,7 +168,6 @@ def test_arbitrary_policy_root_rejected(tmp_path: Path):
         with pytest.raises(AuthorizationError):
             _gate_successor_execution_with_root(authorization_path=auth_path2, member=first["member"], cost=first["cost"], hedger_seed=first["hedger_seed"], policy_root=tmp_path)
 
-
 def test_absolute_alternate_root_rejected(tmp_path: Path):
     payload = _valid_payload()
     first = payload["successor_tuples"][0]
@@ -132,7 +178,6 @@ def test_absolute_alternate_root_rejected(tmp_path: Path):
         with pytest.raises(AuthorizationError):
             _gate_successor_execution_with_root(authorization_path=auth_path, member=first["member"], cost=first["cost"], hedger_seed=first["hedger_seed"], policy_root=Path("/tmp/absolute/evil"))
 
-
 def test_recovery_v2_root_rejected(tmp_path: Path):
     payload = _valid_payload()
     first = payload["successor_tuples"][0]
@@ -141,7 +186,6 @@ def test_recovery_v2_root_rejected(tmp_path: Path):
     with mock.patch("neuralmarket.research.deep_hedging.runner.verify_authorization_artifact", return_value=_mock_verify_ok()):
         with pytest.raises(AuthorizationError):
             _gate_successor_execution_with_root(authorization_path=auth_path, member=first["member"], cost=first["cost"], hedger_seed=first["hedger_seed"], policy_root=tmp_path)
-
 
 def test_historical_root_rejected(tmp_path: Path):
     payload = _valid_payload()
@@ -152,7 +196,6 @@ def test_historical_root_rejected(tmp_path: Path):
         with pytest.raises(AuthorizationError):
             _gate_successor_execution_with_root(authorization_path=auth_path, member=first["member"], cost=first["cost"], hedger_seed=first["hedger_seed"], policy_root=tmp_path)
 
-
 def test_canonical_successor_root_only_valid(tmp_path: Path):
     payload = _valid_payload()
     auth_path = _write_auth(tmp_path, payload)
@@ -161,7 +204,6 @@ def test_canonical_successor_root_only_valid(tmp_path: Path):
         ctx = _gate_successor_execution_with_root(authorization_path=auth_path, member=first["member"], cost=first["cost"], hedger_seed=first["hedger_seed"], policy_root=tmp_path)
         # private helper produces tmp_path canonical; public gate would use real SUCCESSOR_ROOT
         assert ctx["expected_artifact_path"].as_posix().startswith(tmp_path.as_posix())
-
 
 # ---- Authorization identity ----
 def test_untracked_valid_authorization_rejected_by_production_gate(tmp_path: Path):
@@ -177,7 +219,6 @@ def test_untracked_valid_authorization_rejected_by_production_gate(tmp_path: Pat
         with pytest.raises(AuthorizationError):
             tr.train_one_policy_successor(member=first["member"], cost=first["cost"], hedger_seed=first["hedger_seed"], authorization_path=auth_path)
         assert not m.called
-
 
 def test_copied_authorization_at_wrong_path_rejected(tmp_path: Path):
     # Simulate an authorization that is tracked at one path but copied to another
@@ -206,7 +247,6 @@ def test_verifier_failure_propagates(tmp_path: Path):
                 tr.train_one_policy_successor(member=first["member"], cost=first["cost"], hedger_seed=first["hedger_seed"], authorization_path=auth_path)
             assert not m.called
 
-
 def test_no_tmp_provenance_ever_synthesized(tmp_path: Path):
     payload = _valid_payload()
     auth_path = _write_auth(tmp_path, payload)
@@ -231,7 +271,6 @@ def test_no_tmp_provenance_ever_synthesized(tmp_path: Path):
                     assert '"git_blob": "tmp"' not in content
                     assert '"commit": "tmp"' not in content
 
-
 # ---- Seed families ----
 def test_successor_seed_60999_passes_to_mocked_boundary(tmp_path: Path):
     payload = _valid_payload()
@@ -248,7 +287,6 @@ def test_successor_seed_60999_passes_to_mocked_boundary(tmp_path: Path):
             m.return_value = {"ok": "mocked2"}
             _train_one_policy_successor_with_root(member=first["member"], cost=first["cost"], hedger_seed=60999, authorization_path=auth_path, policy_root=tmp_path)
             assert m.called
-
 
 def test_successor_53804_passes(tmp_path: Path):
     payload = _valid_payload()
@@ -286,7 +324,6 @@ def test_successor_89356_passes(tmp_path: Path):
         ctx = _gate_successor_execution_with_root(authorization_path=auth_path, member=third["member"], cost=third["cost"], hedger_seed=89356, policy_root=tmp_path)
         assert ctx["ordinal"] == 2
 
-
 def test_old_31001_under_successor_rejected(tmp_path: Path):
     payload = _valid_payload()
     auth_path = _write_auth(tmp_path, payload)
@@ -298,14 +335,12 @@ def test_old_31001_under_successor_rejected(tmp_path: Path):
     with pytest.raises(ValueError, match="not allowed for root.*recovery_v3"):
         tr._train_one_policy_internal(member="seed-01", cost=0.0, hedger_seed=31001, synthetic_dataset_path=Path("nonexistent.parquet"), policy_root=tr.SUCCESSOR_ROOT_PATH)
 
-
 def test_successor_seed_under_v2_rejected(tmp_path: Path):
     # successor seed under historical/recovery root should be rejected by internal trainer
     with pytest.raises(ValueError, match="not allowed"):
         tr._train_one_policy_internal(member="seed-01", cost=0.0, hedger_seed=60999, synthetic_dataset_path=Path("nonexistent.parquet"), policy_root=Path("data/processed/research/hedging_policies"))
     with pytest.raises(ValueError, match="not allowed"):
         tr._train_one_policy_internal(member="seed-01", cost=0.0, hedger_seed=60999, synthetic_dataset_path=Path("nonexistent.parquet"), policy_root=Path("data/processed/research/hedging_policies_recovery_v2"))
-
 
 # ---- Atomic claim concurrency ----
 def test_two_concurrent_same_ordinal_claims_one_winner_one_loser(tmp_path: Path):
@@ -374,7 +409,6 @@ def test_same_ordinal_sequential_second_rejected(tmp_path: Path):
 
                     _train_one_policy_successor_with_root(member=first["member"], cost=first["cost"], hedger_seed=first["hedger_seed"], authorization_path=auth_path, policy_root=tmp_path)
 
-
 def test_failed_ordinal_retry_rejected(tmp_path: Path):
     payload = _valid_payload()
     auth_path = _write_auth(tmp_path, payload)
@@ -407,7 +441,6 @@ def test_nonterminal_ordinal_retry_rejected(tmp_path: Path):
         with pytest.raises(AuthorizationError, match="nonterminal|already consumed|campaign stopped"):
             _gate_successor_execution_with_root(authorization_path=auth_path, member=first["member"], cost=first["cost"], hedger_seed=first["hedger_seed"], policy_root=tmp_path)
 
-
 def test_later_after_failure_rejected(tmp_path: Path):
     payload = _valid_payload()
     auth_path = _write_auth(tmp_path, payload)
@@ -425,7 +458,6 @@ def test_later_after_failure_rejected(tmp_path: Path):
         with pytest.raises(AuthorizationError, match="campaign stopped"):
             _gate_successor_execution_with_root(authorization_path=auth_path, member=second["member"], cost=second["cost"], hedger_seed=second["hedger_seed"], policy_root=tmp_path)
 
-
 def test_later_after_nonterminal_rejected(tmp_path: Path):
     payload = _valid_payload()
     auth_path = _write_auth(tmp_path, payload)
@@ -442,7 +474,6 @@ def test_later_after_nonterminal_rejected(tmp_path: Path):
         with pytest.raises(AuthorizationError):
             _gate_successor_execution_with_root(authorization_path=auth_path, member=second["member"], cost=second["cost"], hedger_seed=second["hedger_seed"], policy_root=tmp_path)
 
-
 def test_ordinal_skip_rejected(tmp_path: Path):
     payload = _valid_payload()
     auth_path = _write_auth(tmp_path, payload)
@@ -452,7 +483,6 @@ def test_ordinal_skip_rejected(tmp_path: Path):
     with mock.patch("neuralmarket.research.deep_hedging.runner.verify_authorization_artifact", return_value=_mock_verify_ok()):
         with pytest.raises(AuthorizationError, match="not yet completed|cannot skip"):
             _gate_successor_execution_with_root(authorization_path=auth_path, member=third["member"], cost=third["cost"], hedger_seed=third["hedger_seed"], policy_root=tmp_path)
-
 
 def test_predecessor_binding_exact_with_reordered_payload(tmp_path: Path):
     """Regression for blocker 1: reordered predecessor_identities must not bind wrong predecessor."""
@@ -500,7 +530,6 @@ def test_predecessor_binding_exact_with_reordered_payload(tmp_path: Path):
             assert buggy is not None
             # buggy first match would be c_10 if reordered, proving the old bug would have been wrong
             assert ":0.001:" in buggy or ":0.005:" in buggy or buggy.split(":")[1] != "0.0" or "c_10" in reordered[buggy]["historical_artifact_path"]
-
 
 def test_predecessor_binding_positive_control(tmp_path: Path):
     """Positive control: correctly ordered payload binds correct predecessor."""

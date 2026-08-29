@@ -9,18 +9,15 @@ import pytest
 
 from neuralmarket.research.deep_hedging.runner import build_implementation_manifest
 
-
 def test_build_manifest_signature_has_implementation_commit():
     sig = inspect.signature(build_implementation_manifest)
     assert "implementation_commit" in sig.parameters
     # no compatibility alias
     assert "authorized_commit" not in sig.parameters
 
-
 def test_build_manifest_rejects_authorized_commit():
     with pytest.raises(TypeError, match="unexpected keyword argument 'authorized_commit'"):
         build_implementation_manifest(authorized_commit="abc")  # type: ignore[call-arg]
-
 
 def test_recovery_provenance_success_path_reaches_formerly_broken_call(tmp_path):
     # This test proves the formerly broken manifest rebuild now succeeds
@@ -100,7 +97,6 @@ def test_recovery_provenance_success_path_reaches_formerly_broken_call(tmp_path)
     import neuralmarket.research.deep_hedging.runner as runner
     assert "authorized_commit" not in inspect.signature(runner.build_implementation_manifest).parameters
 
-
 def test_recovery_still_fail_closed_on_wrong_authorization():
     from neuralmarket.research.deep_hedging.trainer import train_one_policy_recovery
 
@@ -108,7 +104,6 @@ def test_recovery_still_fail_closed_on_wrong_authorization():
     # tamper by using a different member not in allowlist should still fail before provenance
     with pytest.raises(Exception):
         train_one_policy_recovery(member="invalid-member", cost=0.0, hedger_seed=31001, authorization_path=auth)
-
 
 def test_recovery_still_fail_closed_on_wrong_implementation_via_validator():
     from neuralmarket.research.deep_hedging.runner import validate_recovery_authorization_schema
