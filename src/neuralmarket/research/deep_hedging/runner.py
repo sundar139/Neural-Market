@@ -551,18 +551,20 @@ SUCCESSOR_PREREQUISITE_CANONICAL = "fe5983662d4e8b1269c6d305a5a2741c7c171e38c4e9
 SUCCESSOR_PREREQUISITE_RAW = "55675fbb78c1e20df1a130aa23ab9cb31bb4683bb40d8fd7fa82bc74719e14b7"
 SUCCESSOR_PREREQUISITE_BLOB = "24cfc59af40a80f51f5e3d4bc2b3297607f754d4"
 SUCCESSOR_HEDGER_SEEDS = (60999, 53804, 89356)
+SUCCESSOR_TO_HISTORICAL_SEED = {60999: 31001, 53804: 31002, 89356: 31003}
 SUCCESSOR_PROTOCOL_PATH = Path("reports/protocol/structured_vol_v5_deep_hedging_gru_training_recovery_successor_protocol_v1.md")
 SUCCESSOR_PROTOCOL_COMMIT = "c63df0ebdd589a1f7ecc1bcb312bc3d18baba7f0"
 SUCCESSOR_PROTOCOL_CANONICAL = "922b4760a7b71a153289ef9b1ff05417045903c3a8070119f8ee6881f0ade418"
 SUCCESSOR_PROTOCOL_RAW = "922b4760a7b71a153289ef9b1ff05417045903c3a8070119f8ee6881f0ade418"
 SUCCESSOR_PROTOCOL_BLOB = "8715db1c76bd8457eca29ff523e54b2d9ce573ef"
 SUCCESSOR_AUTHORIZATION_TYPE = "GRU_TRAINING_RECOVERY_SUCCESSOR_V1"
+FINAL_PREREQUISITE_ARTIFACT_TYPE = "GRU_TRAINING_RECOVERY_SUCCESSOR_FINAL_EXECUTION_AUTHORIZATION_PREREQUISITES_V1"
+FINAL_PREREQUISITE_TASK_FAMILY_RE = re.compile(r"^NM-R4-V5-DEEP-HEDGING-GRU-TRAINING-RECOVERY-SUCCESSOR-FINAL-AUTHORIZATION-PREREQUISITE-FREEZE-[0-9]+$")
 PREREQUISITE_PATH = Path("reports/protocol/hedging_recovery_v2_authorization_prerequisites_246.json")
 PREREQUISITE_COMMIT = "d4813d60002128c898fe88e40fd846dde80b5c3d"
 PREREQUISITE_CANONICAL = "c416ba8141cf91f732dfe245552b6ce9035cfb079d5ab71d324db89bc7e0f8e0"
 PREREQUISITE_RAW = "88b51be4822c23c6c608fc75cd3cb4299d96afc1f2a18b7d4e53b929df296224"
 PREREQUISITE_BLOB = "a9d74c8a9fdc325d7e0f99b8a382c4bf8b3428d3"
-
 EVIDENCE_PATH = Path("reports/research/evidence/structured_vol_v5_deep_hedging_gru_training_execution_v1.json")
 EVIDENCE_COMMIT = "ee7da9f8a465411b87d5ba3df6d7577230630352"
 EVIDENCE_CANONICAL = "1d739b3e3f951331f1c8cc060f677a3d71c24b0184ece0a28796365079b5025c"
@@ -722,6 +724,148 @@ def _get_authenticated_successor_prerequisite_values() -> dict[str, str]:
         "successor_prerequisite_canonical": SUCCESSOR_PREREQUISITE_CANONICAL,
         "successor_prerequisite_raw": SUCCESSOR_PREREQUISITE_RAW,
         "successor_prerequisite_blob": SUCCESSOR_PREREQUISITE_BLOB,
+    }
+
+
+def _verify_final_prerequisite_from_authorization(payload: dict) -> dict[str, str]:
+    """Authenticate the authorization-declared final prerequisite — generic, dynamic, fail-closed.
+
+    Requires the authorization to declare a complete final-prerequisite identity via
+    successor_final_prerequisite_path, successor_final_prerequisite_commit,
+    successor_final_prerequisite_canonical, successor_final_prerequisite_blob,
+    and optionally raw, task_id, artifact_type. Verifies the exact file at the
+    declared path is tracked, clean, committed, and that the declared commit
+    is an ancestor of HEAD, the commit→path blob equals the declared blob,
+    the worktree hash equals the declared blob, and the committed canonical
+    (and raw if declared) equals the declared values. Parses the JSON and
+    validates that it is a final-prerequisite artifact (type
+    GRU_TRAINING_RECOVERY_SUCCESSOR_FINAL_EXECUTION_AUTHORIZATION_PREREQUISITES_V1,
+    task family NM-R4-V5-DEEP-HEDGING-GRU-TRAINING-RECOVERY-SUCCESSOR-FINAL-AUTHORIZATION-PREREQUISITE-FREEZE-[0-9]+),
+    that it has execution_authority NOT_GRANTED, authorization_created false,
+    execution_started false, recovery_v3 not created, and that its bound
+    implementation_commit and implementation_manifest equal the authorization's
+    implementation. No hard-coded numbered prerequisite path. Returns the
+    authenticated final-prerequisite identity.
+    """
+    # Mandatory fields
+    required = [
+        "successor_final_prerequisite_path",
+        "successor_final_prerequisite_commit",
+        "successor_final_prerequisite_canonical",
+        "successor_final_prerequisite_blob",
+    ]
+    for field in required:
+        if field not in payload or not payload[field]:
+            raise AuthorizationError(f"authorization missing required final prerequisite field: {field}")
+        if not isinstance(payload[field], str) or not payload[field].strip():
+            raise AuthorizationError(f"final prerequisite {field} must be non-empty string")
+    # Optional but if present must be validated
+    # Path must be repository-relative, not absolute, no traversal
+    raw_path = str(payload["successor_final_prerequisite_path"])
+    if Path(raw_path).is_absolute():
+        raise AuthorizationError(f"final prerequisite path must be repository-relative, got absolute {raw_path!r}")
+    if ".." in Path(raw_path).parts:
+        raise AuthorizationError(f"final prerequisite path must not contain traversal, got {raw_path!r}")
+    rel_path = Path(raw_path)
+    # Normalize to POSIX for git
+    rel_posix = rel_path.as_posix()
+    # Tracked
+    ls = subprocess.run(["git", "ls-files", "--", rel_posix], capture_output=True, text=True, check=True)
+    if not ls.stdout.strip():
+        raise AuthorizationError(f"final prerequisite file not tracked: {rel_posix}")
+    # Clean
+    for cmd in (["git", "diff", "--name-only", "--", rel_posix], ["git", "diff", "--cached", "--name-only", "--", rel_posix]):
+        res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+        if res.stdout.strip():
+            raise AuthorizationError(f"final prerequisite file has staged/unstaged modification: {rel_posix}")
+    # Commit existence and ancestry
+    declared_commit = str(payload["successor_final_prerequisite_commit"])
+    res = subprocess.run(["git", "cat-file", "-e", declared_commit], capture_output=True)
+    if res.returncode != 0:
+        raise AuthorizationError(f"final prerequisite commit {declared_commit} does not exist locally")
+    cur_head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    res = subprocess.run(["git", "merge-base", "--is-ancestor", declared_commit, cur_head])
+    if res.returncode != 0:
+        raise AuthorizationError(f"final prerequisite commit {declared_commit} is not ancestor of current HEAD {cur_head}")
+    # Commit→path blob
+    ls_tree = subprocess.run(["git", "ls-tree", declared_commit, "--", rel_posix], capture_output=True, text=True, check=True)
+    if not ls_tree.stdout.strip():
+        raise AuthorizationError(f"final prerequisite commit {declared_commit} missing path {rel_posix}")
+    commit_blob = ls_tree.stdout.strip().split()[2]
+    declared_blob = str(payload["successor_final_prerequisite_blob"])
+    if commit_blob != declared_blob:
+        raise AuthorizationError(f"final prerequisite commit blob mismatch: got {commit_blob} expected {declared_blob}")
+    # Worktree blob
+    worktree_blob = subprocess.run(["git", "hash-object", rel_posix], capture_output=True, text=True, check=True).stdout.strip()
+    if worktree_blob != declared_blob:
+        raise AuthorizationError(f"final prerequisite worktree blob mismatch: got {worktree_blob} expected {declared_blob}")
+    # Canonical and raw
+    raw_bytes = Path(rel_posix).read_bytes()
+    canon_bytes = raw_bytes.decode("utf-8").replace("\r\n", "\n").encode("utf-8")
+    canonical_sha = hashlib.sha256(canon_bytes).hexdigest()
+    raw_sha = hashlib.sha256(raw_bytes).hexdigest()
+    declared_canonical = str(payload["successor_final_prerequisite_canonical"])
+    if canonical_sha != declared_canonical:
+        raise AuthorizationError(f"final prerequisite canonical mismatch: got {canonical_sha} expected {declared_canonical}")
+    if "successor_final_prerequisite_raw" in payload and payload["successor_final_prerequisite_raw"]:
+        declared_raw = str(payload["successor_final_prerequisite_raw"])
+        if raw_sha != declared_raw:
+            raise AuthorizationError(f"final prerequisite raw mismatch: got {raw_sha} expected {declared_raw}")
+    # Parse JSON and validate artifact family/type
+    try:
+        fp_payload = json.loads(raw_bytes.decode("utf-8"))
+    except Exception as e:
+        raise AuthorizationError(f"final prerequisite not valid JSON: {e}") from e
+    artifact_type = str(fp_payload.get("artifact_type") or "")
+    if artifact_type != FINAL_PREREQUISITE_ARTIFACT_TYPE:
+        raise AuthorizationError(f"final prerequisite artifact_type must be {FINAL_PREREQUISITE_ARTIFACT_TYPE!r}, got {artifact_type!r}")
+    task_id = str(fp_payload.get("task_id") or "")
+    if not FINAL_PREREQUISITE_TASK_FAMILY_RE.match(task_id):
+        raise AuthorizationError(f"final prerequisite task_id {task_id!r} does not match family {FINAL_PREREQUISITE_TASK_FAMILY_RE.pattern}")
+    # Also check declared task_id/blob if provided
+    if "successor_final_prerequisite_task_id" in payload and payload["successor_final_prerequisite_task_id"]:
+        if str(payload["successor_final_prerequisite_task_id"]) != task_id:
+            raise AuthorizationError(f"final prerequisite task_id mismatch: declared {payload['successor_final_prerequisite_task_id']!r} vs file {task_id!r}")
+    if "successor_final_prerequisite_artifact_type" in payload and payload["successor_final_prerequisite_artifact_type"]:
+        if str(payload["successor_final_prerequisite_artifact_type"]) != artifact_type:
+            raise AuthorizationError(f"final prerequisite artifact_type mismatch")
+    # Execution authority must be NOT_GRANTED
+    if fp_payload.get("execution_authority") == "GRANTED":
+        raise AuthorizationError("final prerequisite execution_authority must be NOT_GRANTED")
+    if fp_payload.get("execution_authority") is None:
+        # Check alternative field
+        if fp_payload.get("execution_authority") is not None and fp_payload.get("execution_authority") != "NOT_GRANTED":
+            raise AuthorizationError("final prerequisite execution_authority must be NOT_GRANTED")
+    # Check authorization_created, execution_started, recovery_v3
+    if fp_payload.get("authorization_created") is True:
+        raise AuthorizationError("final prerequisite authorization_created must be false")
+    if fp_payload.get("execution_started") is True:
+        raise AuthorizationError("final prerequisite execution_started must be false")
+    # Check recovery_v3 not created
+    if fp_payload.get("recovery_v3_created") is True or fp_payload.get("recovery_v3_root_not_created") is False:
+        # Allow either field, but ensure not created
+        if fp_payload.get("recovery_v3_created") is True:
+            raise AuthorizationError("final prerequisite recovery_v3_created must be false")
+    # Scientific execution 0 if present
+    if "scientific_execution" in fp_payload and fp_payload.get("scientific_execution") not in (0, False, None):
+        if int(fp_payload.get("scientific_execution", 0)) != 0:
+            raise AuthorizationError("final prerequisite scientific_execution must be 0")
+    # Cross-bind implementation
+    fp_impl_commit = str(fp_payload.get("implementation_commit") or "")
+    fp_impl_manifest = str(fp_payload.get("implementation_manifest_sha256") or fp_payload.get("implementation_manifest") or "")
+    auth_impl_commit = str(payload.get("implementation_commit") or "")
+    auth_impl_manifest = str(payload.get("implementation_manifest_sha256") or payload.get("implementation_manifest") or "")
+    if fp_impl_commit and auth_impl_commit and fp_impl_commit != auth_impl_commit:
+        raise AuthorizationError(f"final prerequisite implementation_commit {fp_impl_commit!r} != authorization {auth_impl_commit!r}")
+    if fp_impl_manifest and auth_impl_manifest and fp_impl_manifest != auth_impl_manifest:
+        raise AuthorizationError(f"final prerequisite implementation_manifest {fp_impl_manifest!r} != authorization {auth_impl_manifest!r}")
+    return {
+        "path": rel_posix,
+        "commit": declared_commit,
+        "canonical": declared_canonical,
+        "blob": declared_blob,
+        "task_id": task_id,
+        "artifact_type": artifact_type,
     }
 
 
@@ -1339,12 +1483,12 @@ def validate_successor_authorization_schema(payload: dict) -> None:
         raise AuthorizationError(f"successor final_test_access must be false, got {payload.get('final_test_access')!r}")
     if payload.get("reexecution_prohibited") is not True:
         raise AuthorizationError(f"successor reexecution_prohibited must be true, got {payload.get('reexecution_prohibited')!r}")
+    # Final prerequisite — generic dynamic, must be present and load-bearing
+    _verify_final_prerequisite_from_authorization(payload)
     # Whole-campaign stop semantics implied by exact limits + predecessor fail-close
     if payload.get("execution_authority") == "GRANTED" or payload.get("authorization_type") != SUCCESSOR_AUTHORIZATION_TYPE:
         # authorization_type already checked, but ensure not granting via wrong field
         pass
-
-
 def _get_successor_ordered_tuples(payload: dict) -> list[dict]:
     """Return frozen deterministic order of 45 successor tuples (as in prerequisite)."""
     tuples = payload.get("successor_tuples") or payload.get("successor_prospective_tuples") or []

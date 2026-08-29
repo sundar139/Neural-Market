@@ -73,8 +73,14 @@ def _valid_payload():
         "final_test_access": False,
         "reexecution_prohibited": True,
         "task253_import_count": 0,
+        "successor_final_prerequisite_path": "reports/protocol/hedging_recovery_successor_final_execution_authorization_prerequisites_286.json",
+        "successor_final_prerequisite_commit": "5b8e6d03de6c88f56dadc5a4e9609870946926e4",
+        "successor_final_prerequisite_canonical": "08d148fbce45848d16533b072d4baba47dd1347563580a77561d2bb61310a249",
+        "successor_final_prerequisite_raw": "f5fba315c62d9c287c17fb5cb121613553957500d16bdea68c83b949c76638c7",
+        "successor_final_prerequisite_blob": "a743c1d98c50ca37e6c7fa343c7867dabccdc444",
+        "successor_final_prerequisite_task_id": "NM-R4-V5-DEEP-HEDGING-GRU-TRAINING-RECOVERY-SUCCESSOR-FINAL-AUTHORIZATION-PREREQUISITE-FREEZE-286",
+        "successor_final_prerequisite_artifact_type": "GRU_TRAINING_RECOVERY_SUCCESSOR_FINAL_EXECUTION_AUTHORIZATION_PREREQUISITES_V1",
     }
-
 
 def test_valid_payload_passes():
     payload = _valid_payload()
